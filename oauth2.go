@@ -71,8 +71,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 
 	defer func() {
 		if err != nil {
-			srv.Log(err)
-			if err != ErrInconsistentState {
+			if srv.Log(err) != ErrInconsistentState {
 				sess.Set(srv.SessionKey, nil)
 				srv.Jaws.Dirty(sess)
 			}
