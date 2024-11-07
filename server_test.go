@@ -61,7 +61,7 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 
 	jw := jaws.New() // create a default JaWS instance
 	defer jw.Close() // ensure we clean up
-	jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse("<html>{{$.Session.ID}}</html>")))
+	jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse("<html></html>")))
 	jw.Logger = slog.Default() // optionally set the logger to use
 	jw.Debug = deadlock.Debug  // optionally set the debug flag
 	go jw.Serve()              // start the JaWS processing loop
@@ -141,6 +141,15 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Log(resp.Header)
 		t.Log(resphtml)
 		t.Fatal(invalidpass)
+	}
+
+	resp, err = http.Get(hsrv.URL + "/needauth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Log(resp.Header)
+		t.Fatal(resp.Status)
 	}
 
 	resp, err = http.DefaultClient.Get(hsrv.URL + asrv.LogoutURL)
