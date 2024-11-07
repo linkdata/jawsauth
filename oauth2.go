@@ -63,6 +63,14 @@ func requireCorrectState(gotState, wantState string) error {
 	return nil
 }
 
+func requireStatusOK(resp *http.Response) error {
+	if resp.StatusCode != http.StatusOK {
+		fmt.Println(resp.Header)
+		return fmt.Errorf("oauth2: %s", resp.Status)
+	}
+	return nil
+}
+
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
 	oauth2Config, userinfourl, location := srv.begin(hr)
 
@@ -70,12 +78,11 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 	sess := srv.Jaws.GetSession(hr)
 
 	defer func() {
-		if err != nil {
-			if srv.Log(err) != ErrInconsistentState {
-				sess.Set(srv.SessionKey, nil)
-				srv.Jaws.Dirty(sess)
-			}
+		if srv.Log(err) != nil {
+			sess.Set(srv.SessionKey, nil)
+			srv.Jaws.Dirty(sess)
 			hw.WriteHeader(http.StatusBadRequest)
+			fmt.Printf("%#v\n", hr.Header)
 		}
 	}()
 
@@ -86,11 +93,11 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 
 		if err = requireCorrectState(gotState, wantState); err == nil {
 			var token *oauth2.Token
-			if token, err = oauth2Config.Exchange(context.Background(), hr.FormValue("code")); err == nil {
+			if token, err = oauth2Config.Exchange(context.Background(), hr.FormValue("code"), oauth2.AccessTypeOffline); err == nil {
 				client := oauth2Config.Client(context.Background(), token)
 				var resp *http.Response
 				if resp, err = client.Get(userinfourl); err == nil {
-					if resp.StatusCode == http.StatusOK {
+					if err = requireStatusOK(resp); err == nil {
 						var b []byte
 						if b, err = io.ReadAll(resp.Body); err == nil {
 							var userinfo any

@@ -27,7 +27,9 @@ func New(jw *jaws.Jaws) (srv *Server) {
 	return
 }
 
-func (srv *Server) SetConfig(cfg *Config) (err error) {
+type HandleFunc func(uri string, handler http.Handler)
+
+func (srv *Server) SetConfig(cfg *Config, handleFn HandleFunc) (err error) {
 	if err = cfg.Validate(); err == nil {
 		srv.mu.Lock()
 		defer srv.mu.Unlock()
@@ -36,6 +38,7 @@ func (srv *Server) SetConfig(cfg *Config) (err error) {
 			var u *url.URL
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
 				srv.redirectPath = u.Path
+				handleFn(u.Path, http.HandlerFunc(srv.HandleAuthResponse))
 			}
 		}
 	}
