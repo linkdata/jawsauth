@@ -65,7 +65,6 @@ func requireCorrectState(gotState, wantState string) error {
 
 func requireStatusOK(resp *http.Response) error {
 	if resp.StatusCode != http.StatusOK {
-		fmt.Println(resp.Header)
 		return fmt.Errorf("oauth2: %s", resp.Status)
 	}
 	return nil
@@ -82,7 +81,6 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			sess.Set(srv.SessionKey, nil)
 			srv.Jaws.Dirty(sess)
 			hw.WriteHeader(http.StatusBadRequest)
-			fmt.Printf("%#v\n", hr.Header)
 		}
 	}()
 
@@ -100,9 +98,15 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 					if err = requireStatusOK(resp); err == nil {
 						var b []byte
 						if b, err = io.ReadAll(resp.Body); err == nil {
-							var userinfo any
+							var userinfo map[string]any
 							if err = json.Unmarshal(b, &userinfo); err == nil {
 								sess.Set(srv.SessionKey, userinfo)
+								for _, k := range []string{"email", "mail"} {
+									if s, ok := userinfo[k]; ok {
+										sess.Set(srv.SessionEmailKey, s)
+										break
+									}
+								}
 								if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
 									location = s
 								}

@@ -11,18 +11,20 @@ import (
 
 type Server struct {
 	*jaws.Jaws
-	SessionKey   string
-	OverrideURL  string
-	mu           deadlock.Mutex
-	cfg          Config
-	oauth2cfg    *oauth2.Config
-	redirectPath string
+	SessionKey      string // Session value will be of type map[string]any
+	SessionEmailKey string // Session value will be a string if available
+	OverrideURL     string
+	mu              deadlock.Mutex
+	cfg             Config
+	oauth2cfg       *oauth2.Config
+	redirectPath    string
 }
 
 func New(jw *jaws.Jaws) (srv *Server) {
 	srv = &Server{
-		Jaws:       jw,
-		SessionKey: "user",
+		Jaws:            jw,
+		SessionKey:      "oauth2userinfo",
+		SessionEmailKey: "email",
 	}
 	return
 }
