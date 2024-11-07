@@ -56,54 +56,33 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	hw.WriteHeader(http.StatusFound)
 }
 
-func requireCorrectState(gotState, wantState string) error {
-	if wantState == "" || wantState != gotState {
-		return fmt.Errorf("oauth2: got session state %q, wanted %q", gotState, wantState)
-	}
-	return nil
-}
-
-func requireStatusOK(resp *http.Response) error {
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("oauth2: %s", resp.Status)
-	}
-	return nil
-}
-
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
 	oauth2Config, userinfourl, location := srv.begin(hr)
 
-	err := ErrInconsistentState
 	sess := srv.Jaws.GetSession(hr)
-
-	defer func() {
-		if srv.Log(err) != nil {
-			sess.Set(srv.SessionKey, nil)
-			srv.Jaws.Dirty(sess)
-			hw.WriteHeader(http.StatusBadRequest)
-		}
-	}()
+	var sessValue any
+	var sessEmailValue any
+	statusCode := http.StatusInternalServerError
 
 	if oauth2Config != nil && sess != nil {
 		gotState := hr.FormValue("state")
 		wantState, _ := sess.Get(oauth2StateKey).(string)
 		sess.Set(oauth2StateKey, nil)
-
-		if err = requireCorrectState(gotState, wantState); err == nil {
-			var token *oauth2.Token
-			if token, err = oauth2Config.Exchange(context.Background(), hr.FormValue("code"), oauth2.AccessTypeOffline); err == nil {
+		statusCode = http.StatusBadRequest
+		if wantState != "" && wantState == gotState {
+			if token, err := oauth2Config.Exchange(context.Background(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Log(err) == nil {
 				client := oauth2Config.Client(context.Background(), token)
 				var resp *http.Response
-				if resp, err = client.Get(userinfourl); err == nil {
-					if err = requireStatusOK(resp); err == nil {
+				if resp, err = client.Get(userinfourl); srv.Log(err) == nil {
+					if statusCode = resp.StatusCode; statusCode == http.StatusOK {
 						var b []byte
-						if b, err = io.ReadAll(resp.Body); err == nil {
+						if b, err = io.ReadAll(resp.Body); srv.Log(err) == nil {
 							var userinfo map[string]any
-							if err = json.Unmarshal(b, &userinfo); err == nil {
-								sess.Set(srv.SessionKey, userinfo)
+							if err = json.Unmarshal(b, &userinfo); srv.Log(err) == nil {
+								sessValue = userinfo
 								for _, k := range []string{"email", "mail"} {
-									if s, ok := userinfo[k]; ok {
-										sess.Set(srv.SessionEmailKey, s)
+									if s, ok := userinfo[k].(string); ok {
+										sessEmailValue = s
 										break
 									}
 								}
@@ -117,11 +96,8 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 									}
 									l.Info("oauth2 login", "session", sess.CookieValue(), srv.SessionKey, string(b))
 								}
-								srv.Jaws.Dirty(sess)
-
 								hw.Header().Add("Location", location)
-								hw.WriteHeader(http.StatusFound)
-								return
+								statusCode = http.StatusFound
 							}
 						}
 					}
@@ -129,4 +105,8 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			}
 		}
 	}
+	sess.Set(srv.SessionKey, sessValue)
+	sess.Set(srv.SessionEmailKey, sessEmailValue)
+	srv.Jaws.Dirty(sess)
+	hw.WriteHeader(statusCode)
 }

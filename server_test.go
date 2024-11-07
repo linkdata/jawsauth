@@ -124,10 +124,15 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatal(resp.Status)
+	}
+
 	b, err = io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	resphtml := html.UnescapeString(string(b))
 	invalidpass := "Invalid username or password."
 	if strings.Contains(resphtml, invalidpass) {
