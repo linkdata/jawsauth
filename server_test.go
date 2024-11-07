@@ -82,9 +82,10 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(err)
 	}
 
-	mux.Handle("/", asrv.Handler("index.html", nil))
+	mux.Handle("/needauth", asrv.Handler("index.html", nil))
+	mux.Handle("/", jw.Handler("index.html", nil))
 
-	initialresp, err := http.Get(hsrv.URL)
+	initialresp, err := http.Get(hsrv.URL + "/needauth")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,5 +141,14 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Log(resp.Header)
 		t.Log(resphtml)
 		t.Fatal(invalidpass)
+	}
+
+	resp, err = http.DefaultClient.Get(hsrv.URL + asrv.LogoutURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Log(resp.Header)
+		t.Fatal(resp.Status)
 	}
 }

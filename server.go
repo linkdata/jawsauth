@@ -13,6 +13,8 @@ type Server struct {
 	*jaws.Jaws
 	SessionKey      string // Session value will be of type map[string]any
 	SessionEmailKey string // Session value will be a string if available
+	LoginURL        string
+	LogoutURL       string
 	OverrideURL     string
 	mu              deadlock.Mutex
 	cfg             Config
@@ -25,6 +27,8 @@ func New(jw *jaws.Jaws) (srv *Server) {
 		Jaws:            jw,
 		SessionKey:      "oauth2userinfo",
 		SessionEmailKey: "email",
+		LoginURL:        "/oauth2/login",
+		LogoutURL:       "/oauth2/logout",
 	}
 	return
 }
@@ -41,6 +45,12 @@ func (srv *Server) SetConfig(cfg *Config, handleFn HandleFunc) (err error) {
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
 				srv.redirectPath = u.Path
 				handleFn(u.Path, http.HandlerFunc(srv.HandleAuthResponse))
+				if srv.LoginURL != "" {
+					handleFn(srv.LoginURL, http.HandlerFunc(srv.HandleLogin))
+				}
+				if srv.LogoutURL != "" {
+					handleFn(srv.LogoutURL, http.HandlerFunc(srv.HandleLogout))
+				}
 			}
 		}
 	}
