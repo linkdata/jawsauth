@@ -61,7 +61,7 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 
 	jw := jaws.New() // create a default JaWS instance
 	defer jw.Close() // ensure we clean up
-	jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse("<html></html>")))
+	jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse("<html>{{$.Session.ID}}</html>")))
 	jw.Logger = slog.Default() // optionally set the logger to use
 	jw.Debug = deadlock.Debug  // optionally set the debug flag
 	go jw.Serve()              // start the JaWS processing loop
@@ -111,7 +111,6 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	params.Add("credentialId", "")
 
 	postreq, err := http.NewRequestWithContext(ctx, http.MethodPost, action, strings.NewReader(params.Encode()))
-	t.Log("POST ", action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,15 +118,12 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	postreq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	for _, cookie := range initialresp.Cookies() {
 		postreq.AddCookie(cookie)
-		// postreq.AddCookie(jw.Sessions()[0].Cookie())
 	}
 	resp, err := http.DefaultClient.Do(postreq)
 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log(resp.Status)
-	t.Log(resp.Header)
 	b, err = io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +131,9 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	resphtml := html.UnescapeString(string(b))
 	invalidpass := "Invalid username or password."
 	if strings.Contains(resphtml, invalidpass) {
+		t.Log(resp.Status)
+		t.Log(resp.Header)
+		t.Log(resphtml)
 		t.Fatal(invalidpass)
 	}
-	t.Log(resphtml)
 }
