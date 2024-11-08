@@ -77,8 +77,8 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		ClientSecret: clientSecret,
 	}
 
-	asrv := New(jw)
-	if err := asrv.SetConfig(&cfg, mux.Handle); err != nil {
+	asrv, err := New(jw, &cfg, mux.Handle)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,7 +152,7 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(resp.Status)
 	}
 
-	resp, err = http.DefaultClient.Get(hsrv.URL + asrv.LogoutURL)
+	resp, err = http.DefaultClient.Get(hsrv.URL + "/oauth2/logout")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,11 +19,12 @@ const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
 
 func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfourl, location string) {
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
 	oauth2cfg = srv.oauth2cfg
-	userinfourl = srv.cfg.UserInfoURL
-	location = strings.TrimSuffix(strings.TrimSpace(hr.Referer()), srv.redirectPath)
+	userinfourl = srv.userinfoUrl
+	location = strings.TrimSpace(hr.Referer())
+	for s := range srv.HandledPaths {
+		location = strings.TrimSuffix(location, s)
+	}
 	if location == "" {
 		location = "/"
 	}
@@ -32,15 +33,13 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
 
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	oauth2cfg, _, location := srv.begin(hr)
-	if oauth2cfg != nil {
-		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			b := make([]byte, 4)
-			n, _ := rand.Read(b)
-			state := fmt.Sprintf("%x%#p", b[:n], srv)
-			sess.Set(oauth2StateKey, state)
-			sess.Set(oauth2ReferrerKey, location)
-			location = oauth2cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
-		}
+	if sess := srv.Jaws.GetSession(hr); sess != nil {
+		b := make([]byte, 4)
+		n, _ := rand.Read(b)
+		state := fmt.Sprintf("%x%#p", b[:n], srv)
+		sess.Set(oauth2StateKey, state)
+		sess.Set(oauth2ReferrerKey, location)
+		location = oauth2cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
 	}
 	hw.Header().Add("Location", location)
 	hw.WriteHeader(http.StatusFound)
@@ -70,15 +69,15 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		sess.Set(oauth2StateKey, nil)
 		statusCode = http.StatusBadRequest
 		if wantState != "" && wantState == gotState {
-			if token, err := oauth2Config.Exchange(context.Background(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Log(err) == nil {
+			if token, err := oauth2Config.Exchange(context.Background(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil {
 				client := oauth2Config.Client(context.Background(), token)
 				var resp *http.Response
-				if resp, err = client.Get(userinfourl); srv.Log(err) == nil {
+				if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil {
 					if statusCode = resp.StatusCode; statusCode == http.StatusOK {
 						var b []byte
-						if b, err = io.ReadAll(resp.Body); srv.Log(err) == nil {
+						if b, err = io.ReadAll(resp.Body); srv.Jaws.Log(err) == nil {
 							var userinfo map[string]any
-							if err = json.Unmarshal(b, &userinfo); srv.Log(err) == nil {
+							if err = json.Unmarshal(b, &userinfo); srv.Jaws.Log(err) == nil {
 								sessValue = userinfo
 								for _, k := range []string{"email", "mail"} {
 									if s, ok := userinfo[k].(string); ok {

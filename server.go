@@ -3,64 +3,69 @@ package jawsauth
 import (
 	"net/http"
 	"net/url"
+	"path"
 
-	"github.com/linkdata/deadlock"
 	"github.com/linkdata/jaws"
 	"golang.org/x/oauth2"
 )
 
+type HandleFunc func(uri string, handler http.Handler)
+
 type Server struct {
-	*jaws.Jaws
-	SessionKey      string // Session value will be of type map[string]any
-	SessionEmailKey string // Session value will be a string if available
-	LoginURL        string
-	LogoutURL       string
-	OverrideURL     string
-	mu              deadlock.Mutex
-	cfg             Config
+	Jaws            *jaws.Jaws
+	SessionKey      string              // default is "oauth2userinfo", value will be of type map[string]any
+	SessionEmailKey string              // default is "email", value will be of type string
+	HandledPaths    map[string]struct{} // URI paths we have registered handlers for
 	oauth2cfg       *oauth2.Config
-	redirectPath    string
+	userinfoUrl     string
 }
 
-func New(jw *jaws.Jaws) (srv *Server) {
+func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl string) (srv *Server, err error) {
 	srv = &Server{
 		Jaws:            jw,
 		SessionKey:      "oauth2userinfo",
 		SessionEmailKey: "email",
-		LoginURL:        "/oauth2/login",
-		LogoutURL:       "/oauth2/logout",
+		HandledPaths:    make(map[string]struct{}),
 	}
-	return
-}
-
-type HandleFunc func(uri string, handler http.Handler)
-
-func (srv *Server) SetConfig(cfg *Config, handleFn HandleFunc) (err error) {
-	if err = cfg.Validate(); err == nil {
-		srv.mu.Lock()
-		defer srv.mu.Unlock()
-		srv.cfg = *cfg
-		if srv.oauth2cfg, err = srv.cfg.Build(srv.OverrideURL); err == nil {
+	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
+		if srv.oauth2cfg, err = cfg.Build(overrideUrl); err == nil {
 			var u *url.URL
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
-				srv.redirectPath = u.Path
-				handleFn(u.Path, http.HandlerFunc(srv.HandleAuthResponse))
-				if srv.LoginURL != "" {
-					handleFn(srv.LoginURL, http.HandlerFunc(srv.HandleLogin))
-				}
-				if srv.LogoutURL != "" {
-					handleFn(srv.LogoutURL, http.HandlerFunc(srv.HandleLogout))
-				}
+				srv.handlePath(u.Path, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
+				srv.handlePath(path.Join(path.Dir(u.Path), "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
+				srv.handlePath(path.Join(path.Dir(u.Path), "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))
+				srv.userinfoUrl = cfg.UserInfoURL
 			}
 		}
 	}
 	return
 }
 
+func New(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc) (srv *Server, err error) {
+	return NewDebug(jw, cfg, handleFn, "")
+}
+
+func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) {
+	if _, ok := srv.HandledPaths[p]; !ok {
+		srv.HandledPaths[p] = struct{}{}
+		handleFn(p, h)
+	}
+}
+
+// Valid returns true if OAuth2 is configured.
+func (srv *Server) Valid() bool {
+	return srv.oauth2cfg != nil
+}
+
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
 // Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
-func (srv *Server) Wrap(h http.Handler) http.Handler {
-	return wrapper{server: srv, handler: h}
+// If the Server is not Valid, returns h.
+func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
+	rh = h
+	if srv.Valid() {
+		rh = wrapper{server: srv, handler: h}
+	}
+	return
 }
 
 // Handler returns a http.Handler using a jaws.Template that requires an authenticated user.
