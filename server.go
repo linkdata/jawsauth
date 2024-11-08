@@ -11,11 +11,15 @@ import (
 
 type HandleFunc func(uri string, handler http.Handler)
 
+type EventFunc func(sess *jaws.Session, hr *http.Request)
+
 type Server struct {
 	Jaws            *jaws.Jaws
 	SessionKey      string              // default is "oauth2userinfo", value will be of type map[string]any
 	SessionEmailKey string              // default is "email", value will be of type string
 	HandledPaths    map[string]struct{} // URI paths we have registered handlers for
+	LoginEvent      EventFunc           // if not nil, called after a successful login
+	LogoutEvent     EventFunc           // if not nil, called before logout
 	oauth2cfg       *oauth2.Config
 	userinfoUrl     string
 }

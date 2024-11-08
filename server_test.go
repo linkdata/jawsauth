@@ -81,6 +81,9 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	if err != nil {
 		t.Fatal(err)
 	}
+	var logincount int
+	asrv.LoginEvent = func(sess *jaws.Session, hr *http.Request) { logincount++ }
+	asrv.LogoutEvent = func(sess *jaws.Session, hr *http.Request) { logincount-- }
 
 	mux.Handle("/needauth", asrv.Handler("index.html", nil))
 	mux.Handle("/", jw.Handler("index.html", nil))
@@ -92,6 +95,10 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 
 	if initialresp.StatusCode != http.StatusOK {
 		t.Fatal(initialresp.Status)
+	}
+
+	if logincount != 0 {
+		t.Error(logincount)
 	}
 
 	b, err := io.ReadAll(initialresp.Body)
@@ -129,6 +136,10 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(resp.Status)
 	}
 
+	if logincount != 1 {
+		t.Error(logincount)
+	}
+
 	b, err = io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -152,6 +163,10 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(resp.Status)
 	}
 
+	if logincount != 1 {
+		t.Error(logincount)
+	}
+
 	resp, err = http.DefaultClient.Get(hsrv.URL + "/oauth2/logout")
 	if err != nil {
 		t.Fatal(err)
@@ -159,5 +174,9 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	if resp.StatusCode != http.StatusOK {
 		t.Log(resp.Header)
 		t.Fatal(resp.Status)
+	}
+
+	if logincount != 0 {
+		t.Error(logincount)
 	}
 }

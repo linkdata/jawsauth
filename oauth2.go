@@ -48,6 +48,9 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	_, _, location := srv.begin(hr)
 	if sess := srv.Jaws.GetSession(hr); sess != nil {
+		if srv.LogoutEvent != nil {
+			srv.LogoutEvent(sess, hr)
+		}
 		sess.Set(srv.SessionKey, nil)
 		srv.Jaws.Dirty(sess)
 	}
@@ -89,14 +92,11 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 									location = s
 								}
 								sess.Set(oauth2ReferrerKey, nil)
-								if l := srv.Jaws.Logger; l != nil {
-									if b2, e := json.Marshal(userinfo); e == nil {
-										b = b2
-									}
-									l.Info("oauth2 login", "session", sess.CookieValue(), srv.SessionKey, string(b))
-								}
 								hw.Header().Add("Location", location)
 								statusCode = http.StatusFound
+								if srv.LoginEvent != nil {
+									srv.LoginEvent(sess, hr)
+								}
 							}
 						}
 					}
