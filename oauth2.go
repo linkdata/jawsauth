@@ -94,9 +94,6 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 								sess.Set(oauth2ReferrerKey, nil)
 								hw.Header().Add("Location", location)
 								statusCode = http.StatusFound
-								if srv.LoginEvent != nil {
-									srv.LoginEvent(sess, hr)
-								}
 							}
 						}
 					}
@@ -106,6 +103,9 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 	}
 	sess.Set(srv.SessionKey, sessValue)
 	sess.Set(srv.SessionEmailKey, sessEmailValue)
+	if srv.LoginEvent != nil && sessValue != nil {
+		srv.LoginEvent(sess, hr)
+	}
 	srv.Jaws.Dirty(sess)
 	hw.WriteHeader(statusCode)
 }
