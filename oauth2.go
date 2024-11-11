@@ -67,7 +67,7 @@ func errtext(err error) (s string) {
 
 func writeResult(hw http.ResponseWriter, statusCode int, err error) {
 	hw.WriteHeader(statusCode)
-	hw.Write([]byte(errtext(err)))
+	_, _ = hw.Write([]byte(errtext(err)))
 }
 
 var ErrOAuth2NotConfigured = errors.New("oauth2 not configured")
