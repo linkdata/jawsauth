@@ -7,7 +7,9 @@ import (
 )
 
 func Test_errtext(t *testing.T) {
-	s := errtext(http.StatusForbidden, ErrOAuth2WrongState)
+	var sb strings.Builder
+	writeBody(&sb, http.StatusForbidden, ErrOAuth2WrongState, nil)
+	s := sb.String()
 	if !strings.Contains(s, "403 Forbidden") {
 		t.Fatal()
 	}

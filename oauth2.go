@@ -60,18 +60,19 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	hw.WriteHeader(http.StatusFound)
 }
 
-func errtext(statusCode int, err error) (s string) {
-	if err != nil {
-		s = fmt.Sprintf(`<html><body><h2>%03d %s</h2><p>%s</p></body></html>`,
-			statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()),
-		)
+func writeBody(w io.Writer, statusCode int, err error, body []byte) {
+	const tmpl = `<html><body><h2>%03d %s</h2><p>%s</p></body></html>`
+	if body == nil {
+		if err != nil {
+			body = []byte(fmt.Sprintf(tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error())))
+		}
 	}
-	return
+	_, _ = w.Write(body)
 }
 
-func writeResult(hw http.ResponseWriter, statusCode int, err error) {
+func writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) {
 	hw.WriteHeader(statusCode)
-	_, _ = hw.Write([]byte(errtext(statusCode, err)))
+	writeBody(hw, statusCode, err, body)
 }
 
 var ErrOAuth2NotConfigured = errors.New("oauth2 not configured")
@@ -81,6 +82,7 @@ var ErrOAuth2WrongState = errors.New("oauth2 wrong state")
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
 	oauth2Config, userinfourl, location := srv.begin(hr)
 
+	var body []byte
 	var sessValue any
 	var sessEmailValue any
 	sess := srv.Jaws.GetSession(hr)
@@ -101,11 +103,11 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 					client := oauth2Config.Client(context.Background(), token)
 					var resp *http.Response
 					if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil {
-						if statusCode = resp.StatusCode; statusCode == http.StatusOK {
-							var b []byte
-							if b, err = io.ReadAll(resp.Body); srv.Jaws.Log(err) == nil {
+						if body, err = io.ReadAll(resp.Body); srv.Jaws.Log(err) == nil {
+							if statusCode = resp.StatusCode; statusCode == http.StatusOK {
 								var userinfo map[string]any
-								if err = json.Unmarshal(b, &userinfo); srv.Jaws.Log(err) == nil {
+								if err = json.Unmarshal(body, &userinfo); srv.Jaws.Log(err) == nil {
+									body = nil
 									sessValue = userinfo
 									for _, k := range []string{"email", "mail"} {
 										if s, ok := userinfo[k].(string); ok {
@@ -136,5 +138,5 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		srv.LoginEvent(sess, hr)
 	}
 	srv.Jaws.Dirty(sess)
-	writeResult(hw, statusCode, err)
+	writeResult(hw, statusCode, err, body)
 }
