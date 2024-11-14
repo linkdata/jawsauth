@@ -61,7 +61,10 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 
 	jw := jaws.New() // create a default JaWS instance
 	defer jw.Close() // ensure we clean up
-	jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse("<html></html>")))
+
+	const indexTemplate = `<html>{{with .Dot.JawsAuth}}{{.Valid}} {{.Email}} {{.IsAdmin}}{{end}}</html>`
+
+	jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse(indexTemplate)))
 	jw.Logger = slog.Default() // optionally set the logger to use
 	jw.Debug = deadlock.Debug  // optionally set the debug flag
 	go jw.Serve()              // start the JaWS processing loop
@@ -85,8 +88,18 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	asrv.LoginEvent = func(sess *jaws.Session, hr *http.Request) { logincount++ }
 	asrv.LogoutEvent = func(sess *jaws.Session, hr *http.Request) { logincount-- }
 
+	if !asrv.Valid() {
+		t.Fatal()
+	}
+
+	asrv.Set403Handler(nil)
+
 	mux.Handle("/needauth", asrv.Handler("index.html", nil))
+	mux.Handle("/needadmin", asrv.HandlerAdmin("index.html", nil))
 	mux.Handle("/", jw.Handler("index.html", nil))
+
+	asrv.Wrap(http.NotFoundHandler())
+	asrv.WrapAdmin(http.NotFoundHandler())
 
 	initialresp, err := http.Get(hsrv.URL + "/needauth")
 	if err != nil {
@@ -154,6 +167,10 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(invalidpass)
 	}
 
+	if resphtml != "<html>true testuser@example.com true</html>" {
+		t.Fatal(resphtml)
+	}
+
 	resp, err = http.Get(hsrv.URL + "/needauth")
 	if err != nil {
 		t.Fatal(err)
@@ -178,5 +195,44 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 
 	if logincount != 0 {
 		t.Error(logincount)
+	}
+
+	if !asrv.IsAdmin("testuser@example.com") {
+		t.Error("empty admin list, all should be admins")
+	}
+
+	asrv.SetAdmins([]string{"admin@example.com"})
+
+	if asrv.IsAdmin("testuser@example.com") {
+		t.Error("testuser was admin")
+	}
+
+	if !asrv.IsAdmin("admin@example.com") {
+		t.Error("was not admin")
+	}
+
+	resp, err = http.Get(hsrv.URL + "/needadmin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Log(resp.Header)
+		t.Fatal(resp.Status)
+	}
+
+	asrv.SetAdmins([]string{"Test User <testuser@example.com>", "admin@example.com"})
+
+	admins := strings.Join(asrv.GetAdmins(), ",")
+	if admins != "admin@example.com,testuser@example.com" {
+		t.Error(admins)
+	}
+
+	resp, err = http.Get(hsrv.URL + "/needadmin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Log(resp.Header)
+		t.Fatal(resp.Status)
 	}
 }

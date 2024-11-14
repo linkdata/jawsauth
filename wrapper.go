@@ -7,9 +7,12 @@ import (
 type wrapper struct {
 	server  *Server
 	handler http.Handler
+	admin   bool
+	auth    *JawsAuth
 }
 
 func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
+	h := w.handler
 	sess := w.server.Jaws.GetSession(hr)
 	if sess == nil {
 		sess = w.server.Jaws.NewSession(hw, hr)
@@ -18,5 +21,15 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 		w.server.HandleLogin(hw, hr)
 		return
 	}
-	w.handler.ServeHTTP(hw, hr)
+
+	if w.admin {
+		email, _ := sess.Get(w.server.SessionEmailKey).(string)
+		if !w.server.IsAdmin(email) {
+			h = w.server.handle403
+		}
+	}
+	if w.auth != nil {
+		w.auth.sess = sess
+	}
+	h.ServeHTTP(hw, hr)
 }

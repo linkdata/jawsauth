@@ -23,9 +23,14 @@ const oauth2StateKey = "oauth2state"
 func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfourl, location string) {
 	oauth2cfg = srv.oauth2cfg
 	userinfourl = srv.userinfoUrl
-	location = strings.TrimSpace(hr.Referer())
+	if location = strings.TrimSpace(hr.Referer()); location == "" {
+		location = hr.RequestURI
+	}
 	for s := range srv.HandledPaths {
-		location = strings.TrimSuffix(location, s)
+		if strings.HasSuffix(location, s) {
+			location = strings.TrimSuffix(location, s)
+			break
+		}
 	}
 	if location == "" {
 		location = "/"
@@ -35,13 +40,15 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
 
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	oauth2cfg, _, location := srv.begin(hr)
-	if sess := srv.Jaws.GetSession(hr); sess != nil {
-		b := make([]byte, 4)
-		n, _ := rand.Read(b)
-		state := fmt.Sprintf("%x%#p", b[:n], srv)
-		sess.Set(oauth2StateKey, state)
-		sess.Set(oauth2ReferrerKey, location)
-		location = oauth2cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	if oauth2cfg != nil {
+		if sess := srv.Jaws.GetSession(hr); sess != nil {
+			b := make([]byte, 4)
+			n, _ := rand.Read(b)
+			state := fmt.Sprintf("%x%#p", b[:n], srv)
+			sess.Set(oauth2StateKey, state)
+			sess.Set(oauth2ReferrerKey, location)
+			location = oauth2cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+		}
 	}
 	hw.Header().Add("Location", location)
 	hw.WriteHeader(http.StatusFound)
