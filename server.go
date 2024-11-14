@@ -65,38 +65,45 @@ func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) {
 	}
 }
 
-// IsAdmin returns true if email belongs to an admin or if the list of admins is empty.
+// IsAdmin returns true if email belongs to an admin or if the list of admins is empty or the server is not valod.
 func (srv *Server) IsAdmin(email string) (yes bool) {
-	srv.mu.Lock()
-	_, yes = srv.admins[email]
-	yes = yes || len(srv.admins) == 0
-	srv.mu.Unlock()
+	yes = true
+	if srv != nil {
+		srv.mu.Lock()
+		_, yes = srv.admins[email]
+		yes = yes || len(srv.admins) == 0
+		srv.mu.Unlock()
+	}
 	return
 }
 
 // SetAdmins sets the emails of administrators. If empty, everyone is considered an administrator.
 func (srv *Server) SetAdmins(emails []string) {
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	clear(srv.admins)
-	for _, s := range emails {
-		if m, e := mail.ParseAddress(s); e == nil {
-			s = m.Address
-		}
-		if s = strings.ToLower(strings.TrimSpace(s)); s != "" {
-			srv.admins[s] = struct{}{}
+	if srv != nil {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		clear(srv.admins)
+		for _, s := range emails {
+			if m, e := mail.ParseAddress(s); e == nil {
+				s = m.Address
+			}
+			if s = strings.ToLower(strings.TrimSpace(s)); s != "" {
+				srv.admins[s] = struct{}{}
+			}
 		}
 	}
 }
 
 // GetAdmins returns a sorted list of the administrator emails. If empty, everyone is considered an administrator.
 func (srv *Server) GetAdmins() (emails []string) {
-	srv.mu.Lock()
-	for k := range srv.admins {
-		emails = append(emails, k)
+	if srv != nil {
+		srv.mu.Lock()
+		for k := range srv.admins {
+			emails = append(emails, k)
+		}
+		srv.mu.Unlock()
+		sort.Strings(emails)
 	}
-	srv.mu.Unlock()
-	sort.Strings(emails)
 	return
 }
 
@@ -111,7 +118,7 @@ func (srv *Server) Set403Handler(h http.Handler) {
 
 // Valid returns true if OAuth2 is configured.
 func (srv *Server) Valid() bool {
-	return srv.oauth2cfg != nil
+	return srv != nil && srv.oauth2cfg != nil
 }
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
