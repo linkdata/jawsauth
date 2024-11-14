@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strings"
@@ -58,16 +59,18 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	hw.WriteHeader(http.StatusFound)
 }
 
-func errtext(err error) (s string) {
+func errtext(statusCode int, err error) (s string) {
 	if err != nil {
-		s = err.Error()
+		s = fmt.Sprintf(`<html><body><h2>%03d %s</h2><p>%s</p></body></html>`,
+			statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()),
+		)
 	}
 	return
 }
 
 func writeResult(hw http.ResponseWriter, statusCode int, err error) {
 	hw.WriteHeader(statusCode)
-	_, _ = hw.Write([]byte(errtext(err)))
+	_, _ = hw.Write([]byte(errtext(statusCode, err)))
 }
 
 var ErrOAuth2NotConfigured = errors.New("oauth2 not configured")
