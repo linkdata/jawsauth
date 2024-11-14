@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/mail"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -108,7 +109,10 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 									sessValue = userinfo
 									for _, k := range []string{"email", "mail"} {
 										if s, ok := userinfo[k].(string); ok {
-											sessEmailValue = s
+											if m, e := mail.ParseAddress(s); e == nil {
+												s = m.Address
+											}
+											sessEmailValue = strings.ToLower(strings.TrimSpace(s))
 											break
 										}
 									}
