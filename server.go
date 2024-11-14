@@ -41,6 +41,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		handle403:       default403handler{},
 	}
 	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
+		jw.MakeAuth = srv.makeAuth
 		if srv.oauth2cfg, err = cfg.Build(overrideUrl); err == nil {
 			var u *url.URL
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
@@ -56,6 +57,10 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 
 func New(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc) (srv *Server, err error) {
 	return NewDebug(jw, cfg, handleFn, "")
+}
+
+func (srv *Server) makeAuth(rq *jaws.Request) jaws.Auth {
+	return &JawsAuth{server: srv, sess: srv.Jaws.GetSession(rq.Initial())}
 }
 
 func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) {
@@ -124,10 +129,10 @@ func (srv *Server) Valid() bool {
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
 // Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
 // If the Server is not Valid, returns h.
-func (srv *Server) wrap(h http.Handler, admin bool, auth *JawsAuth) (rh http.Handler) {
+func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 	rh = h
 	if srv.Valid() {
-		rh = wrapper{server: srv, handler: h, admin: admin, auth: auth}
+		rh = wrapper{server: srv, handler: h, admin: admin}
 	}
 	return
 }
@@ -137,33 +142,25 @@ func (srv *Server) wrap(h http.Handler, admin bool, auth *JawsAuth) (rh http.Han
 // Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
 // If the Server is not Valid, returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
-	return srv.wrap(h, true, nil)
+	return srv.wrap(h, true)
 }
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
 // Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
 // If the Server is not Valid, returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
-	return srv.wrap(h, false, nil)
+	return srv.wrap(h, false)
 }
 
 // HandlerAdmin returns a http.Handler using a jaws.Template that requires an authenticated user
 // having an email set using SetAdmins() before invoking h.
 // Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
-// Adds a JawsAuth member to the dot object.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
-	auth := &JawsAuth{
-		server: srv,
-	}
-	return srv.wrap(srv.Jaws.Handler(name, dotWrap{dot, auth}), true, auth)
+	return srv.wrap(srv.Jaws.Handler(name, dot), true)
 }
 
 // Handler returns a http.Handler using a jaws.Template that requires an authenticated user.
 // Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
-// Adds a JawsAuth member to the dot object.
 func (srv *Server) Handler(name string, dot any) http.Handler {
-	auth := &JawsAuth{
-		server: srv,
-	}
-	return srv.wrap(srv.Jaws.Handler(name, dotWrap{dot, auth}), false, auth)
+	return srv.wrap(srv.Jaws.Handler(name, dot), false)
 }

@@ -8,7 +8,6 @@ type wrapper struct {
 	server  *Server
 	handler http.Handler
 	admin   bool
-	auth    *JawsAuth
 }
 
 func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
@@ -27,9 +26,6 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 		if !w.server.IsAdmin(email) {
 			h = w.server.handle403
 		}
-	}
-	if w.auth != nil {
-		w.auth.sess = sess
 	}
 	h.ServeHTTP(hw, hr)
 }

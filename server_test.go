@@ -62,7 +62,7 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	jw := jaws.New() // create a default JaWS instance
 	defer jw.Close() // ensure we clean up
 
-	const indexTemplate = `<html>{{with .Dot.JawsAuth}}{{.Valid}} {{.Email}} {{.IsAdmin}}{{end}}</html>`
+	const indexTemplate = `<html>{{with .Auth}}{{.Email}} {{.IsAdmin}} {{.Data}}{{end}}</html>`
 
 	jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse(indexTemplate)))
 	jw.Logger = slog.Default() // optionally set the logger to use
@@ -167,7 +167,7 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(invalidpass)
 	}
 
-	if resphtml != "<html>true testuser@example.com true</html>" {
+	if !strings.HasPrefix(resphtml, "<html>testuser@example.com true map[email:testuser@example.com email_verified:false family_name:User given_name:Test name:Test User preferred_username:testuser sub:") {
 		t.Fatal(resphtml)
 	}
 

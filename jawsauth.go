@@ -2,19 +2,14 @@ package jawsauth
 
 import "github.com/linkdata/jaws"
 
-type dotWrap struct {
-	any
-	JawsAuth *JawsAuth
-}
-
 type JawsAuth struct {
 	server *Server
 	sess   *jaws.Session
 }
 
-func (a *JawsAuth) Valid() (yes bool) {
+func (a *JawsAuth) Data() (x map[string]any) {
 	if a != nil {
-		yes = a.server.Valid()
+		x, _ = a.sess.Get(a.server.SessionKey).(map[string]any)
 	}
 	return
 }
