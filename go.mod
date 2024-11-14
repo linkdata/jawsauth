@@ -5,7 +5,7 @@ go 1.23
 require (
 	github.com/docker/go-connections v0.5.0
 	github.com/linkdata/deadlock v0.5.2
-	github.com/linkdata/jaws v0.85.0
+	github.com/linkdata/jaws v0.86.0
 	github.com/testcontainers/testcontainers-go v0.34.0
 	golang.org/x/oauth2 v0.23.0
 )
