@@ -20,7 +20,7 @@ type EventFunc func(sess *jaws.Session, hr *http.Request)
 type Server struct {
 	Jaws            *jaws.Jaws
 	SessionKey      string              // default is "oauth2userinfo", value will be of type map[string]any
-	SessionTokenKey string              // default is "oauth2token", value will be of type *oauth2.Token
+	SessionTokenKey string              // default is "oauth2token", value will be of type oauth2.TokenSource
 	SessionEmailKey string              // default is "email", value will be of type string
 	HandledPaths    map[string]struct{} // URI paths we have registered handlers for
 	LoginEvent      EventFunc           // if not nil, called after a successful login

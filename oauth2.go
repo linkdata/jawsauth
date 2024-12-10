@@ -108,7 +108,8 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			if wantState != "" && wantState == gotState {
 				var token *oauth2.Token
 				if token, err = oauth2Config.Exchange(context.Background(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil {
-					client := oauth2Config.Client(context.Background(), token)
+					tokensource := oauth2Config.TokenSource(context.Background(), token)
+					client := oauth2.NewClient(context.Background(), tokensource)
 					var resp *http.Response
 					if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil {
 						if body, err = io.ReadAll(resp.Body); srv.Jaws.Log(err) == nil {
@@ -117,7 +118,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 								if err = json.Unmarshal(body, &userinfo); srv.Jaws.Log(err) == nil {
 									body = nil
 									sessValue = userinfo
-									sessTokenValue = token
+									sessTokenValue = tokensource
 									for _, k := range []string{"email", "mail"} {
 										if s, ok := userinfo[k].(string); ok {
 											if m, e := mail.ParseAddress(s); e == nil {
