@@ -92,6 +92,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 	var body []byte
 	var sessValue any
 	var sessEmailValue any
+	var sessTokenValue any
 	sess := srv.Jaws.GetSession(hr)
 	err := ErrOAuth2NotConfigured
 	statusCode := http.StatusInternalServerError
@@ -116,6 +117,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 								if err = json.Unmarshal(body, &userinfo); srv.Jaws.Log(err) == nil {
 									body = nil
 									sessValue = userinfo
+									sessTokenValue = token
 									for _, k := range []string{"email", "mail"} {
 										if s, ok := userinfo[k].(string); ok {
 											if m, e := mail.ParseAddress(s); e == nil {
@@ -140,6 +142,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		}
 	}
 	sess.Set(srv.SessionKey, sessValue)
+	sess.Set(srv.SessionTokenKey, sessTokenValue)
 	sess.Set(srv.SessionEmailKey, sessEmailValue)
 	if srv.LoginEvent != nil && sessValue != nil {
 		srv.LoginEvent(sess, hr)
