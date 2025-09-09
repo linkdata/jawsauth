@@ -59,7 +59,10 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	hsrv := httptest.NewServer(mux)
 	defer hsrv.Close()
 
-	jw := jaws.New() // create a default JaWS instance
+	jw, err := jaws.New() // create a default JaWS instance
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer jw.Close() // ensure we clean up
 
 	const indexTemplate = `<html>{{with .Auth}}{{.Email}} {{.IsAdmin}} {{.Data}}{{end}}</html>`

@@ -19,7 +19,7 @@ func TestKeycloakFlow(t *testing.T) {
 	ctx := context.Background()
 
 	// Start Keycloak container
-	keycloakContainer, err := startKeycloakContainer(ctx)
+	keycloakContainer, err := startKeycloakContainer(t, ctx)
 	defer func() {
 		if keycloakContainer != nil {
 			if t.Failed() {
@@ -94,7 +94,13 @@ func TestKeycloakFlow(t *testing.T) {
 	serverHandlerTest(t, baseURL, realm, "testclient", clientSecret)
 }
 
-func startKeycloakContainer(ctx context.Context) (testcontainers.Container, error) {
+func startKeycloakContainer(t *testing.T, ctx context.Context) (testcontainers.Container, error) {
+	t.Helper()
+	defer func() {
+		if x := recover(); x != nil {
+			t.Skip("failed to start keycloak container", x)
+		}
+	}()
 	req := testcontainers.ContainerRequest{
 		Image:        "quay.io/keycloak/keycloak:latest",
 		ExposedPorts: []string{"8080/tcp"},
