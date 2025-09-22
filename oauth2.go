@@ -111,6 +111,8 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 			srv.LogoutEvent(sess, hr)
 		}
 		sess.Set(srv.SessionKey, nil)
+		sess.Set(srv.SessionTokenKey, nil)
+		sess.Set(srv.SessionEmailKey, nil)
 		srv.Jaws.Dirty(sess)
 	}
 	hw.Header().Add("Location", location)
@@ -157,13 +159,13 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			err = ErrOAuth2WrongState
 			if wantState != "" && wantState == gotState {
 				var token *oauth2.Token
-				if token, err = oauth2Config.Exchange(context.Background(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil {
+				if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil {
 					tokensource := oauth2Config.TokenSource(context.Background(), token)
-					client := oauth2.NewClient(context.Background(), tokensource)
+					client := oauth2.NewClient(hr.Context(), tokensource)
 					var resp *http.Response
 					if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil {
 						defer resp.Body.Close()
-						if body, err = io.ReadAll(resp.Body); srv.Jaws.Log(err) == nil {
+						if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil {
 							if statusCode = resp.StatusCode; statusCode == http.StatusOK {
 								var userinfo map[string]any
 								if err = json.Unmarshal(body, &userinfo); srv.Jaws.Log(err) == nil {
