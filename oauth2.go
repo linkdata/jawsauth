@@ -3,13 +3,16 @@ package jawsauth
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -20,12 +23,56 @@ var ErrInconsistentState = errors.New("oauth2 inconsistent state")
 const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
 
+func normalizeHost(hostport string) (normalized string) {
+	normalized = strings.TrimSpace(hostport)
+	if normalized != "" {
+		normalized = strings.TrimSuffix(normalized, ".")
+		normalized = strings.ToLower(normalized)
+		if strings.Contains(normalized, ":") {
+			if h, _, err := net.SplitHostPort(normalized); err == nil {
+				normalized = h
+			}
+		}
+	}
+	return
+}
+
+func sanitizeRedirectTarget(requestHost, location string) (sanitized string) {
+	if trimmed := strings.TrimSpace(location); trimmed != "" {
+		if u, err := url.Parse(trimmed); err == nil {
+			if u.IsAbs() {
+				if host := normalizeHost(requestHost); host != "" {
+					if normalizeHost(u.Host) == host {
+						sanitized = u.RequestURI()
+					}
+				}
+			} else {
+				sanitized = trimmed
+			}
+		}
+	}
+	sanitized = strings.TrimSpace(sanitized)
+	if sanitized != "" {
+		if !strings.HasPrefix(sanitized, "/") {
+			sanitized = "/" + sanitized
+		}
+		for strings.HasPrefix(sanitized, "//") {
+			sanitized = "/" + strings.TrimLeft(sanitized, "/")
+		}
+	}
+	if sanitized == "" {
+		sanitized = "/"
+	}
+	return
+}
+
 func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfourl, location string) {
 	oauth2cfg = srv.oauth2cfg
 	userinfourl = srv.userinfoUrl
 	if location = strings.TrimSpace(hr.Referer()); location == "" {
 		location = hr.RequestURI
 	}
+	location = sanitizeRedirectTarget(hr.Host, location)
 	for s := range srv.HandledPaths {
 		if strings.HasSuffix(location, s) {
 			location = strings.TrimSuffix(location, s)
@@ -42,12 +89,15 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	oauth2cfg, _, location := srv.begin(hr)
 	if oauth2cfg != nil {
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			b := make([]byte, 4)
-			n, _ := rand.Read(b)
-			state := fmt.Sprintf("%x%#p", b[:n], srv)
-			sess.Set(oauth2StateKey, state)
-			sess.Set(oauth2ReferrerKey, location)
-			location = oauth2cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+			b := make([]byte, 32)
+			var n int
+			var err error
+			if n, err = rand.Read(b); srv.Jaws.Log(err) == nil {
+				state := hex.EncodeToString(b[:n])
+				sess.Set(oauth2StateKey, state)
+				sess.Set(oauth2ReferrerKey, location)
+				location = oauth2cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+			}
 		}
 	}
 	hw.Header().Add("Location", location)
@@ -112,6 +162,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 					client := oauth2.NewClient(context.Background(), tokensource)
 					var resp *http.Response
 					if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil {
+						defer resp.Body.Close()
 						if body, err = io.ReadAll(resp.Body); srv.Jaws.Log(err) == nil {
 							if statusCode = resp.StatusCode; statusCode == http.StatusOK {
 								var userinfo map[string]any
@@ -129,7 +180,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 										}
 									}
 									if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
-										location = s
+										location = sanitizeRedirectTarget(hr.Host, s)
 									}
 									sess.Set(oauth2ReferrerKey, nil)
 									hw.Header().Add("Location", location)
@@ -142,12 +193,14 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			}
 		}
 	}
-	sess.Set(srv.SessionKey, sessValue)
-	sess.Set(srv.SessionTokenKey, sessTokenValue)
-	sess.Set(srv.SessionEmailKey, sessEmailValue)
-	if srv.LoginEvent != nil && sessValue != nil {
-		srv.LoginEvent(sess, hr)
+	if sess != nil {
+		sess.Set(srv.SessionKey, sessValue)
+		sess.Set(srv.SessionTokenKey, sessTokenValue)
+		sess.Set(srv.SessionEmailKey, sessEmailValue)
+		if srv.LoginEvent != nil && sessValue != nil {
+			srv.LoginEvent(sess, hr)
+		}
+		srv.Jaws.Dirty(sess)
 	}
-	srv.Jaws.Dirty(sess)
 	writeResult(hw, statusCode, err, body)
 }
