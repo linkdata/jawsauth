@@ -211,13 +211,16 @@ func (a *JawsAuth) IsAdmin() (yes bool) <span class="cov8" title="1">{
 import (
         "context"
         "crypto/rand"
+        "encoding/hex"
         "encoding/json"
         "errors"
         "fmt"
         "html"
         "io"
+        "net"
         "net/http"
         "net/mail"
+        "net/url"
         "strings"
 
         "golang.org/x/oauth2"
@@ -228,13 +231,57 @@ var ErrInconsistentState = errors.New("oauth2 inconsistent state")
 const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
 
+func normalizeHost(hostport string) (normalized string) <span class="cov8" title="1">{
+        normalized = strings.TrimSpace(hostport)
+        if normalized != "" </span><span class="cov8" title="1">{
+                normalized = strings.TrimSuffix(normalized, ".")
+                normalized = strings.ToLower(normalized)
+                if strings.Contains(normalized, ":") </span><span class="cov8" title="1">{
+                        if h, _, err := net.SplitHostPort(normalized); err == nil </span><span class="cov8" title="1">{
+                                normalized = h
+                        }</span>
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func sanitizeRedirectTarget(requestHost, location string) (sanitized string) <span class="cov8" title="1">{
+        if trimmed := strings.TrimSpace(location); trimmed != "" </span><span class="cov8" title="1">{
+                if u, err := url.Parse(trimmed); err == nil </span><span class="cov8" title="1">{
+                        if u.IsAbs() </span><span class="cov8" title="1">{
+                                if host := normalizeHost(requestHost); host != "" </span><span class="cov8" title="1">{
+                                        if normalizeHost(u.Host) == host </span><span class="cov8" title="1">{
+                                                sanitized = u.RequestURI()
+                                        }</span>
+                                }
+                        } else<span class="cov8" title="1"> {
+                                sanitized = trimmed
+                        }</span>
+                }
+        }
+        <span class="cov8" title="1">sanitized = strings.TrimSpace(sanitized)
+        if sanitized != "" </span><span class="cov8" title="1">{
+                if !strings.HasPrefix(sanitized, "/") </span><span class="cov8" title="1">{
+                        sanitized = "/" + sanitized
+                }</span>
+                <span class="cov8" title="1">for strings.HasPrefix(sanitized, "//") </span><span class="cov8" title="1">{
+                        sanitized = "/" + strings.TrimLeft(sanitized, "/")
+                }</span>
+        }
+        <span class="cov8" title="1">if sanitized == "" </span><span class="cov8" title="1">{
+                sanitized = "/"
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
 func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfourl, location string) <span class="cov8" title="1">{
         oauth2cfg = srv.oauth2cfg
         userinfourl = srv.userinfoUrl
         if location = strings.TrimSpace(hr.Referer()); location == "" </span><span class="cov8" title="1">{
                 location = hr.RequestURI
         }</span>
-        <span class="cov8" title="1">for s := range srv.HandledPaths </span><span class="cov8" title="1">{
+        <span class="cov8" title="1">location = sanitizeRedirectTarget(hr.Host, location)
+        for s := range srv.HandledPaths </span><span class="cov8" title="1">{
                 if strings.HasSuffix(location, s) </span><span class="cov8" title="1">{
                         location = strings.TrimSuffix(location, s)
                         break</span>
@@ -250,13 +297,16 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span c
         oauth2cfg, _, location := srv.begin(hr)
         if oauth2cfg != nil </span><span class="cov8" title="1">{
                 if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
-                        b := make([]byte, 4)
-                        n, _ := rand.Read(b)
-                        state := fmt.Sprintf("%x%#p", b[:n], srv)
-                        sess.Set(oauth2StateKey, state)
-                        sess.Set(oauth2ReferrerKey, location)
-                        location = oauth2cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
-                }</span>
+                        b := make([]byte, 32)
+                        var n int
+                        var err error
+                        if n, err = rand.Read(b); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                state := hex.EncodeToString(b[:n])
+                                sess.Set(oauth2StateKey, state)
+                                sess.Set(oauth2ReferrerKey, location)
+                                location = oauth2cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+                        }</span>
+                }
         }
         <span class="cov8" title="1">hw.Header().Add("Location", location)
         hw.WriteHeader(http.StatusFound)</span>
@@ -269,6 +319,8 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) <span 
                         srv.LogoutEvent(sess, hr)
                 }</span>
                 <span class="cov8" title="1">sess.Set(srv.SessionKey, nil)
+                sess.Set(srv.SessionTokenKey, nil)
+                sess.Set(srv.SessionEmailKey, nil)
                 srv.Jaws.Dirty(sess)</span>
         }
         <span class="cov8" title="1">hw.Header().Add("Location", location)
@@ -315,12 +367,13 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                         err = ErrOAuth2WrongState
                         if wantState != "" &amp;&amp; wantState == gotState </span><span class="cov8" title="1">{
                                 var token *oauth2.Token
-                                if token, err = oauth2Config.Exchange(context.Background(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
                                         tokensource := oauth2Config.TokenSource(context.Background(), token)
-                                        client := oauth2.NewClient(context.Background(), tokensource)
+                                        client := oauth2.NewClient(hr.Context(), tokensource)
                                         var resp *http.Response
                                         if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                if body, err = io.ReadAll(resp.Body); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                defer resp.Body.Close()
+                                                if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
                                                         if statusCode = resp.StatusCode; statusCode == http.StatusOK </span><span class="cov8" title="1">{
                                                                 var userinfo map[string]any
                                                                 if err = json.Unmarshal(body, &amp;userinfo); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
@@ -337,7 +390,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                                                                                 }
                                                                         }
                                                                         <span class="cov8" title="1">if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
-                                                                                location = s
+                                                                                location = sanitizeRedirectTarget(hr.Host, s)
                                                                         }</span>
                                                                         <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
                                                                         hw.Header().Add("Location", location)
@@ -350,14 +403,16 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                         }
                 }
         }
-        <span class="cov8" title="1">sess.Set(srv.SessionKey, sessValue)
-        sess.Set(srv.SessionTokenKey, sessTokenValue)
-        sess.Set(srv.SessionEmailKey, sessEmailValue)
-        if srv.LoginEvent != nil &amp;&amp; sessValue != nil </span><span class="cov8" title="1">{
-                srv.LoginEvent(sess, hr)
-        }</span>
-        <span class="cov8" title="1">srv.Jaws.Dirty(sess)
-        writeResult(hw, statusCode, err, body)</span>
+        <span class="cov8" title="1">if sess != nil </span><span class="cov8" title="1">{
+                sess.Set(srv.SessionKey, sessValue)
+                sess.Set(srv.SessionTokenKey, sessTokenValue)
+                sess.Set(srv.SessionEmailKey, sessEmailValue)
+                if srv.LoginEvent != nil &amp;&amp; sessValue != nil </span><span class="cov8" title="1">{
+                        srv.LoginEvent(sess, hr)
+                }</span>
+                <span class="cov8" title="1">srv.Jaws.Dirty(sess)</span>
+        }
+        <span class="cov8" title="1">writeResult(hw, statusCode, err, body)</span>
 }
 </pre>
 		
