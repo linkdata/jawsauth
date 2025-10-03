@@ -96,7 +96,7 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 				state := hex.EncodeToString(b[:n])
 				sess.Set(oauth2StateKey, state)
 				sess.Set(oauth2ReferrerKey, location)
-				location = oauth2cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+				location = oauth2cfg.AuthCodeURL(state, srv.Options...)
 			}
 		}
 	}
