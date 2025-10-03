@@ -5,4 +5,4 @@
 
 # jawsauth
 
-OAuth2 integration with Jaws sessions using "golang.org/x/oauth2".
+[OAuth2](https://oauth.net/2/) integration with [JaWS](https://github.com/linkdata/jaws) sessions using "golang.org/x/oauth2".
