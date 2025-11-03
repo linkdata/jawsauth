@@ -61,7 +61,7 @@
 				
 				<option value="file2">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
 				
-				<option value="file3">github.com/linkdata/jawsauth/oauth2.go (97.5%)</option>
+				<option value="file3">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
 				
 				<option value="file4">github.com/linkdata/jawsauth/server.go (100.0%)</option>
 				
@@ -412,9 +412,9 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                 }</span>
                 <span class="cov8" title="1">srv.Jaws.Dirty(sess)</span>
         }
-        <span class="cov8" title="1">if err != nil &amp;&amp; srv.LoginFailed != nil </span><span class="cov0" title="0">{
+        <span class="cov8" title="1">if err != nil &amp;&amp; srv.LoginFailed != nil </span><span class="cov8" title="1">{
                 email, _ := sessEmailValue.(string)
-                if srv.LoginFailed(hw, hr, statusCode, err, email) </span><span class="cov0" title="0">{
+                if srv.LoginFailed(hw, hr, statusCode, err, email) </span><span class="cov8" title="1">{
                         return
                 }</span>
         }
