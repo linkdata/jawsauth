@@ -2,6 +2,7 @@ package jawsauth
 
 import (
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -147,6 +148,96 @@ func Test_handleAuthResponseWithoutSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(body), ErrOAuth2MissingSession.Error()) {
+		t.Fatal(string(body))
+	}
+}
+
+func Test_handleAuthResponseLoginFailedFallsBack(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := &Server{Jaws: jw}
+	var callbackCount int
+	var callbackStatus int
+	var callbackErr error
+	var callbackEmail string
+	srv.LoginFailed = func(hw http.ResponseWriter, hr *http.Request, httpCode int, callErr error, email string) bool {
+		callbackCount++
+		callbackStatus = httpCode
+		callbackErr = callErr
+		callbackEmail = email
+		return false
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback", nil)
+	srv.HandleAuthResponse(rec, req)
+	if callbackCount != 1 {
+		t.Fatalf("expected LoginFailed callback, got %d", callbackCount)
+	}
+	if callbackStatus != http.StatusInternalServerError {
+		t.Fatal(callbackStatus)
+	}
+	if !errors.Is(callbackErr, ErrOAuth2NotConfigured) {
+		t.Fatal(callbackErr)
+	}
+	if callbackEmail != "" {
+		t.Fatal(callbackEmail)
+	}
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusInternalServerError {
+		resp.Body.Close()
+		t.Fatal(resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), ErrOAuth2NotConfigured.Error()) {
+		t.Fatal(string(body))
+	}
+}
+
+func Test_handleAuthResponseLoginFailedHandlesResponse(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := &Server{Jaws: jw}
+	const customBody = "handled by callback"
+	srv.LoginFailed = func(hw http.ResponseWriter, hr *http.Request, httpCode int, callErr error, email string) bool {
+		if httpCode != http.StatusInternalServerError {
+			t.Fatal(httpCode)
+		}
+		if !errors.Is(callErr, ErrOAuth2NotConfigured) {
+			t.Fatal(callErr)
+		}
+		if email != "" {
+			t.Fatal(email)
+		}
+		hw.WriteHeader(http.StatusTeapot)
+		if _, err := hw.Write([]byte(customBody)); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback", nil)
+	srv.HandleAuthResponse(rec, req)
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusTeapot {
+		resp.Body.Close()
+		t.Fatal(resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != customBody {
 		t.Fatal(string(body))
 	}
 }
