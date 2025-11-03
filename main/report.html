@@ -61,7 +61,7 @@
 				
 				<option value="file2">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
 				
-				<option value="file3">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
+				<option value="file3">github.com/linkdata/jawsauth/oauth2.go (97.5%)</option>
 				
 				<option value="file4">github.com/linkdata/jawsauth/server.go (100.0%)</option>
 				
@@ -412,6 +412,12 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                 }</span>
                 <span class="cov8" title="1">srv.Jaws.Dirty(sess)</span>
         }
+        <span class="cov8" title="1">if err != nil &amp;&amp; srv.LoginFailed != nil </span><span class="cov0" title="0">{
+                email, _ := sessEmailValue.(string)
+                if srv.LoginFailed(hw, hr, statusCode, err, email) </span><span class="cov0" title="0">{
+                        return
+                }</span>
+        }
         <span class="cov8" title="1">writeResult(hw, statusCode, err, body)</span>
 }
 </pre>
@@ -434,6 +440,7 @@ import (
 type HandleFunc func(uri string, handler http.Handler)
 
 type EventFunc func(sess *jaws.Session, hr *http.Request)
+type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
 type Server struct {
         Jaws            *jaws.Jaws
@@ -443,6 +450,7 @@ type Server struct {
         HandledPaths    map[string]struct{}     // URI paths we have registered handlers for
         LoginEvent      EventFunc               // if not nil, called after a successful login
         LogoutEvent     EventFunc               // if not nil, called before logout
+        LoginFailed     FailedFunc              // if not nil, called on failed login
         Options         []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
         oauth2cfg       *oauth2.Config
         userinfoUrl     string
