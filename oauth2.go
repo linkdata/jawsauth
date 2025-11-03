@@ -204,5 +204,11 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		}
 		srv.Jaws.Dirty(sess)
 	}
+	if err != nil && srv.LoginFailed != nil {
+		email, _ := sessEmailValue.(string)
+		if srv.LoginFailed(hw, hr, statusCode, err, email) {
+			return
+		}
+	}
 	writeResult(hw, statusCode, err, body)
 }

@@ -16,6 +16,7 @@ import (
 type HandleFunc func(uri string, handler http.Handler)
 
 type EventFunc func(sess *jaws.Session, hr *http.Request)
+type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
 type Server struct {
 	Jaws            *jaws.Jaws
@@ -25,6 +26,7 @@ type Server struct {
 	HandledPaths    map[string]struct{}     // URI paths we have registered handlers for
 	LoginEvent      EventFunc               // if not nil, called after a successful login
 	LogoutEvent     EventFunc               // if not nil, called before logout
+	LoginFailed     FailedFunc              // if not nil, called on failed login
 	Options         []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
 	oauth2cfg       *oauth2.Config
 	userinfoUrl     string
