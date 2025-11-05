@@ -136,6 +136,7 @@ func writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte)
 
 var ErrOAuth2NotConfigured = errors.New("oauth2 not configured")
 var ErrOAuth2MissingSession = errors.New("oauth2 missing session")
+var ErrOAuth2MissingState = errors.New("oauth2 missing state")
 var ErrOAuth2WrongState = errors.New("oauth2 wrong state")
 
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
@@ -156,37 +157,40 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			gotState := hr.FormValue("state")
 			wantState, _ := sess.Get(oauth2StateKey).(string)
 			sess.Set(oauth2StateKey, nil)
-			err = ErrOAuth2WrongState
-			if wantState != "" && wantState == gotState {
-				var token *oauth2.Token
-				if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil {
-					tokensource := oauth2Config.TokenSource(context.Background(), token)
-					client := oauth2.NewClient(hr.Context(), tokensource)
-					var resp *http.Response
-					if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil {
-						defer resp.Body.Close()
-						if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil {
-							if statusCode = resp.StatusCode; statusCode == http.StatusOK {
-								var userinfo map[string]any
-								if err = json.Unmarshal(body, &userinfo); srv.Jaws.Log(err) == nil {
-									body = nil
-									sessValue = userinfo
-									sessTokenValue = tokensource
-									for _, k := range []string{"email", "mail"} {
-										if s, ok := userinfo[k].(string); ok {
-											if m, e := mail.ParseAddress(s); e == nil {
-												s = m.Address
+			err = ErrOAuth2MissingState
+			if wantState != "" {
+				err = ErrOAuth2WrongState
+				if wantState == gotState {
+					var token *oauth2.Token
+					if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil {
+						tokensource := oauth2Config.TokenSource(context.Background(), token)
+						client := oauth2.NewClient(hr.Context(), tokensource)
+						var resp *http.Response
+						if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil {
+							defer resp.Body.Close()
+							if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil {
+								if statusCode = resp.StatusCode; statusCode == http.StatusOK {
+									var userinfo map[string]any
+									if err = json.Unmarshal(body, &userinfo); srv.Jaws.Log(err) == nil {
+										body = nil
+										sessValue = userinfo
+										sessTokenValue = tokensource
+										for _, k := range []string{"email", "mail"} {
+											if s, ok := userinfo[k].(string); ok {
+												if m, e := mail.ParseAddress(s); e == nil {
+													s = m.Address
+												}
+												sessEmailValue = strings.ToLower(strings.TrimSpace(s))
+												break
 											}
-											sessEmailValue = strings.ToLower(strings.TrimSpace(s))
-											break
 										}
+										if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
+											location = sanitizeRedirectTarget(hr.Host, s)
+										}
+										sess.Set(oauth2ReferrerKey, nil)
+										hw.Header().Add("Location", location)
+										statusCode = http.StatusFound
 									}
-									if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
-										location = sanitizeRedirectTarget(hr.Host, s)
-									}
-									sess.Set(oauth2ReferrerKey, nil)
-									hw.Header().Add("Location", location)
-									statusCode = http.StatusFound
 								}
 							}
 						}
