@@ -297,17 +297,15 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span c
         oauth2cfg, _, location := srv.begin(hr)
         if oauth2cfg != nil </span><span class="cov8" title="1">{
                 if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
-                        if sess.Get(oauth2StateKey) == nil </span><span class="cov8" title="1">{
-                                b := make([]byte, 32)
-                                var n int
-                                var err error
-                                if n, err = rand.Read(b); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                        state := hex.EncodeToString(b[:n])
-                                        sess.Set(oauth2StateKey, state)
-                                        sess.Set(oauth2ReferrerKey, location)
-                                        location = oauth2cfg.AuthCodeURL(state, srv.Options...)
-                                }</span>
-                        }
+                        state, _ := sess.Get(oauth2StateKey).(string)
+                        if state == "" </span><span class="cov8" title="1">{
+                                b := [32]byte{}
+                                _, _ = rand.Read(b[:]) // never returns an error, always fills all of b
+                                state = hex.EncodeToString(b[:])
+                                sess.Set(oauth2StateKey, state)
+                        }</span>
+                        <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, location)
+                        location = oauth2cfg.AuthCodeURL(state, srv.Options...)</span>
                 }
         }
         <span class="cov8" title="1">hw.Header().Add("Location", location)
