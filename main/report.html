@@ -344,6 +344,7 @@ func writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte)
 
 var ErrOAuth2NotConfigured = errors.New("oauth2 not configured")
 var ErrOAuth2MissingSession = errors.New("oauth2 missing session")
+var ErrOAuth2MissingState = errors.New("oauth2 missing state")
 var ErrOAuth2WrongState = errors.New("oauth2 wrong state")
 
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) <span class="cov8" title="1">{
@@ -364,37 +365,40 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                         gotState := hr.FormValue("state")
                         wantState, _ := sess.Get(oauth2StateKey).(string)
                         sess.Set(oauth2StateKey, nil)
-                        err = ErrOAuth2WrongState
-                        if wantState != "" &amp;&amp; wantState == gotState </span><span class="cov8" title="1">{
-                                var token *oauth2.Token
-                                if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                        tokensource := oauth2Config.TokenSource(context.Background(), token)
-                                        client := oauth2.NewClient(hr.Context(), tokensource)
-                                        var resp *http.Response
-                                        if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                defer resp.Body.Close()
-                                                if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                        if statusCode = resp.StatusCode; statusCode == http.StatusOK </span><span class="cov8" title="1">{
-                                                                var userinfo map[string]any
-                                                                if err = json.Unmarshal(body, &amp;userinfo); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                                        body = nil
-                                                                        sessValue = userinfo
-                                                                        sessTokenValue = tokensource
-                                                                        for _, k := range []string{"email", "mail"} </span><span class="cov8" title="1">{
-                                                                                if s, ok := userinfo[k].(string); ok </span><span class="cov8" title="1">{
-                                                                                        if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
-                                                                                                s = m.Address
-                                                                                        }</span>
-                                                                                        <span class="cov8" title="1">sessEmailValue = strings.ToLower(strings.TrimSpace(s))
-                                                                                        break</span>
+                        err = ErrOAuth2MissingState
+                        if wantState != "" </span><span class="cov8" title="1">{
+                                err = ErrOAuth2WrongState
+                                if wantState == gotState </span><span class="cov8" title="1">{
+                                        var token *oauth2.Token
+                                        if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                tokensource := oauth2Config.TokenSource(context.Background(), token)
+                                                client := oauth2.NewClient(hr.Context(), tokensource)
+                                                var resp *http.Response
+                                                if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                        defer resp.Body.Close()
+                                                        if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                                if statusCode = resp.StatusCode; statusCode == http.StatusOK </span><span class="cov8" title="1">{
+                                                                        var userinfo map[string]any
+                                                                        if err = json.Unmarshal(body, &amp;userinfo); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                                                body = nil
+                                                                                sessValue = userinfo
+                                                                                sessTokenValue = tokensource
+                                                                                for _, k := range []string{"email", "mail"} </span><span class="cov8" title="1">{
+                                                                                        if s, ok := userinfo[k].(string); ok </span><span class="cov8" title="1">{
+                                                                                                if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
+                                                                                                        s = m.Address
+                                                                                                }</span>
+                                                                                                <span class="cov8" title="1">sessEmailValue = strings.ToLower(strings.TrimSpace(s))
+                                                                                                break</span>
+                                                                                        }
                                                                                 }
+                                                                                <span class="cov8" title="1">if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
+                                                                                        location = sanitizeRedirectTarget(hr.Host, s)
+                                                                                }</span>
+                                                                                <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
+                                                                                hw.Header().Add("Location", location)
+                                                                                statusCode = http.StatusFound</span>
                                                                         }
-                                                                        <span class="cov8" title="1">if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
-                                                                                location = sanitizeRedirectTarget(hr.Host, s)
-                                                                        }</span>
-                                                                        <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
-                                                                        hw.Header().Add("Location", location)
-                                                                        statusCode = http.StatusFound</span>
                                                                 }
                                                         }
                                                 }
