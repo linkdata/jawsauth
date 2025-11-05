@@ -89,14 +89,16 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	oauth2cfg, _, location := srv.begin(hr)
 	if oauth2cfg != nil {
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			b := make([]byte, 32)
-			var n int
-			var err error
-			if n, err = rand.Read(b); srv.Jaws.Log(err) == nil {
-				state := hex.EncodeToString(b[:n])
-				sess.Set(oauth2StateKey, state)
-				sess.Set(oauth2ReferrerKey, location)
-				location = oauth2cfg.AuthCodeURL(state, srv.Options...)
+			if sess.Get(oauth2StateKey) == nil {
+				b := make([]byte, 32)
+				var n int
+				var err error
+				if n, err = rand.Read(b); srv.Jaws.Log(err) == nil {
+					state := hex.EncodeToString(b[:n])
+					sess.Set(oauth2StateKey, state)
+					sess.Set(oauth2ReferrerKey, location)
+					location = oauth2cfg.AuthCodeURL(state, srv.Options...)
+				}
 			}
 		}
 	}
