@@ -347,6 +347,21 @@ var ErrOAuth2MissingSession = errors.New("oauth2 missing session")
 var ErrOAuth2MissingState = errors.New("oauth2 missing state")
 var ErrOAuth2WrongState = errors.New("oauth2 wrong state")
 
+func (srv *Server) extractEmail(userinfo map[string]any) (sessEmailValue any) <span class="cov8" title="1">{
+        for _, k := range []string{"email", "mail"} </span><span class="cov8" title="1">{
+                if s, ok := userinfo[k].(string); ok </span><span class="cov8" title="1">{
+                        if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
+                                s = m.Address
+                        }</span>
+                        <span class="cov8" title="1">return strings.ToLower(strings.TrimSpace(s))</span>
+                }
+        }
+        <span class="cov8" title="1">if l := srv.Jaws.Logger; l != nil </span><span class="cov8" title="1">{
+                l.Warn("jawsauth: no email found", "userinfo", userinfo)
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) <span class="cov8" title="1">{
         oauth2Config, userinfourl, location := srv.begin(hr)
 
@@ -383,16 +398,8 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                                                                                 body = nil
                                                                                 sessValue = userinfo
                                                                                 sessTokenValue = tokensource
-                                                                                for _, k := range []string{"email", "mail"} </span><span class="cov8" title="1">{
-                                                                                        if s, ok := userinfo[k].(string); ok </span><span class="cov8" title="1">{
-                                                                                                if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
-                                                                                                        s = m.Address
-                                                                                                }</span>
-                                                                                                <span class="cov8" title="1">sessEmailValue = strings.ToLower(strings.TrimSpace(s))
-                                                                                                break</span>
-                                                                                        }
-                                                                                }
-                                                                                <span class="cov8" title="1">if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
+                                                                                sessEmailValue = srv.extractEmail(userinfo)
+                                                                                if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
                                                                                         location = sanitizeRedirectTarget(hr.Host, s)
                                                                                 }</span>
                                                                                 <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
@@ -417,8 +424,8 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                 <span class="cov8" title="1">srv.Jaws.Dirty(sess)</span>
         }
         <span class="cov8" title="1">if err != nil &amp;&amp; srv.LoginFailed != nil </span><span class="cov8" title="1">{
-                email, _ := sessEmailValue.(string)
-                if srv.LoginFailed(hw, hr, statusCode, err, email) </span><span class="cov8" title="1">{
+                sessEmailValue, _ := sessEmailValue.(string)
+                if srv.LoginFailed(hw, hr, statusCode, err, sessEmailValue) </span><span class="cov8" title="1">{
                         return
                 }</span>
         }
