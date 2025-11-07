@@ -1,11 +1,14 @@
 package jawsauth
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -240,4 +243,130 @@ func Test_handleAuthResponseLoginFailedHandlesResponse(t *testing.T) {
 	if string(body) != customBody {
 		t.Fatal(string(body))
 	}
+}
+
+func TestServerExtractEmail(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	testCases := []struct {
+		name       string
+		userinfo   map[string]any
+		want       string
+		expectNil  bool
+		expectWarn bool
+	}{
+		{
+			name:     "emailFieldNormalized",
+			userinfo: map[string]any{"email": " Test.User+Tag@Example.COM "},
+			want:     "test.user+tag@example.com",
+		},
+		{
+			name:     "emailFieldWithDisplayName",
+			userinfo: map[string]any{"email": `"Test User" <TestUser@Example.com>`},
+			want:     "testuser@example.com",
+		},
+		{
+			name:     "mailFieldFallback",
+			userinfo: map[string]any{"mail": "Secondary@Example.com "},
+			want:     "secondary@example.com",
+		},
+		{
+			name:     "mailFieldFallbackWhenEmailIsWrongType",
+			userinfo: map[string]any{"email": 123, "mail": "AltUser@Example.com"},
+			want:     "altuser@example.com",
+		},
+		{
+			name:       "missingEmailInformation",
+			userinfo:   map[string]any{"email": 123, "mail": nil},
+			expectNil:  true,
+			expectWarn: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &recordingHandler{}
+			jw.Logger = slog.New(handler)
+			srv := &Server{Jaws: jw}
+			var got any
+			got = srv.extractEmail(tc.userinfo)
+			if tc.expectNil {
+				if got != nil {
+					t.Fatalf("expected nil email value, got %v", got)
+				}
+			} else {
+				s, ok := got.(string)
+				if !ok {
+					t.Fatalf("expected string email value, got %T", got)
+				}
+				if s != tc.want {
+					t.Fatalf("unexpected email value: want %s got %s", tc.want, s)
+				}
+			}
+			if tc.expectWarn {
+				if !handler.called {
+					t.Fatal("expected warning log when email information is missing")
+				}
+				if handler.level != slog.LevelWarn {
+					t.Fatalf("unexpected log level: %s", handler.level)
+				}
+				if handler.message != "jawsauth: no email found" {
+					t.Fatalf("unexpected log message: %s", handler.message)
+				}
+				var attrFound bool
+				for _, attr := range handler.attrs {
+					if attr.Key == "userinfo" {
+						attrFound = true
+						if !reflect.DeepEqual(attr.Value.Any(), tc.userinfo) {
+							t.Fatalf("logged userinfo mismatch: %#v", attr.Value.Any())
+						}
+					}
+				}
+				if !attrFound {
+					t.Fatal("userinfo attribute missing from log entry")
+				}
+			} else {
+				if handler.called {
+					t.Fatal("unexpected warning log for userinfo containing email data")
+				}
+			}
+		})
+	}
+}
+
+type recordingHandler struct {
+	called  bool
+	level   slog.Level
+	message string
+	attrs   []slog.Attr
+}
+
+func (h *recordingHandler) Enabled(_ context.Context, _ slog.Level) bool {
+	return true
+}
+
+func (h *recordingHandler) Handle(_ context.Context, rec slog.Record) error {
+	h.called = true
+	h.level = rec.Level
+	h.message = rec.Message
+	h.attrs = nil
+	rec.Attrs(func(attr slog.Attr) bool {
+		h.attrs = append(h.attrs, attr)
+		return true
+	})
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	_ = attrs
+	return h
+}
+
+func (h *recordingHandler) WithGroup(string) slog.Handler {
+	return h
 }
