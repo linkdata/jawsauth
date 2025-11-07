@@ -139,6 +139,21 @@ var ErrOAuth2MissingSession = errors.New("oauth2 missing session")
 var ErrOAuth2MissingState = errors.New("oauth2 missing state")
 var ErrOAuth2WrongState = errors.New("oauth2 wrong state")
 
+func (srv *Server) extractEmail(userinfo map[string]any) (sessEmailValue any) {
+	for _, k := range []string{"email", "mail"} {
+		if s, ok := userinfo[k].(string); ok {
+			if m, e := mail.ParseAddress(s); e == nil {
+				s = m.Address
+			}
+			return strings.ToLower(strings.TrimSpace(s))
+		}
+	}
+	if l := srv.Jaws.Logger; l != nil {
+		l.Warn("jawsauth: no email found", "userinfo", userinfo)
+	}
+	return
+}
+
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
 	oauth2Config, userinfourl, location := srv.begin(hr)
 
@@ -175,15 +190,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 										body = nil
 										sessValue = userinfo
 										sessTokenValue = tokensource
-										for _, k := range []string{"email", "mail"} {
-											if s, ok := userinfo[k].(string); ok {
-												if m, e := mail.ParseAddress(s); e == nil {
-													s = m.Address
-												}
-												sessEmailValue = strings.ToLower(strings.TrimSpace(s))
-												break
-											}
-										}
+										sessEmailValue = srv.extractEmail(userinfo)
 										if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
 											location = sanitizeRedirectTarget(hr.Host, s)
 										}
@@ -209,8 +216,8 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		srv.Jaws.Dirty(sess)
 	}
 	if err != nil && srv.LoginFailed != nil {
-		email, _ := sessEmailValue.(string)
-		if srv.LoginFailed(hw, hr, statusCode, err, email) {
+		sessEmailValue, _ := sessEmailValue.(string)
+		if srv.LoginFailed(hw, hr, statusCode, err, sessEmailValue) {
 			return
 		}
 	}
