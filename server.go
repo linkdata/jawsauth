@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/linkdata/jaws"
+	"github.com/linkdata/jaws/ui"
 	"golang.org/x/oauth2"
 )
 
@@ -161,11 +162,11 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 // having an email set using SetAdmins() before invoking h.
 // Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
-	return srv.wrap(srv.Jaws.Handler(name, dot), true)
+	return srv.wrap(ui.Handler(srv.Jaws, name, dot), true)
 }
 
 // Handler returns a http.Handler using a jaws.Template that requires an authenticated user.
 // Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
 func (srv *Server) Handler(name string, dot any) http.Handler {
-	return srv.wrap(srv.Jaws.Handler(name, dot), false)
+	return srv.wrap(ui.Handler(srv.Jaws, name, dot), false)
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/linkdata/deadlock"
 	"github.com/linkdata/jaws"
+	"github.com/linkdata/jaws/ui"
 )
 
 func getOpenIDConfig(baseURL, realm string) (openidcfg map[string]any, err error) {
@@ -99,7 +100,7 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 
 	mux.Handle("/needauth", asrv.Handler("index.html", nil))
 	mux.Handle("/needadmin", asrv.HandlerAdmin("index.html", nil))
-	mux.Handle("/", jw.Handler("index.html", nil))
+	mux.Handle("/", ui.Handler(jw, "index.html", nil))
 
 	asrv.Wrap(http.NotFoundHandler())
 	asrv.WrapAdmin(http.NotFoundHandler())
