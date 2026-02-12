@@ -181,7 +181,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 						tokensource := oauth2Config.TokenSource(context.Background(), token)
 						client := oauth2.NewClient(hr.Context(), tokensource)
 						var resp *http.Response
-						if resp, err = client.Get(userinfourl); srv.Jaws.Log(err) == nil {
+						if resp, err = client.Get(userinfourl); /* #nosec G704 */ srv.Jaws.Log(err) == nil {
 							defer resp.Body.Close()
 							if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil {
 								if statusCode = resp.StatusCode; statusCode == http.StatusOK {

@@ -9,12 +9,13 @@ import (
 )
 
 type Config struct {
-	RedirectURL  string   // e.g. "https://application.example.com/oauth2/callback"
-	AuthURL      string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/authorize"
-	TokenURL     string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/token"
-	UserInfoURL  string   // e.g. "https://graph.microsoft.com/v1.0/me?$select=displayName,mail"
-	Scopes       []string // e.g. []string{"user.read"}
-	ClientID     string
+	RedirectURL string   // e.g. "https://application.example.com/oauth2/callback"
+	AuthURL     string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/authorize"
+	TokenURL    string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/token"
+	UserInfoURL string   // e.g. "https://graph.microsoft.com/v1.0/me?$select=displayName,mail"
+	Scopes      []string // e.g. []string{"user.read"}
+	ClientID    string
+	//gosec:disable G117
 	ClientSecret string
 }
 

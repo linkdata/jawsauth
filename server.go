@@ -20,8 +20,9 @@ type EventFunc func(sess *jaws.Session, hr *http.Request)
 type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
 type Server struct {
-	Jaws            *jaws.Jaws
-	SessionKey      string                  // default is "oauth2userinfo", value will be of type map[string]any
+	Jaws *jaws.Jaws
+	//gosec:disable G117
+	SessionKey      string                  // default is "oauth2userinfo", value will be of type map[string]any // #nosec G117
 	SessionTokenKey string                  // default is "oauth2token", value will be of type oauth2.TokenSource
 	SessionEmailKey string                  // default is "email", value will be of type string
 	HandledPaths    map[string]struct{}     // URI paths we have registered handlers for
