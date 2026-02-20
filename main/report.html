@@ -55,7 +55,7 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/linkdata/jawsauth/config.go (90.0%)</option>
+				<option value="file0">github.com/linkdata/jawsauth/config.go (100.0%)</option>
 				
 				<option value="file1">github.com/linkdata/jawsauth/default403handler.go (100.0%)</option>
 				
@@ -139,7 +139,7 @@ type configFieldError struct {
         cause error
 }
 
-func (e configFieldError) Error() string <span class="cov0" title="0">{
+func (e configFieldError) Error() string <span class="cov8" title="1">{
         return "invalid " + e.field + ": " + e.cause.Error()
 }</span>
 
@@ -148,9 +148,9 @@ func (e configFieldError) Unwrap() error <span class="cov8" title="1">{
 }</span>
 
 func (e configFieldError) Is(target error) (matches bool) <span class="cov8" title="1">{
-        if t, ok := target.(configFieldError); ok </span><span class="cov0" title="0">{
+        if t, ok := target.(configFieldError); ok </span><span class="cov8" title="1">{
                 matches = e.field == t.field
-                if matches </span><span class="cov0" title="0">{
+                if matches </span><span class="cov8" title="1">{
                         matches = errors.Is(e.cause, t.cause)
                 }</span>
         }
