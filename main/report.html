@@ -55,7 +55,7 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/linkdata/jawsauth/config.go (100.0%)</option>
+				<option value="file0">github.com/linkdata/jawsauth/config.go (90.0%)</option>
 				
 				<option value="file1">github.com/linkdata/jawsauth/default403handler.go (100.0%)</option>
 				
@@ -82,6 +82,7 @@
 		<pre class="file" id="file0" style="display: none">package jawsauth
 
 import (
+        "errors"
         "fmt"
         "net/url"
         "strings"
@@ -113,8 +114,46 @@ func requireStr(k, u string) error <span class="cov8" title="1">{
 
 func validateUrl(k, u string) (err error) <span class="cov8" title="1">{
         if err = requireStr(k, u); err == nil </span><span class="cov8" title="1">{
-                _, err = url.Parse(u)
-        }</span>
+                var parsed *url.URL
+                if parsed, err = url.Parse(u); err == nil </span><span class="cov8" title="1">{
+                        err = ErrConfigURLNotAbsolute
+                        if parsed.IsAbs() </span><span class="cov8" title="1">{
+                                err = ErrConfigURLMissingHost
+                                if parsed.Hostname() != "" </span><span class="cov8" title="1">{
+                                        err = nil
+                                }</span>
+                        }
+                        <span class="cov8" title="1">if err != nil </span><span class="cov8" title="1">{
+                                err = configFieldError{field: k, cause: err}
+                        }</span>
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+var ErrConfigURLNotAbsolute = errors.New("url is not absolute")
+var ErrConfigURLMissingHost = errors.New("url host is missing")
+
+type configFieldError struct {
+        field string
+        cause error
+}
+
+func (e configFieldError) Error() string <span class="cov0" title="0">{
+        return "invalid " + e.field + ": " + e.cause.Error()
+}</span>
+
+func (e configFieldError) Unwrap() error <span class="cov8" title="1">{
+        return e.cause
+}</span>
+
+func (e configFieldError) Is(target error) (matches bool) <span class="cov8" title="1">{
+        if t, ok := target.(configFieldError); ok </span><span class="cov0" title="0">{
+                matches = e.field == t.field
+                if matches </span><span class="cov0" title="0">{
+                        matches = errors.Is(e.cause, t.cause)
+                }</span>
+        }
         <span class="cov8" title="1">return</span>
 }
 
@@ -564,6 +603,18 @@ func (srv *Server) Set403Handler(h http.Handler) <span class="cov8" title="1">{
         srv.mu.Unlock()</span>
 }
 
+func (srv *Server) get403Handler() (h http.Handler) <span class="cov8" title="1">{
+        h = default403handler{}
+        if srv != nil </span><span class="cov8" title="1">{
+                srv.mu.Lock()
+                if srv.handle403 != nil </span><span class="cov8" title="1">{
+                        h = srv.handle403
+                }</span>
+                <span class="cov8" title="1">srv.mu.Unlock()</span>
+        }
+        <span class="cov8" title="1">return</span>
+}
+
 // Valid returns true if OAuth2 is configured.
 func (srv *Server) Valid() bool <span class="cov8" title="1">{
         return srv != nil &amp;&amp; srv.oauth2cfg != nil
@@ -635,7 +686,7 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) <span class
         <span class="cov8" title="1">if w.admin </span><span class="cov8" title="1">{
                 email, _ := sess.Get(w.server.SessionEmailKey).(string)
                 if !w.server.IsAdmin(email) </span><span class="cov8" title="1">{
-                        h = w.server.handle403
+                        h = w.server.get403Handler()
                 }</span>
         }
         <span class="cov8" title="1">h.ServeHTTP(hw, hr)</span>
