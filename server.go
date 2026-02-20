@@ -128,6 +128,18 @@ func (srv *Server) Set403Handler(h http.Handler) {
 	srv.mu.Unlock()
 }
 
+func (srv *Server) get403Handler() (h http.Handler) {
+	h = default403handler{}
+	if srv != nil {
+		srv.mu.Lock()
+		if srv.handle403 != nil {
+			h = srv.handle403
+		}
+		srv.mu.Unlock()
+	}
+	return
+}
+
 // Valid returns true if OAuth2 is configured.
 func (srv *Server) Valid() bool {
 	return srv != nil && srv.oauth2cfg != nil

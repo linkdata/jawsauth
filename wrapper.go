@@ -24,7 +24,7 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 	if w.admin {
 		email, _ := sess.Get(w.server.SessionEmailKey).(string)
 		if !w.server.IsAdmin(email) {
-			h = w.server.handle403
+			h = w.server.get403Handler()
 		}
 	}
 	h.ServeHTTP(hw, hr)
