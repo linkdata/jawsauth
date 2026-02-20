@@ -1,6 +1,7 @@
 package jawsauth
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -32,7 +33,45 @@ func requireStr(k, u string) error {
 
 func validateUrl(k, u string) (err error) {
 	if err = requireStr(k, u); err == nil {
-		_, err = url.Parse(u)
+		var parsed *url.URL
+		if parsed, err = url.Parse(u); err == nil {
+			err = ErrConfigURLNotAbsolute
+			if parsed.IsAbs() {
+				err = ErrConfigURLMissingHost
+				if parsed.Hostname() != "" {
+					err = nil
+				}
+			}
+			if err != nil {
+				err = configFieldError{field: k, cause: err}
+			}
+		}
+	}
+	return
+}
+
+var ErrConfigURLNotAbsolute = errors.New("url is not absolute")
+var ErrConfigURLMissingHost = errors.New("url host is missing")
+
+type configFieldError struct {
+	field string
+	cause error
+}
+
+func (e configFieldError) Error() string {
+	return "invalid " + e.field + ": " + e.cause.Error()
+}
+
+func (e configFieldError) Unwrap() error {
+	return e.cause
+}
+
+func (e configFieldError) Is(target error) (matches bool) {
+	if t, ok := target.(configFieldError); ok {
+		matches = e.field == t.field
+		if matches {
+			matches = errors.Is(e.cause, t.cause)
+		}
 	}
 	return
 }
