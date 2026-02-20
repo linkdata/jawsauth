@@ -179,3 +179,30 @@ func TestConfig_ValidateRequiresAbsoluteURLs(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigFieldErrorHelpers(t *testing.T) {
+	errValue := configFieldError{
+		field: "AuthURL",
+		cause: ErrConfigURLNotAbsolute,
+	}
+
+	if errValue.Error() != "invalid AuthURL: url is not absolute" {
+		t.Fatal(errValue.Error())
+	}
+
+	if !errValue.Is(configFieldError{field: "AuthURL", cause: ErrConfigURLNotAbsolute}) {
+		t.Fatal("expected matching field/cause")
+	}
+
+	if errValue.Is(configFieldError{field: "TokenURL", cause: ErrConfigURLNotAbsolute}) {
+		t.Fatal("unexpected match for wrong field")
+	}
+
+	if errValue.Is(configFieldError{field: "AuthURL", cause: ErrConfigURLMissingHost}) {
+		t.Fatal("unexpected match for wrong cause")
+	}
+
+	if errValue.Is(ErrConfigURLNotAbsolute) {
+		t.Fatal("unexpected match for non-configFieldError target")
+	}
+}
