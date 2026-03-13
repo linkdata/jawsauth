@@ -3,7 +3,6 @@ module github.com/linkdata/jawsauth
 go 1.25.0
 
 require (
-	github.com/docker/go-connections v0.6.0
 	github.com/linkdata/deadlock v0.5.5
 	github.com/linkdata/jaws v0.201.2
 	github.com/testcontainers/testcontainers-go v0.41.0
@@ -28,6 +27,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/docker v28.5.2+incompatible // indirect
+	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect

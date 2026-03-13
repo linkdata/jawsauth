@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/go-connections/nat"
 	"github.com/testcontainers/testcontainers-go"
 )
 
@@ -38,7 +37,7 @@ func TestKeycloakFlow(t *testing.T) {
 		t.Fatalf("Failed to get container host: %v", err)
 	}
 
-	port, err := keycloakContainer.MappedPort(ctx, "8080")
+	port, err := keycloakContainer.MappedPort(ctx, "8080/tcp")
 	if err != nil {
 		t.Fatalf("Failed to get container port: %v", err)
 	}
@@ -119,8 +118,7 @@ func startKeycloakContainer(t *testing.T, ctx context.Context) (testcontainers.C
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
-	port, _ := nat.NewPort("tcp", "8080")
-	return container, waitForKeycloak(ctx, container, port)
+	return container, waitForKeycloak(ctx, container)
 }
 
 func printLogs(ctx context.Context, container testcontainers.Container) {
@@ -404,13 +402,13 @@ func getUserInfoEmail(ctx context.Context, baseURL, realm, accessToken string) (
 	return email, nil
 }
 
-func waitForKeycloak(ctx context.Context, container testcontainers.Container, port nat.Port) error {
+func waitForKeycloak(ctx context.Context, container testcontainers.Container) error {
 	host, err := container.Host(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get container host: %w", err)
 	}
 
-	mappedPort, err := container.MappedPort(ctx, port)
+	mappedPort, err := container.MappedPort(ctx, "8080/tcp")
 	if err != nil {
 		return fmt.Errorf("failed to get mapped port: %w", err)
 	}
