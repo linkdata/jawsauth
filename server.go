@@ -30,6 +30,7 @@ type Server struct {
 	LogoutEvent     EventFunc               // if not nil, called before logout
 	LoginFailed     FailedFunc              // if not nil, called on failed login
 	Options         []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
+	PKCE            bool                    // if true, use RFC 7636 PKCE with S256 challenge/verifier
 	oauth2cfg       *oauth2.Config
 	userinfoUrl     string
 	mu              sync.Mutex          // protects following
@@ -46,6 +47,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		HandledPaths:    make(map[string]struct{}),
 		admins:          make(map[string]struct{}),
 		handle403:       default403handler{},
+		PKCE:            true,
 	}
 	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
 		jw.MakeAuth = srv.makeAuth

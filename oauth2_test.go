@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/linkdata/jaws"
@@ -83,6 +86,7 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{"/oauth2/login": {}},
+		PKCE:         true,
 		oauth2cfg: &oauth2.Config{
 			ClientID:    "client",
 			Endpoint:    oauth2.Endpoint{AuthURL: "https://provider.example/auth"},
@@ -115,9 +119,152 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	if _, err = hex.DecodeString(state); err != nil {
 		t.Fatal(err)
 	}
+	verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
+	if verifier == "" {
+		t.Fatal("missing pkce verifier")
+	}
+	parsedURL, err := url.Parse(loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := parsedURL.Query()
+	if gotChallenge := values.Get("code_challenge"); gotChallenge != oauth2.S256ChallengeFromVerifier(verifier) {
+		t.Fatal(gotChallenge)
+	}
+	if gotMethod := values.Get("code_challenge_method"); gotMethod != "S256" {
+		t.Fatal(gotMethod)
+	}
 	referrer, _ := sess.Get(oauth2ReferrerKey).(string)
 	if referrer != "/secure" {
 		t.Fatal(referrer)
+	}
+}
+
+func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	var mu sync.Mutex
+	var gotVerifier string
+	var gotCode string
+	var gotAuth string
+	var providerErr error
+	setProviderErr := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		if providerErr == nil {
+			providerErr = err
+		}
+		mu.Unlock()
+	}
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		switch hr.URL.Path {
+		case "/token":
+			if err := hr.ParseForm(); err != nil {
+				setProviderErr(err)
+				hw.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			gotVerifier = hr.FormValue("code_verifier")
+			gotCode = hr.FormValue("code")
+			mu.Unlock()
+			hw.Header().Set("Content-Type", "application/json")
+			_, _ = hw.Write([]byte(`{"access_token":"token123","token_type":"Bearer","expires_in":3600}`))
+		case "/userinfo":
+			mu.Lock()
+			gotAuth = hr.Header.Get("Authorization")
+			mu.Unlock()
+			hw.Header().Set("Content-Type", "application/json")
+			_, _ = hw.Write([]byte(`{"email":"user@example.com"}`))
+		default:
+			setProviderErr(fmt.Errorf("unexpected provider path %s", hr.URL.Path))
+			hw.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer provider.Close()
+
+	srv := &Server{
+		Jaws:            jw,
+		SessionKey:      "oauth2userinfo",
+		SessionTokenKey: "oauth2token",
+		SessionEmailKey: "email",
+		HandledPaths:    map[string]struct{}{"/oauth2/callback": {}},
+		PKCE:            true,
+		oauth2cfg: &oauth2.Config{
+			ClientID:     "client",
+			ClientSecret: "secret",
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  provider.URL + "/auth",
+				TokenURL: provider.URL + "/token",
+			},
+			RedirectURL: "http://example.com/oauth2/callback",
+		},
+		userinfoUrl: provider.URL + "/userinfo",
+	}
+
+	const wantState = "state123"
+	const wantCode = "authcode123"
+	verifier := oauth2.GenerateVerifier()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state="+wantState+"&code="+wantCode, nil)
+	sess := jw.NewSession(rec, req)
+	sess.Set(oauth2StateKey, wantState)
+	sess.Set(oauth2PKCEVerifierKey, verifier)
+	sess.Set(oauth2ReferrerKey, "/secure")
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusFound {
+		resp.Body.Close()
+		t.Fatal(resp.Status)
+	}
+	if gotLocation := resp.Header.Get("Location"); gotLocation != "/secure" {
+		resp.Body.Close()
+		t.Fatal(gotLocation)
+	}
+	resp.Body.Close()
+
+	mu.Lock()
+	receivedCode := gotCode
+	receivedVerifier := gotVerifier
+	receivedAuth := gotAuth
+	receivedProviderErr := providerErr
+	mu.Unlock()
+
+	if receivedCode != wantCode {
+		t.Fatal(receivedCode)
+	}
+	if receivedVerifier != verifier {
+		t.Fatal(receivedVerifier)
+	}
+	if receivedAuth != "Bearer token123" {
+		t.Fatal(receivedAuth)
+	}
+	if receivedProviderErr != nil {
+		t.Fatal(receivedProviderErr)
+	}
+	if gotState, _ := sess.Get(oauth2StateKey).(string); gotState != "" {
+		t.Fatal(gotState)
+	}
+	if gotVerifier, _ := sess.Get(oauth2PKCEVerifierKey).(string); gotVerifier != "" {
+		t.Fatal(gotVerifier)
+	}
+	if gotEmail, _ := sess.Get(srv.SessionEmailKey).(string); gotEmail != "user@example.com" {
+		t.Fatal(gotEmail)
+	}
+	if gotUserInfo, ok := sess.Get(srv.SessionKey).(map[string]any); !ok || gotUserInfo["email"] != "user@example.com" {
+		t.Fatal(gotUserInfo)
+	}
+	if tokenSource, ok := sess.Get(srv.SessionTokenKey).(oauth2.TokenSource); !ok || tokenSource == nil {
+		t.Fatal("missing token source")
 	}
 }
 

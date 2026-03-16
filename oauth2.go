@@ -22,6 +22,7 @@ var ErrInconsistentState = errors.New("oauth2 inconsistent state")
 
 const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
+const oauth2PKCEVerifierKey = "oauth2pkceverifier"
 
 func normalizeHost(hostport string) (normalized string) {
 	normalized = strings.TrimSpace(hostport)
@@ -89,6 +90,7 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	oauth2cfg, _, location := srv.begin(hr)
 	if oauth2cfg != nil {
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
+			authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
 			state, _ := sess.Get(oauth2StateKey).(string)
 			if state == "" {
 				b := [32]byte{}
@@ -96,8 +98,14 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 				state = hex.EncodeToString(b[:])
 				sess.Set(oauth2StateKey, state)
 			}
+			sess.Set(oauth2PKCEVerifierKey, nil)
+			if srv.PKCE {
+				verifier := oauth2.GenerateVerifier()
+				sess.Set(oauth2PKCEVerifierKey, verifier)
+				authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+			}
 			sess.Set(oauth2ReferrerKey, location)
-			location = oauth2cfg.AuthCodeURL(state, srv.Options...)
+			location = oauth2cfg.AuthCodeURL(state, authOptions...)
 		}
 	}
 	hw.Header().Add("Location", location)
@@ -171,14 +179,20 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		if sess != nil {
 			gotState := hr.FormValue("state")
 			wantState, _ := sess.Get(oauth2StateKey).(string)
+			verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
 			sess.Set(oauth2StateKey, nil)
+			sess.Set(oauth2PKCEVerifierKey, nil)
 			err = ErrOAuth2MissingState
 			if wantState != "" {
 				err = ErrOAuth2WrongState
 				if wantState == gotState {
 					if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil {
 						var token *oauth2.Token
-						if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil {
+						exchangeOptions := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
+						if verifier != "" {
+							exchangeOptions = append(exchangeOptions, oauth2.VerifierOption(verifier))
+						}
+						if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), exchangeOptions...); srv.Jaws.Log(err) == nil {
 							tokensource := oauth2Config.TokenSource(context.Background(), token)
 							client := oauth2.NewClient(hr.Context(), tokensource)
 							var resp *http.Response
