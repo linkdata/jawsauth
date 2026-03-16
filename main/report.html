@@ -3,7 +3,7 @@
 <html>
 	<head>
 		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-		<title>jawsauth: Go Coverage Report</title>
+		<title>demo: Go Coverage Report</title>
 		<style>
 			body {
 				background: black;
@@ -55,17 +55,25 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/linkdata/jawsauth/config.go (100.0%)</option>
+				<option value="file0">github.com/linkdata/jawsauth/cmd/demo/demo.go (73.3%)</option>
 				
-				<option value="file1">github.com/linkdata/jawsauth/default403handler.go (100.0%)</option>
+				<option value="file1">github.com/linkdata/jawsauth/cmd/demo/keycloak.go (66.8%)</option>
 				
-				<option value="file2">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
+				<option value="file2">github.com/linkdata/jawsauth/cmd/demo/main.go (0.0%)</option>
 				
-				<option value="file3">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
+				<option value="file3">github.com/linkdata/jawsauth/config.go (100.0%)</option>
 				
-				<option value="file4">github.com/linkdata/jawsauth/server.go (100.0%)</option>
+				<option value="file4">github.com/linkdata/jawsauth/default403handler.go (100.0%)</option>
 				
-				<option value="file5">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
+				<option value="file5">github.com/linkdata/jawsauth/erroauth2callback.go (100.0%)</option>
+				
+				<option value="file6">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
+				
+				<option value="file7">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
+				
+				<option value="file8">github.com/linkdata/jawsauth/server.go (100.0%)</option>
+				
+				<option value="file9">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
 				
 				</select>
 			</div>
@@ -79,7 +87,1197 @@
 		</div>
 		<div id="content">
 		
-		<pre class="file" id="file0" style="display: none">package jawsauth
+		<pre class="file" id="file0" style="display: none">package main
+
+import (
+        "context"
+        "crypto/rand"
+        "crypto/rsa"
+        "crypto/tls"
+        "crypto/x509"
+        "crypto/x509/pkix"
+        "encoding/base64"
+        "encoding/pem"
+        "errors"
+        "fmt"
+        "html/template"
+        "math/big"
+        "net"
+        "net/http"
+        "net/url"
+        "os"
+        "path/filepath"
+        "strings"
+        "sync"
+        "time"
+
+        "github.com/linkdata/jaws"
+        "github.com/linkdata/jawsauth"
+        "golang.org/x/oauth2"
+)
+
+const indexTemplate = `&lt;!doctype html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;meta name="viewport" content="width=device-width, initial-scale=1"&gt;
+  &lt;title&gt;JaWS OAuth2 Demo&lt;/title&gt;
+  {{$.HeadHTML}}
+  &lt;style&gt;
+    body { font-family: sans-serif; margin: 2rem; background: #f4f8fb; color: #1f2a37; }
+    main { max-width: 42rem; margin: 0 auto; background: #fff; padding: 2rem; border-radius: 12px; box-shadow: 0 8px 24px rgba(15,23,42,0.08); }
+    h1 { margin-top: 0; }
+    #email { font-weight: 700; }
+    a { color: #0a62c9; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;main&gt;
+    &lt;h1&gt;JaWS OAuth2 Demo&lt;/h1&gt;
+    {{with .Auth}}
+      &lt;p id="email"&gt;Signed in as {{.Email}}&lt;/p&gt;
+    {{end}}
+    &lt;p&gt;This page is protected by OAuth2 via Keycloak and rendered with JaWS.&lt;/p&gt;
+    &lt;p&gt;Move the slider below to update state on the server without a full page reload.&lt;/p&gt;
+    {{$.Range .Dot}}
+    &lt;p&gt;&lt;a href="/logout"&gt;Sign out&lt;/a&gt;&lt;/p&gt;
+  &lt;/main&gt;
+  {{$.TailHTML}}
+&lt;/body&gt;
+&lt;/html&gt;
+`
+
+type demoOptions struct {
+        ListenAddr    string
+        PublicHost    string
+        PasswordFile  string
+        Realm         string
+        ClientID      string
+        Username      string
+        UserEmail     string
+        KeycloakImage string
+}
+
+func (o demoOptions) withDefaults() demoOptions <span class="cov8" title="1">{
+        if o.ListenAddr == "" </span><span class="cov0" title="0">{
+                o.ListenAddr = "0.0.0.0:8443"
+        }</span>
+        <span class="cov8" title="1">if o.PasswordFile == "" </span><span class="cov0" title="0">{
+                o.PasswordFile = "demo-password.txt"
+        }</span>
+        <span class="cov8" title="1">if o.Realm == "" </span><span class="cov0" title="0">{
+                o.Realm = "jawsauth-demo"
+        }</span>
+        <span class="cov8" title="1">if o.ClientID == "" </span><span class="cov0" title="0">{
+                o.ClientID = "jawsauth-demo-client"
+        }</span>
+        <span class="cov8" title="1">if o.Username == "" </span><span class="cov0" title="0">{
+                o.Username = "demo"
+        }</span>
+        <span class="cov8" title="1">if o.UserEmail == "" </span><span class="cov0" title="0">{
+                o.UserEmail = "demo@example.com"
+        }</span>
+        <span class="cov8" title="1">if o.KeycloakImage == "" </span><span class="cov8" title="1">{
+                o.KeycloakImage = "quay.io/keycloak/keycloak:latest"
+        }</span>
+        <span class="cov8" title="1">return o</span>
+}
+
+type demoServer struct {
+        appURL       string
+        keycloakURL  string
+        username     string
+        password     string
+        userEmail    string
+        passwordFile string
+
+        httpServer *http.Server
+        jaws       *jaws.Jaws
+        keycloak   *keycloakServer
+
+        closeOnce sync.Once
+}
+
+func (d *demoServer) close(ctx context.Context) (err error) <span class="cov8" title="1">{
+        d.closeOnce.Do(func() </span><span class="cov8" title="1">{
+                var errs []error
+                if d.httpServer != nil </span><span class="cov8" title="1">{
+                        errs = append(errs, d.httpServer.Shutdown(ctx))
+                }</span>
+                <span class="cov8" title="1">if d.jaws != nil </span><span class="cov8" title="1">{
+                        d.jaws.Close()
+                }</span>
+                <span class="cov8" title="1">if d.keycloak != nil </span><span class="cov8" title="1">{
+                        errs = append(errs, d.keycloak.Close(ctx))
+                }</span>
+                <span class="cov8" title="1">err = errors.Join(errs...)</span>
+        })
+        <span class="cov8" title="1">return</span>
+}
+
+func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err error) <span class="cov8" title="1">{
+        opts = opts.withDefaults()
+
+        listener, err := net.Listen("tcp", opts.ListenAddr)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("listen: %w", err)
+        }</span>
+        <span class="cov8" title="1">defer func() </span><span class="cov8" title="1">{
+                if err != nil </span><span class="cov0" title="0">{
+                        _ = listener.Close()
+                }</span>
+        }()
+
+        <span class="cov8" title="1">publicHost, err := resolvePublicHost(opts.PublicHost, listener.Addr())
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+
+        <span class="cov8" title="1">appURL := "https://" + net.JoinHostPort(publicHost, listenerPort(listener.Addr()))
+
+        password, err := randomPassword(18)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("generate demo password: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">keycloak, err := startKeycloakServer(ctx, opts.KeycloakImage, password)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+        <span class="cov8" title="1">defer func() </span><span class="cov8" title="1">{
+                if err != nil </span><span class="cov0" title="0">{
+                        _ = keycloak.Close(context.Background())
+                }</span>
+        }()
+
+        <span class="cov8" title="1">oidc, err := keycloak.SetupRealm(ctx, keycloakRealmSetup{
+                Realm:       opts.Realm,
+                ClientID:    opts.ClientID,
+                RedirectURI: appURL + "/oauth2/callback",
+                Username:    opts.Username,
+                Email:       opts.UserEmail,
+                Password:    password,
+        })
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+
+        <span class="cov8" title="1">if err = writePasswordFile(opts.PasswordFile, password); err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+
+        <span class="cov8" title="1">jw, err := jaws.New()
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("create jaws instance: %w", err)
+        }</span>
+        <span class="cov8" title="1">defer func() </span><span class="cov8" title="1">{
+                if err != nil </span><span class="cov0" title="0">{
+                        jw.Close()
+                }</span>
+        }()
+
+        <span class="cov8" title="1">if err = jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse(indexTemplate))); err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("add template lookuper: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">mux := http.NewServeMux()
+        mux.Handle("/jaws/", jw)
+
+        cfg := jawsauth.Config{
+                RedirectURL:  appURL + "/oauth2/callback",
+                AuthURL:      oidc.AuthURL,
+                TokenURL:     oidc.TokenURL,
+                UserInfoURL:  oidc.UserInfoURL,
+                Scopes:       []string{"openid", "profile", "email"},
+                ClientID:     opts.ClientID,
+                ClientSecret: oidc.ClientSecret,
+        }
+
+        handleWithOAuthClient := func(uri string, handler http.Handler) </span><span class="cov8" title="1">{
+                mux.Handle(uri, http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) </span><span class="cov8" title="1">{
+                        oauthCtx := context.WithValue(hr.Context(), oauth2.HTTPClient, keycloak.httpClient)
+                        handler.ServeHTTP(hw, hr.WithContext(oauthCtx))
+                }</span>))
+        }
+
+        <span class="cov8" title="1">authServer, err := jawsauth.New(jw, &amp;cfg, handleWithOAuthClient)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("create auth server: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">var sliderMu sync.Mutex
+        var slider float64
+        mux.Handle("/", authServer.Handler("index.html", jaws.Bind(&amp;sliderMu, &amp;slider)))
+        mux.HandleFunc("/logged-out", func(hw http.ResponseWriter, hr *http.Request) </span><span class="cov8" title="1">{
+                hw.Header().Set("Content-Type", "text/html; charset=utf-8")
+                _, _ = hw.Write([]byte(`&lt;!doctype html&gt;&lt;html lang="en"&gt;&lt;body&gt;&lt;h1&gt;Signed out&lt;/h1&gt;&lt;p&gt;&lt;a href="/"&gt;Sign in again&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;`))
+        }</span>)
+        <span class="cov8" title="1">mux.HandleFunc("/logout", func(hw http.ResponseWriter, hr *http.Request) </span><span class="cov8" title="1">{
+                var idTokenHint string
+                if sess := jw.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
+                        if tokenSource, ok := sess.Get(authServer.SessionTokenKey).(oauth2.TokenSource); ok &amp;&amp; tokenSource != nil </span><span class="cov8" title="1">{
+                                if token, e := tokenSource.Token(); e == nil &amp;&amp; token != nil </span><span class="cov8" title="1">{
+                                        if value, ok := token.Extra("id_token").(string); ok </span><span class="cov8" title="1">{
+                                                idTokenHint = value
+                                        }</span>
+                                }
+                        }
+                        <span class="cov8" title="1">if authServer.LogoutEvent != nil </span><span class="cov0" title="0">{
+                                authServer.LogoutEvent(sess, hr)
+                        }</span>
+                        <span class="cov8" title="1">sess.Set(authServer.SessionKey, nil)
+                        sess.Set(authServer.SessionTokenKey, nil)
+                        sess.Set(authServer.SessionEmailKey, nil)
+                        jw.Dirty(sess)</span>
+                }
+
+                <span class="cov8" title="1">target := appURL + "/logged-out"
+                if oidc.EndSessionURL != "" </span><span class="cov8" title="1">{
+                        if u, e := url.Parse(oidc.EndSessionURL); e == nil </span><span class="cov8" title="1">{
+                                q := u.Query()
+                                q.Set("client_id", opts.ClientID)
+                                q.Set("post_logout_redirect_uri", target)
+                                if idTokenHint != "" </span><span class="cov8" title="1">{
+                                        q.Set("id_token_hint", idTokenHint)
+                                }</span>
+                                <span class="cov8" title="1">u.RawQuery = q.Encode()
+                                http.Redirect(hw, hr, u.String(), http.StatusFound)
+                                return</span>
+                        }
+                }
+                <span class="cov0" title="0">http.Redirect(hw, hr, "/logged-out", http.StatusFound)</span>
+        })
+
+        <span class="cov8" title="1">cert, err := generateSelfSignedCertificate(publicHost)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+
+        <span class="cov8" title="1">httpServer := &amp;http.Server{
+                Handler: mux,
+                TLSConfig: &amp;tls.Config{ //nolint:gosec
+                        MinVersion:   tls.VersionTLS12,
+                        Certificates: []tls.Certificate{cert},
+                },
+        }
+
+        go jw.Serve()
+
+        go func() </span><span class="cov8" title="1">{
+                _ = httpServer.Serve(tls.NewListener(listener, httpServer.TLSConfig))
+        }</span>()
+
+        <span class="cov8" title="1">if err = waitForHTTPSReady(ctx, appURL+"/jaws/.ping"); err != nil </span><span class="cov0" title="0">{
+                _ = httpServer.Shutdown(context.Background())
+                return nil, err
+        }</span>
+
+        <span class="cov8" title="1">absPasswordFile, pathErr := filepath.Abs(opts.PasswordFile)
+        if pathErr != nil </span><span class="cov0" title="0">{
+                absPasswordFile = opts.PasswordFile
+        }</span>
+
+        <span class="cov8" title="1">return &amp;demoServer{
+                appURL:       appURL,
+                keycloakURL:  keycloak.baseURL,
+                username:     opts.Username,
+                password:     password,
+                userEmail:    opts.UserEmail,
+                passwordFile: absPasswordFile,
+                httpServer:   httpServer,
+                jaws:         jw,
+                keycloak:     keycloak,
+        }, nil</span>
+}
+
+func resolvePublicHost(publicHost string, addr net.Addr) (host string, err error) <span class="cov8" title="1">{
+        host = strings.TrimSpace(publicHost)
+        if host != "" </span><span class="cov0" title="0">{
+                return host, nil
+        }</span>
+        <span class="cov8" title="1">if tcpAddr, ok := addr.(*net.TCPAddr); ok </span><span class="cov8" title="1">{
+                if ip := tcpAddr.IP; ip != nil </span><span class="cov8" title="1">{
+                        s := ip.String()
+                        switch s </span>{
+                        case "", "::", "0.0.0.0":<span class="cov0" title="0">
+                                if s, e := defaultInterfaceAddress(); e == nil </span><span class="cov0" title="0">{
+                                        return s, nil
+                                }</span>
+                                <span class="cov0" title="0">return "localhost", nil</span>
+                        default:<span class="cov8" title="1">
+                                return s, nil</span>
+                        }
+                }
+        }
+        <span class="cov0" title="0">host, _, err = net.SplitHostPort(addr.String())
+        if err != nil </span><span class="cov0" title="0">{
+                return "", fmt.Errorf("determine public host: %w", err)
+        }</span>
+        <span class="cov0" title="0">host = strings.TrimSpace(host)
+        switch host </span>{
+        case "", "::", "0.0.0.0":<span class="cov0" title="0">
+                if s, e := defaultInterfaceAddress(); e == nil </span><span class="cov0" title="0">{
+                        host = s
+                }</span> else<span class="cov0" title="0"> {
+                        host = "localhost"
+                }</span>
+        }
+        <span class="cov0" title="0">return host, nil</span>
+}
+
+func defaultInterfaceAddress() (string, error) <span class="cov8" title="1">{
+        conn, err := net.Dial("udp", "8.8.8.8:80")
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">defer conn.Close()
+
+        udpAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+        if !ok || udpAddr.IP == nil </span><span class="cov0" title="0">{
+                return "", errors.New("resolve default interface address")
+        }</span>
+        <span class="cov8" title="1">if udpAddr.IP.IsUnspecified() </span><span class="cov0" title="0">{
+                return "", errors.New("default interface address is unspecified")
+        }</span>
+        <span class="cov8" title="1">return udpAddr.IP.String(), nil</span>
+}
+
+func listenerPort(addr net.Addr) string <span class="cov8" title="1">{
+        _, port, _ := net.SplitHostPort(addr.String())
+        return port
+}</span>
+
+func waitForHTTPSReady(ctx context.Context, pingURL string) error <span class="cov8" title="1">{
+        client := &amp;http.Client{
+                Timeout: 5 * time.Second,
+                Transport: &amp;http.Transport{ //nolint:gosec
+                        TLSClientConfig: &amp;tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true},
+                },
+        }
+
+        deadline := time.NewTimer(30 * time.Second)
+        defer deadline.Stop()
+        ticker := time.NewTicker(200 * time.Millisecond)
+        defer ticker.Stop()
+
+        var lastErr error
+        var lastStatus int
+        for </span><span class="cov8" title="1">{
+                req, err := http.NewRequestWithContext(ctx, http.MethodGet, pingURL, nil)
+                if err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("create ping request: %w", err)
+                }</span>
+                <span class="cov8" title="1">resp, err := client.Do(req)
+                if err == nil </span><span class="cov8" title="1">{
+                        lastStatus = resp.StatusCode
+                        _ = resp.Body.Close()
+                        if resp.StatusCode &gt;= http.StatusOK &amp;&amp; resp.StatusCode &lt; http.StatusBadRequest </span><span class="cov8" title="1">{
+                                return nil
+                        }</span>
+                        <span class="cov0" title="0">lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)</span>
+                } else<span class="cov0" title="0"> {
+                        lastErr = err
+                }</span>
+
+                <span class="cov0" title="0">select </span>{
+                case &lt;-ctx.Done():<span class="cov0" title="0">
+                        return fmt.Errorf("wait for https ready: %w", ctx.Err())</span>
+                case &lt;-deadline.C:<span class="cov0" title="0">
+                        if lastErr != nil </span><span class="cov0" title="0">{
+                                return fmt.Errorf("https server not ready: %s (last status=%d, last error=%v)", pingURL, lastStatus, lastErr)
+                        }</span>
+                        <span class="cov0" title="0">return fmt.Errorf("https server not ready: %s", pingURL)</span>
+                case &lt;-ticker.C:<span class="cov0" title="0"></span>
+                }
+        }
+}
+
+func randomPassword(bytesLen int) (string, error) <span class="cov8" title="1">{
+        buf := make([]byte, bytesLen)
+        if _, err := rand.Read(buf); err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">return base64.RawURLEncoding.EncodeToString(buf), nil</span>
+}
+
+func writePasswordFile(path, password string) error <span class="cov8" title="1">{
+        if err := os.WriteFile(path, []byte(password+"\n"), 0o600); err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("write password file %s: %w", path, err)
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+func generateSelfSignedCertificate(host string) (tls.Certificate, error) <span class="cov8" title="1">{
+        certPEM, keyPEM, err := generateSelfSignedCertificatePEM(host)
+        if err != nil </span><span class="cov0" title="0">{
+                return tls.Certificate{}, err
+        }</span>
+        <span class="cov8" title="1">certificate, err := tls.X509KeyPair(certPEM, keyPEM)
+        if err != nil </span><span class="cov0" title="0">{
+                return tls.Certificate{}, fmt.Errorf("load key pair: %w", err)
+        }</span>
+        <span class="cov8" title="1">return certificate, nil</span>
+}
+
+func generateSelfSignedCertificatePEM(host string) (certPEM, keyPEM []byte, err error) <span class="cov8" title="1">{
+        privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, nil, fmt.Errorf("generate private key: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+        serialNumber, err := rand.Int(rand.Reader, serialLimit)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, nil, fmt.Errorf("generate serial number: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">now := time.Now().UTC()
+        certTemplate := x509.Certificate{
+                SerialNumber: serialNumber,
+                Subject: pkix.Name{
+                        CommonName: host,
+                },
+                NotBefore:             now.Add(-1 * time.Hour),
+                NotAfter:              now.Add(7 * 24 * time.Hour),
+                KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+                ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+                BasicConstraintsValid: true,
+        }
+
+        if ip := net.ParseIP(host); ip != nil </span><span class="cov8" title="1">{
+                certTemplate.IPAddresses = append(certTemplate.IPAddresses, ip)
+        }</span> else<span class="cov8" title="1"> {
+                certTemplate.DNSNames = append(certTemplate.DNSNames, host)
+        }</span>
+
+        <span class="cov8" title="1">if host != "localhost" </span><span class="cov8" title="1">{
+                certTemplate.DNSNames = append(certTemplate.DNSNames, "localhost")
+        }</span>
+        <span class="cov8" title="1">if !containsIP(certTemplate.IPAddresses, net.IPv4(127, 0, 0, 1)) </span><span class="cov8" title="1">{
+                certTemplate.IPAddresses = append(certTemplate.IPAddresses, net.IPv4(127, 0, 0, 1))
+        }</span>
+
+        <span class="cov8" title="1">certDER, err := x509.CreateCertificate(rand.Reader, &amp;certTemplate, &amp;certTemplate, &amp;privateKey.PublicKey, privateKey)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, nil, fmt.Errorf("create self-signed certificate: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">certPEM = pem.EncodeToMemory(&amp;pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+        keyPEM = pem.EncodeToMemory(&amp;pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+        if certPEM == nil || keyPEM == nil </span><span class="cov0" title="0">{
+                return nil, nil, errors.New("encode certificate PEM")
+        }</span>
+        <span class="cov8" title="1">return certPEM, keyPEM, nil</span>
+}
+
+func containsIP(ips []net.IP, target net.IP) bool <span class="cov8" title="1">{
+        for _, ip := range ips </span><span class="cov8" title="1">{
+                if ip.Equal(target) </span><span class="cov8" title="1">{
+                        return true
+                }</span>
+        }
+        <span class="cov8" title="1">return false</span>
+}
+
+func appOriginFromRedirectURI(redirectURI string) (string, error) <span class="cov8" title="1">{
+        parsed, err := url.Parse(redirectURI)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", fmt.Errorf("parse redirect uri: %w", err)
+        }</span>
+        <span class="cov8" title="1">if parsed.Scheme == "" || parsed.Host == "" </span><span class="cov0" title="0">{
+                return "", fmt.Errorf("invalid redirect uri: %s", redirectURI)
+        }</span>
+        <span class="cov8" title="1">return parsed.Scheme + "://" + parsed.Host, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">package main
+
+import (
+        "bytes"
+        "context"
+        "crypto/tls"
+        "encoding/json"
+        "errors"
+        "fmt"
+        "io"
+        "net/http"
+        "os"
+        "path/filepath"
+        "strings"
+        "time"
+
+        "github.com/testcontainers/testcontainers-go"
+        "github.com/testcontainers/testcontainers-go/wait"
+)
+
+const (
+        defaultKeycloakAdminUser = "admin"
+)
+
+type keycloakServer struct {
+        container   testcontainers.Container
+        baseURL     string
+        httpClient  *http.Client
+        certTempDir string
+        adminPass   string
+}
+
+type keycloakRealmSetup struct {
+        Realm       string
+        ClientID    string
+        RedirectURI string
+        Username    string
+        Email       string
+        Password    string
+}
+
+type keycloakOIDC struct {
+        AuthURL       string
+        TokenURL      string
+        UserInfoURL   string
+        EndSessionURL string
+        ClientSecret  string
+}
+
+func startKeycloakServer(ctx context.Context, image, adminPassword string) (*keycloakServer, error) <span class="cov8" title="1">{
+        if strings.TrimSpace(adminPassword) == "" </span><span class="cov0" title="0">{
+                return nil, errors.New("empty keycloak admin password")
+        }</span>
+
+        <span class="cov8" title="1">certTempDir, err := os.MkdirTemp("", "jawsauth-keycloak-cert-*")
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("create keycloak cert temp dir: %w", err)
+        }</span>
+        <span class="cov8" title="1">cleanupTempDir := func() </span><span class="cov0" title="0">{
+                _ = os.RemoveAll(certTempDir)
+        }</span>
+
+        <span class="cov8" title="1">certPEM, keyPEM, err := generateSelfSignedCertificatePEM("localhost")
+        if err != nil </span><span class="cov0" title="0">{
+                cleanupTempDir()
+                return nil, err
+        }</span>
+
+        <span class="cov8" title="1">certPath := filepath.Join(certTempDir, "server.crt")
+        keyPath := filepath.Join(certTempDir, "server.key")
+        if err = os.WriteFile(certPath, certPEM, 0o644); err != nil </span><span class="cov0" title="0">{
+                cleanupTempDir()
+                return nil, fmt.Errorf("write keycloak cert: %w", err)
+        }</span>
+        <span class="cov8" title="1">if err = os.WriteFile(keyPath, keyPEM, 0o644); err != nil </span><span class="cov0" title="0">{
+                cleanupTempDir()
+                return nil, fmt.Errorf("write keycloak key: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">req := testcontainers.ContainerRequest{
+                Image:        image,
+                ExposedPorts: []string{"8443/tcp"},
+                Env: map[string]string{
+                        "KC_BOOTSTRAP_ADMIN_USERNAME":   defaultKeycloakAdminUser,
+                        "KC_BOOTSTRAP_ADMIN_PASSWORD":   adminPassword,
+                        "KC_HTTP_ENABLED":               "false",
+                        "KC_HTTPS_PORT":                 "8443",
+                        "KC_HTTPS_CERTIFICATE_FILE":     "/opt/keycloak/conf/server.crt",
+                        "KC_HTTPS_CERTIFICATE_KEY_FILE": "/opt/keycloak/conf/server.key",
+                        "KC_HOSTNAME_STRICT":            "false",
+                },
+                Cmd: []string{"start-dev", "--https-port=8443", "--http-enabled=false"},
+                Files: []testcontainers.ContainerFile{
+                        {HostFilePath: certPath, ContainerFilePath: "/opt/keycloak/conf/server.crt", FileMode: 0o644},
+                        {HostFilePath: keyPath, ContainerFilePath: "/opt/keycloak/conf/server.key", FileMode: 0o644},
+                },
+                WaitingFor: wait.ForHTTP("/").
+                        WithPort("8443/tcp").
+                        WithTLS(true).
+                        WithAllowInsecure(true).
+                        WithStartupTimeout(2 * time.Minute),
+        }
+
+        container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+                ContainerRequest: req,
+                Started:          true,
+        })
+        if err != nil </span><span class="cov0" title="0">{
+                cleanupTempDir()
+                return nil, fmt.Errorf("start keycloak container: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">host, err := container.Host(ctx)
+        if err != nil </span><span class="cov0" title="0">{
+                _ = container.Terminate(ctx)
+                cleanupTempDir()
+                return nil, fmt.Errorf("resolve keycloak host: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">port, err := container.MappedPort(ctx, "8443/tcp")
+        if err != nil </span><span class="cov0" title="0">{
+                _ = container.Terminate(ctx)
+                cleanupTempDir()
+                return nil, fmt.Errorf("resolve keycloak port: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">publicHost := host
+        switch strings.TrimSpace(strings.ToLower(publicHost)) </span>{
+        case "", "localhost", "127.0.0.1", "::1", "0.0.0.0", "::":<span class="cov8" title="1">
+                if s, e := defaultInterfaceAddress(); e == nil </span><span class="cov8" title="1">{
+                        publicHost = s
+                }</span>
+        }
+
+        <span class="cov8" title="1">transport := http.DefaultTransport.(*http.Transport).Clone()
+        transport.TLSClientConfig = &amp;tls.Config{ //nolint:gosec
+                MinVersion:         tls.VersionTLS12,
+                InsecureSkipVerify: true,
+        }
+
+        return &amp;keycloakServer{
+                container:   container,
+                baseURL:     fmt.Sprintf("https://%s:%s", publicHost, port.Port()),
+                httpClient:  &amp;http.Client{Transport: transport, Timeout: 30 * time.Second},
+                certTempDir: certTempDir,
+                adminPass:   adminPassword,
+        }, nil</span>
+}
+
+func (ks *keycloakServer) Close(ctx context.Context) error <span class="cov8" title="1">{
+        if ks == nil </span><span class="cov0" title="0">{
+                return nil
+        }</span>
+        <span class="cov8" title="1">var errs []error
+        if ks.container != nil </span><span class="cov8" title="1">{
+                errs = append(errs, ks.container.Terminate(ctx))
+        }</span>
+        <span class="cov8" title="1">if ks.certTempDir != "" </span><span class="cov8" title="1">{
+                errs = append(errs, os.RemoveAll(ks.certTempDir))
+        }</span>
+        <span class="cov8" title="1">return errors.Join(errs...)</span>
+}
+
+func (ks *keycloakServer) SetupRealm(ctx context.Context, setup keycloakRealmSetup) (oidc keycloakOIDC, err error) <span class="cov8" title="1">{
+        adminToken, err := getAdminToken(ctx, ks.httpClient, ks.baseURL, defaultKeycloakAdminUser, ks.adminPass)
+        if err != nil </span><span class="cov0" title="0">{
+                return oidc, fmt.Errorf("get admin token: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">if err = createRealm(ctx, ks.httpClient, ks.baseURL, adminToken, setup.Realm); err != nil </span><span class="cov0" title="0">{
+                return oidc, fmt.Errorf("create realm: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">clientUUID, err := createClient(ctx, ks.httpClient, ks.baseURL, adminToken, setup.Realm, setup.ClientID, setup.RedirectURI)
+        if err != nil </span><span class="cov0" title="0">{
+                return oidc, fmt.Errorf("create client: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">clientSecret, err := randomPassword(18)
+        if err != nil </span><span class="cov0" title="0">{
+                return oidc, fmt.Errorf("generate client secret: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">clientSecret, err = setClientSecret(ctx, ks.httpClient, ks.baseURL, adminToken, setup.Realm, clientUUID, clientSecret)
+        if err != nil </span><span class="cov0" title="0">{
+                return oidc, fmt.Errorf("set client secret: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">if err = assignEmailScopeAndEnableDirectAccess(ctx, ks.httpClient, ks.baseURL, adminToken, setup.Realm, clientUUID); err != nil </span><span class="cov0" title="0">{
+                return oidc, fmt.Errorf("configure client scopes: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">userID, err := createUser(ctx, ks.httpClient, ks.baseURL, adminToken, setup.Realm, setup.Username, setup.Email, "Demo", "User")
+        if err != nil </span><span class="cov0" title="0">{
+                return oidc, fmt.Errorf("create user: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">if err = setUserPassword(ctx, ks.httpClient, ks.baseURL, adminToken, setup.Realm, userID, setup.Password); err != nil </span><span class="cov0" title="0">{
+                return oidc, fmt.Errorf("set user password: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">openidcfg, err := getOpenIDConfig(ctx, ks.httpClient, ks.baseURL, setup.Realm)
+        if err != nil </span><span class="cov0" title="0">{
+                return oidc, fmt.Errorf("fetch openid config: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">oidc = keycloakOIDC{
+                AuthURL:       openidcfg.AuthorizationEndpoint,
+                TokenURL:      openidcfg.TokenEndpoint,
+                UserInfoURL:   openidcfg.UserInfoEndpoint,
+                EndSessionURL: openidcfg.EndSessionEndpoint,
+                ClientSecret:  clientSecret,
+        }
+        return</span>
+}
+
+type openIDConfig struct {
+        AuthorizationEndpoint string `json:"authorization_endpoint"`
+        TokenEndpoint         string `json:"token_endpoint"`
+        UserInfoEndpoint      string `json:"userinfo_endpoint"`
+        EndSessionEndpoint    string `json:"end_session_endpoint"`
+}
+
+func getOpenIDConfig(ctx context.Context, client *http.Client, baseURL, realm string) (cfg openIDConfig, err error) <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/realms/%s/.well-known/openid-configuration", baseURL, realm)
+        req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+        if err != nil </span><span class="cov0" title="0">{
+                return cfg, err
+        }</span>
+        <span class="cov8" title="1">resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return cfg, err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+        if resp.StatusCode != http.StatusOK </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return cfg, fmt.Errorf("openid config status %s: %s", resp.Status, string(body))
+        }</span>
+        <span class="cov8" title="1">if err = json.NewDecoder(resp.Body).Decode(&amp;cfg); err != nil </span><span class="cov0" title="0">{
+                return cfg, err
+        }</span>
+        <span class="cov8" title="1">if cfg.AuthorizationEndpoint == "" || cfg.TokenEndpoint == "" || cfg.UserInfoEndpoint == "" </span><span class="cov0" title="0">{
+                return cfg, errors.New("openid configuration missing endpoints")
+        }</span>
+        <span class="cov8" title="1">return cfg, nil</span>
+}
+
+func getAdminToken(ctx context.Context, client *http.Client, baseURL, username, password string) (string, error) <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/realms/master/protocol/openid-connect/token", baseURL)
+        data := "client_id=admin-cli&amp;grant_type=password&amp;username=" + username + "&amp;password=" + password
+
+        req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString(data))
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusOK </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return "", fmt.Errorf("admin token status %s: %s", resp.Status, string(body))
+        }</span>
+
+        <span class="cov8" title="1">var result struct {
+                AccessToken string `json:"access_token"`
+        }
+        if err := json.NewDecoder(resp.Body).Decode(&amp;result); err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">if result.AccessToken == "" </span><span class="cov0" title="0">{
+                return "", errors.New("missing admin access token")
+        }</span>
+        <span class="cov8" title="1">return result.AccessToken, nil</span>
+}
+
+func createRealm(ctx context.Context, client *http.Client, baseURL, token, realm string) error <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/admin/realms", baseURL)
+        payload := map[string]any{"realm": realm, "enabled": true}
+        data, err := json.Marshal(payload)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+        if resp.StatusCode != http.StatusCreated </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return fmt.Errorf("create realm status %s: %s", resp.Status, string(body))
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+func createClient(ctx context.Context, client *http.Client, baseURL, token, realm, clientID, redirectURI string) (string, error) <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/admin/realms/%s/clients", baseURL, realm)
+
+        origin, err := appOriginFromRedirectURI(redirectURI)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+
+        <span class="cov8" title="1">clientData := map[string]any{
+                "clientId":                  clientID,
+                "enabled":                   true,
+                "protocol":                  "openid-connect",
+                "publicClient":              false,
+                "standardFlowEnabled":       true,
+                "directAccessGrantsEnabled": true,
+                "redirectUris":              []string{redirectURI, origin + "/*"},
+                "webOrigins":                []string{origin},
+                "attributes": map[string]any{
+                        "post.logout.redirect.uris": origin + "/*",
+                },
+        }
+        data, err := json.Marshal(clientData)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+
+        <span class="cov8" title="1">req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusCreated </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return "", fmt.Errorf("create client status %s: %s", resp.Status, string(body))
+        }</span>
+
+        <span class="cov8" title="1">location := resp.Header.Get("Location")
+        idx := strings.LastIndex(location, "/")
+        if idx &lt; 0 || idx+1 &gt;= len(location) </span><span class="cov0" title="0">{
+                return "", errors.New("missing client location header")
+        }</span>
+        <span class="cov8" title="1">return location[idx+1:], nil</span>
+}
+
+func setClientSecret(ctx context.Context, client *http.Client, baseURL, token, realm, clientUUID, secret string) (string, error) <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/admin/realms/%s/clients/%s/client-secret", baseURL, realm, clientUUID)
+        payload := map[string]any{"value": secret}
+        data, err := json.Marshal(payload)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+
+        <span class="cov8" title="1">req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusOK </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return "", fmt.Errorf("set client secret status %s: %s", resp.Status, string(body))
+        }</span>
+
+        <span class="cov8" title="1">var result struct {
+                Value string `json:"value"`
+        }
+        if err := json.NewDecoder(resp.Body).Decode(&amp;result); err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">if result.Value == "" </span><span class="cov0" title="0">{
+                return "", errors.New("missing client secret value")
+        }</span>
+        <span class="cov8" title="1">return result.Value, nil</span>
+}
+
+func createUser(ctx context.Context, client *http.Client, baseURL, token, realm, username, email, firstName, lastName string) (string, error) <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/admin/realms/%s/users", baseURL, realm)
+        userData := map[string]any{
+                "username":      username,
+                "email":         email,
+                "firstName":     firstName,
+                "lastName":      lastName,
+                "emailVerified": true,
+                "enabled":       true,
+        }
+        data, err := json.Marshal(userData)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+
+        <span class="cov8" title="1">req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusCreated </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return "", fmt.Errorf("create user status %s: %s", resp.Status, string(body))
+        }</span>
+
+        <span class="cov8" title="1">location := resp.Header.Get("Location")
+        idx := strings.LastIndex(location, "/")
+        if idx &lt; 0 || idx+1 &gt;= len(location) </span><span class="cov0" title="0">{
+                return "", errors.New("missing user location header")
+        }</span>
+        <span class="cov8" title="1">return location[idx+1:], nil</span>
+}
+
+func setUserPassword(ctx context.Context, client *http.Client, baseURL, token, realm, userID, password string) error <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/admin/realms/%s/users/%s/reset-password", baseURL, realm, userID)
+        payload := map[string]any{
+                "type":      "password",
+                "value":     password,
+                "temporary": false,
+        }
+        data, err := json.Marshal(payload)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+
+        <span class="cov8" title="1">req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewBuffer(data))
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusNoContent </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return fmt.Errorf("set user password status %s: %s", resp.Status, string(body))
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+func getScopeID(ctx context.Context, client *http.Client, baseURL, token, realm, scopeName string) (string, error) <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/admin/realms/%s/client-scopes", baseURL, realm)
+        req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusOK </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return "", fmt.Errorf("get scope list status %s: %s", resp.Status, string(body))
+        }</span>
+
+        <span class="cov8" title="1">var scopes []map[string]any
+        if err := json.NewDecoder(resp.Body).Decode(&amp;scopes); err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">for _, scope := range scopes </span><span class="cov8" title="1">{
+                if scope["name"] == scopeName </span><span class="cov8" title="1">{
+                        if id, ok := scope["id"].(string); ok &amp;&amp; id != "" </span><span class="cov8" title="1">{
+                                return id, nil
+                        }</span>
+                }
+        }
+        <span class="cov0" title="0">return "", fmt.Errorf("scope not found: %s", scopeName)</span>
+}
+
+func ensureEmailScope(ctx context.Context, client *http.Client, baseURL, token, realm string) error <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/admin/realms/%s/client-scopes", baseURL, realm)
+        scopeData := map[string]any{
+                "name":        "email",
+                "description": "Access user email",
+                "protocol":    "openid-connect",
+        }
+        scopeJSON, err := json.Marshal(scopeData)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(scopeJSON))
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusOK &amp;&amp; resp.StatusCode != http.StatusCreated &amp;&amp; resp.StatusCode != http.StatusConflict </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return fmt.Errorf("ensure email scope status %s: %s", resp.Status, string(body))
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+func assignEmailScopeToClient(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) error <span class="cov8" title="1">{
+        if err := ensureEmailScope(ctx, client, baseURL, token, realm); err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">scopeID, err := getScopeID(ctx, client, baseURL, token, realm, "email")
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">url := fmt.Sprintf("%s/admin/realms/%s/clients/%s/default-client-scopes/%s", baseURL, realm, clientID, scopeID)
+        req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, nil)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+        if resp.StatusCode != http.StatusNoContent </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return fmt.Errorf("assign email scope status %s: %s", resp.Status, string(body))
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+func enableDirectAccessGrants(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) error <span class="cov8" title="1">{
+        url := fmt.Sprintf("%s/admin/realms/%s/clients/%s", baseURL, realm, clientID)
+
+        req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+        resp, err := client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusOK </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return fmt.Errorf("get client details status %s: %s", resp.Status, string(body))
+        }</span>
+
+        <span class="cov8" title="1">var clientConfig map[string]any
+        if err := json.NewDecoder(resp.Body).Decode(&amp;clientConfig); err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">clientConfig["directAccessGrantsEnabled"] = true
+
+        data, err := json.Marshal(clientConfig)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+
+        <span class="cov8" title="1">req, err = http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewBuffer(data))
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+
+        resp, err = client.Do(req)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusNoContent </span><span class="cov0" title="0">{
+                body, _ := io.ReadAll(resp.Body)
+                return fmt.Errorf("enable direct access grants status %s: %s", resp.Status, string(body))
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+func assignEmailScopeAndEnableDirectAccess(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) error <span class="cov8" title="1">{
+        if err := enableDirectAccessGrants(ctx, client, baseURL, token, realm, clientID); err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">if err := assignEmailScopeToClient(ctx, client, baseURL, token, realm, clientID); err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+func isDockerUnavailableError(err error) bool <span class="cov0" title="0">{
+        if err == nil </span><span class="cov0" title="0">{
+                return false
+        }</span>
+        <span class="cov0" title="0">msg := strings.ToLower(err.Error())
+        markers := []string{
+                "cannot connect to the docker daemon",
+                "is the docker daemon running",
+                "failed to create docker client",
+                "permission denied while trying to connect to the docker daemon socket",
+                "/var/run/docker.sock",
+        }
+        for _, marker := range markers </span><span class="cov0" title="0">{
+                if strings.Contains(msg, marker) </span><span class="cov0" title="0">{
+                        return true
+                }</span>
+        }
+        <span class="cov0" title="0">return false</span>
+}
+</pre>
+		
+		<pre class="file" id="file2" style="display: none">package main
+
+import (
+        "context"
+        "flag"
+        "log"
+        "os"
+        "os/signal"
+        "syscall"
+        "time"
+)
+
+func main() <span class="cov0" title="0">{
+        var opts demoOptions
+        flag.StringVar(&amp;opts.ListenAddr, "addr", "0.0.0.0:8443", "HTTPS listen address")
+        flag.StringVar(&amp;opts.PublicHost, "public-host", "", "public hostname used in redirect URIs and self-signed certificate")
+        flag.StringVar(&amp;opts.PasswordFile, "password-file", "demo-password.txt", "file path where generated login password is written")
+        flag.StringVar(&amp;opts.Realm, "realm", "jawsauth-demo", "Keycloak realm name")
+        flag.StringVar(&amp;opts.ClientID, "client-id", "jawsauth-demo-client", "Keycloak OAuth2 client ID")
+        flag.StringVar(&amp;opts.Username, "username", "demo", "demo login username")
+        flag.StringVar(&amp;opts.UserEmail, "user-email", "demo@example.com", "demo login user email")
+        flag.StringVar(&amp;opts.KeycloakImage, "keycloak-image", "quay.io/keycloak/keycloak:latest", "Keycloak Docker image")
+        flag.Parse()
+
+        ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+        defer stop()
+
+        demo, err := startDemo(ctx, opts)
+        if err != nil </span><span class="cov0" title="0">{
+                log.Fatalf("start demo: %v", err)
+        }</span>
+
+        <span class="cov0" title="0">log.Printf("demo app url: %s", demo.appURL)
+        log.Printf("keycloak url: %s", demo.keycloakURL)
+        log.Printf("username: %s", demo.username)
+        log.Printf("password file: %s", demo.passwordFile)
+
+        &lt;-ctx.Done()
+
+        shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+        defer cancel()
+        if err := demo.close(shutdownCtx); err != nil </span><span class="cov0" title="0">{
+                log.Printf("shutdown: %v", err)
+        }</span>
+}
+</pre>
+		
+		<pre class="file" id="file3" style="display: none">package jawsauth
 
 import (
         "errors"
@@ -206,7 +1404,7 @@ func (cfg *Config) Build(overrideUrl string) (oauth2cfg *oauth2.Config, err erro
 }
 </pre>
 		
-		<pre class="file" id="file1" style="display: none">package jawsauth
+		<pre class="file" id="file4" style="display: none">package jawsauth
 
 import "net/http"
 
@@ -218,7 +1416,70 @@ func (default403handler) ServeHTTP(hw http.ResponseWriter, hr *http.Request) <sp
 }</span>
 </pre>
 		
-		<pre class="file" id="file2" style="display: none">package jawsauth
+		<pre class="file" id="file5" style="display: none">package jawsauth
+
+import (
+        "errors"
+        "net/http"
+        "strings"
+)
+
+// ErrOAuth2Callback matches OAuth2 callback errors returned by the identity provider.
+var ErrOAuth2Callback = errors.New("oauth2 callback error")
+
+// OAuth2CallbackError describes an OAuth2 callback error response.
+type OAuth2CallbackError struct {
+        Code        string // OAuth2 error code from the callback.
+        Description string // Optional error description from the callback.
+        URI         string // Optional URI with details about the callback error.
+}
+
+func (err *OAuth2CallbackError) Error() string <span class="cov8" title="1">{
+        if err == nil </span><span class="cov8" title="1">{
+                return ErrOAuth2Callback.Error()
+        }</span>
+        <span class="cov8" title="1">var sb strings.Builder
+        sb.WriteString(ErrOAuth2Callback.Error())
+        if s := strings.TrimSpace(err.Code); s != "" </span><span class="cov8" title="1">{
+                sb.WriteString(": ")
+                sb.WriteString(s)
+        }</span>
+        <span class="cov8" title="1">if s := strings.TrimSpace(err.Description); s != "" </span><span class="cov8" title="1">{
+                sb.WriteString(": ")
+                sb.WriteString(s)
+        }</span>
+        <span class="cov8" title="1">if s := strings.TrimSpace(err.URI); s != "" </span><span class="cov8" title="1">{
+                sb.WriteString(" (")
+                sb.WriteString(s)
+                sb.WriteString(")")
+        }</span>
+        <span class="cov8" title="1">return sb.String()</span>
+}
+
+func (err *OAuth2CallbackError) Is(target error) bool <span class="cov8" title="1">{
+        return target == ErrOAuth2Callback
+}</span>
+
+func oauth2CallbackError(statusCode int, hr *http.Request) (nextStatusCode int, err error) <span class="cov8" title="1">{
+        nextStatusCode = statusCode
+        if s := strings.TrimSpace(hr.FormValue("error")); s != "" </span><span class="cov8" title="1">{
+                callbackErr := &amp;OAuth2CallbackError{
+                        Code:        s,
+                        Description: strings.TrimSpace(hr.FormValue("error_description")),
+                        URI:         strings.TrimSpace(hr.FormValue("error_uri")),
+                }
+                nextStatusCode = http.StatusBadRequest
+                switch callbackErr.Code </span>{
+                case "access_denied":<span class="cov8" title="1">
+                        nextStatusCode = http.StatusForbidden</span>
+                }
+                <span class="cov8" title="1">err = callbackErr</span>
+        }
+        <span class="cov8" title="1">return</span>
+}
+</pre>
+		
+		<pre class="file" id="file6" style="display: none">package jawsauth
 
 import "github.com/linkdata/jaws"
 
@@ -246,7 +1507,7 @@ func (a *JawsAuth) IsAdmin() (yes bool) <span class="cov8" title="1">{
 }</span>
 </pre>
 		
-		<pre class="file" id="file3" style="display: none">package jawsauth
+		<pre class="file" id="file7" style="display: none">package jawsauth
 
 import (
         "context"
@@ -270,6 +1531,7 @@ var ErrInconsistentState = errors.New("oauth2 inconsistent state")
 
 const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
+const oauth2PKCEVerifierKey = "oauth2pkceverifier"
 
 func normalizeHost(hostport string) (normalized string) <span class="cov8" title="1">{
         normalized = strings.TrimSpace(hostport)
@@ -337,6 +1599,7 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span c
         oauth2cfg, _, location := srv.begin(hr)
         if oauth2cfg != nil </span><span class="cov8" title="1">{
                 if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
+                        authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
                         state, _ := sess.Get(oauth2StateKey).(string)
                         if state == "" </span><span class="cov8" title="1">{
                                 b := [32]byte{}
@@ -344,8 +1607,14 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span c
                                 state = hex.EncodeToString(b[:])
                                 sess.Set(oauth2StateKey, state)
                         }</span>
+                        <span class="cov8" title="1">sess.Set(oauth2PKCEVerifierKey, nil)
+                        if srv.PKCE </span><span class="cov8" title="1">{
+                                verifier := oauth2.GenerateVerifier()
+                                sess.Set(oauth2PKCEVerifierKey, verifier)
+                                authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+                        }</span>
                         <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, location)
-                        location = oauth2cfg.AuthCodeURL(state, srv.Options...)</span>
+                        location = oauth2cfg.AuthCodeURL(state, authOptions...)</span>
                 }
         }
         <span class="cov8" title="1">hw.Header().Add("Location", location)
@@ -419,32 +1688,40 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                 if sess != nil </span><span class="cov8" title="1">{
                         gotState := hr.FormValue("state")
                         wantState, _ := sess.Get(oauth2StateKey).(string)
+                        verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
                         sess.Set(oauth2StateKey, nil)
+                        sess.Set(oauth2PKCEVerifierKey, nil)
                         err = ErrOAuth2MissingState
                         if wantState != "" </span><span class="cov8" title="1">{
                                 err = ErrOAuth2WrongState
                                 if wantState == gotState </span><span class="cov8" title="1">{
-                                        var token *oauth2.Token
-                                        if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), oauth2.AccessTypeOffline); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                tokensource := oauth2Config.TokenSource(context.Background(), token)
-                                                client := oauth2.NewClient(hr.Context(), tokensource)
-                                                var resp *http.Response
-                                                if resp, err = client.Get(userinfourl); /* #nosec G704 */ srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                        defer resp.Body.Close()
-                                                        if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                                if statusCode = resp.StatusCode; statusCode == http.StatusOK </span><span class="cov8" title="1">{
-                                                                        var userinfo map[string]any
-                                                                        if err = json.Unmarshal(body, &amp;userinfo); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                                                body = nil
-                                                                                sessValue = userinfo
-                                                                                sessTokenValue = tokensource
-                                                                                sessEmailValue = srv.extractEmail(userinfo)
-                                                                                if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
-                                                                                        location = sanitizeRedirectTarget(hr.Host, s)
-                                                                                }</span>
-                                                                                <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
-                                                                                hw.Header().Add("Location", location)
-                                                                                statusCode = http.StatusFound</span>
+                                        if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil </span><span class="cov8" title="1">{
+                                                var token *oauth2.Token
+                                                exchangeOptions := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
+                                                if verifier != "" </span><span class="cov8" title="1">{
+                                                        exchangeOptions = append(exchangeOptions, oauth2.VerifierOption(verifier))
+                                                }</span>
+                                                <span class="cov8" title="1">if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), exchangeOptions...); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                        tokensource := oauth2Config.TokenSource(context.Background(), token)
+                                                        client := oauth2.NewClient(hr.Context(), tokensource)
+                                                        var resp *http.Response
+                                                        if resp, err = client.Get(userinfourl); /* #nosec G704 */ srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                                defer resp.Body.Close()
+                                                                if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                                        if statusCode = resp.StatusCode; statusCode == http.StatusOK </span><span class="cov8" title="1">{
+                                                                                var userinfo map[string]any
+                                                                                if err = json.Unmarshal(body, &amp;userinfo); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                                                        body = nil
+                                                                                        sessValue = userinfo
+                                                                                        sessTokenValue = tokensource
+                                                                                        sessEmailValue = srv.extractEmail(userinfo)
+                                                                                        if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
+                                                                                                location = sanitizeRedirectTarget(hr.Host, s)
+                                                                                        }</span>
+                                                                                        <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
+                                                                                        hw.Header().Add("Location", location)
+                                                                                        statusCode = http.StatusFound</span>
+                                                                                }
                                                                         }
                                                                 }
                                                         }
@@ -473,7 +1750,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 }
 </pre>
 		
-		<pre class="file" id="file4" style="display: none">package jawsauth
+		<pre class="file" id="file8" style="display: none">package jawsauth
 
 import (
         "net/http"
@@ -505,6 +1782,7 @@ type Server struct {
         LogoutEvent     EventFunc               // if not nil, called before logout
         LoginFailed     FailedFunc              // if not nil, called on failed login
         Options         []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
+        PKCE            bool                    // if true, use RFC 7636 PKCE with S256 challenge/verifier
         oauth2cfg       *oauth2.Config
         userinfoUrl     string
         mu              sync.Mutex          // protects following
@@ -521,6 +1799,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
                 HandledPaths:    make(map[string]struct{}),
                 admins:          make(map[string]struct{}),
                 handle403:       default403handler{},
+                PKCE:            true,
         }
         if cfg != nil &amp;&amp; handleFn != nil &amp;&amp; cfg.RedirectURL != "" </span><span class="cov8" title="1">{
                 jw.MakeAuth = srv.makeAuth
@@ -660,7 +1939,7 @@ func (srv *Server) Handler(name string, dot any) http.Handler <span class="cov8"
 }</span>
 </pre>
 		
-		<pre class="file" id="file5" style="display: none">package jawsauth
+		<pre class="file" id="file9" style="display: none">package jawsauth
 
 import (
         "net/http"
