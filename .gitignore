@@ -26,3 +26,4 @@ go.work.sum
 
 .gocache/
 AGENTS.md
+demo-password.txt
