@@ -138,6 +138,9 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) {
 }
 
 func writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) {
+	hw.Header().Add("Cache-Control", "no-store")
+	hw.Header().Add("Referrer-Policy", "strict-origin-when-cross-origin")
+	hw.Header().Add("X-Content-Type-Options", "nosniff")
 	hw.WriteHeader(statusCode)
 	writeBody(hw, statusCode, err, body)
 }
