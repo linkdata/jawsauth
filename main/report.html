@@ -1646,10 +1646,17 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) <span class=
         <span class="cov8" title="1">_, _ = w.Write(body)</span>
 }
 
-func writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) <span class="cov8" title="1">{
+func writeHeaders(hw http.ResponseWriter, ishttps bool) <span class="cov8" title="1">{
         hw.Header().Add("Cache-Control", "no-store")
         hw.Header().Add("Referrer-Policy", "strict-origin-when-cross-origin")
         hw.Header().Add("X-Content-Type-Options", "nosniff")
+        if ishttps </span><span class="cov8" title="1">{
+                hw.Header().Add("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        }</span>
+}
+
+func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) <span class="cov8" title="1">{
+        writeHeaders(hw, srv.ishttps)
         hw.WriteHeader(statusCode)
         writeBody(hw, statusCode, err, body)
 }</span>
@@ -1749,7 +1756,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                         return
                 }</span>
         }
-        <span class="cov8" title="1">writeResult(hw, statusCode, err, body)</span>
+        <span class="cov8" title="1">srv.writeResult(hw, statusCode, err, body)</span>
 }
 </pre>
 		
@@ -1788,6 +1795,7 @@ type Server struct {
         PKCE            bool                    // if true, use RFC 7636 PKCE with S256 challenge/verifier
         oauth2cfg       *oauth2.Config
         userinfoUrl     string
+        ishttps         bool
         mu              sync.Mutex          // protects following
         admins          map[string]struct{} // if not empty, emails of admins
         handle403       http.Handler        // handler for 403 Forbidden
@@ -1809,6 +1817,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
                 if srv.oauth2cfg, err = cfg.Build(overrideUrl); err == nil </span><span class="cov8" title="1">{
                         var u *url.URL
                         if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil </span><span class="cov8" title="1">{
+                                srv.ishttps = (u.Scheme == "https")
                                 srv.handlePath(u.Path, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
                                 srv.handlePath(path.Join(path.Dir(u.Path), "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
                                 srv.handlePath(path.Join(path.Dir(u.Path), "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))
