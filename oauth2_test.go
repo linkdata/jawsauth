@@ -33,7 +33,7 @@ func Test_errtext(t *testing.T) {
 
 func Test_writeHeaders(t *testing.T) {
 	hw := httptest.NewRecorder()
-	writeHeaders(hw, true)
+	DefaultWriteHeaders(hw, true)
 	if x := hw.Header().Get("Strict-Transport-Security"); x == "" {
 		t.Error("STS not set")
 	}

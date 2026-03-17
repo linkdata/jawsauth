@@ -137,7 +137,10 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) {
 	_, _ = w.Write(body)
 }
 
-func writeHeaders(hw http.ResponseWriter, ishttps bool) {
+// WriteHeaders is called to write HTTP headers for all OAuth endpoint responses
+var WriteHeaders = DefaultWriteHeaders
+
+func DefaultWriteHeaders(hw http.ResponseWriter, ishttps bool) {
 	hw.Header().Add("Cache-Control", "no-store")
 	hw.Header().Add("Referrer-Policy", "strict-origin-when-cross-origin")
 	hw.Header().Add("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
@@ -150,7 +153,7 @@ func writeHeaders(hw http.ResponseWriter, ishttps bool) {
 }
 
 func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) {
-	writeHeaders(hw, srv.ishttps)
+	WriteHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
 	writeBody(hw, statusCode, err, body)
 }
