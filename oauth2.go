@@ -182,55 +182,59 @@ func (srv *Server) extractEmail(userinfo map[string]any) (sessEmailValue any) {
 }
 
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
-	oauth2Config, userinfourl, location := srv.begin(hr)
-
+	statusCode := http.StatusMethodNotAllowed
+	err := ErrOAuth2Callback
 	var body []byte
-	var sessValue any
-	var sessEmailValue any
-	var sessTokenValue any
-	sess := srv.Jaws.GetSession(hr)
-	err := ErrOAuth2NotConfigured
-	statusCode := http.StatusInternalServerError
 
-	if oauth2Config != nil {
-		err = ErrOAuth2MissingSession
-		statusCode = http.StatusBadRequest
-		if sess != nil {
-			gotState := hr.FormValue("state")
-			wantState, _ := sess.Get(oauth2StateKey).(string)
-			verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
-			sess.Set(oauth2StateKey, nil)
-			sess.Set(oauth2PKCEVerifierKey, nil)
-			err = ErrOAuth2MissingState
-			if wantState != "" {
-				err = ErrOAuth2WrongState
-				if wantState == gotState {
-					if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil {
-						var token *oauth2.Token
-						exchangeOptions := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
-						if verifier != "" {
-							exchangeOptions = append(exchangeOptions, oauth2.VerifierOption(verifier))
-						}
-						if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), exchangeOptions...); srv.Jaws.Log(err) == nil {
-							tokensource := oauth2Config.TokenSource(context.Background(), token)
-							client := oauth2.NewClient(hr.Context(), tokensource)
-							var resp *http.Response
-							if resp, err = client.Get(userinfourl); /* #nosec G704 */ srv.Jaws.Log(err) == nil {
-								defer resp.Body.Close()
-								if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil {
-									if statusCode = resp.StatusCode; statusCode == http.StatusOK {
-										var userinfo map[string]any
-										if err = json.Unmarshal(body, &userinfo); srv.Jaws.Log(err) == nil {
-											body = nil
-											sessValue = userinfo
-											sessTokenValue = tokensource
-											sessEmailValue = srv.extractEmail(userinfo)
-											if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
-												location = sanitizeRedirectTarget(hr.Host, s)
+	if hr.Method == http.MethodGet {
+		oauth2Config, userinfourl, location := srv.begin(hr)
+		var sessValue any
+		var sessEmailValue any
+		var sessTokenValue any
+		sess := srv.Jaws.GetSession(hr)
+		err = ErrOAuth2NotConfigured
+		statusCode = http.StatusInternalServerError
+
+		if oauth2Config != nil {
+			err = ErrOAuth2MissingSession
+			statusCode = http.StatusBadRequest
+			if sess != nil {
+				gotState := hr.FormValue("state")
+				wantState, _ := sess.Get(oauth2StateKey).(string)
+				verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
+				sess.Set(oauth2StateKey, nil)
+				sess.Set(oauth2PKCEVerifierKey, nil)
+				err = ErrOAuth2MissingState
+				if wantState != "" {
+					err = ErrOAuth2WrongState
+					if wantState == gotState {
+						if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil {
+							var token *oauth2.Token
+							exchangeOptions := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
+							if verifier != "" {
+								exchangeOptions = append(exchangeOptions, oauth2.VerifierOption(verifier))
+							}
+							if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), exchangeOptions...); srv.Jaws.Log(err) == nil {
+								tokensource := oauth2Config.TokenSource(context.Background(), token)
+								client := oauth2.NewClient(hr.Context(), tokensource)
+								var resp *http.Response
+								if resp, err = client.Get(userinfourl); /* #nosec G704 */ srv.Jaws.Log(err) == nil {
+									defer resp.Body.Close()
+									if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil {
+										if statusCode = resp.StatusCode; statusCode == http.StatusOK {
+											var userinfo map[string]any
+											if err = json.Unmarshal(body, &userinfo); srv.Jaws.Log(err) == nil {
+												body = nil
+												sessValue = userinfo
+												sessTokenValue = tokensource
+												sessEmailValue = srv.extractEmail(userinfo)
+												if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
+													location = sanitizeRedirectTarget(hr.Host, s)
+												}
+												sess.Set(oauth2ReferrerKey, nil)
+												hw.Header().Add("Location", location)
+												statusCode = http.StatusFound
 											}
-											sess.Set(oauth2ReferrerKey, nil)
-											hw.Header().Add("Location", location)
-											statusCode = http.StatusFound
 										}
 									}
 								}
@@ -240,20 +244,20 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 				}
 			}
 		}
-	}
-	if sess != nil {
-		sess.Set(srv.SessionKey, sessValue)
-		sess.Set(srv.SessionTokenKey, sessTokenValue)
-		sess.Set(srv.SessionEmailKey, sessEmailValue)
-		if srv.LoginEvent != nil && sessValue != nil {
-			srv.LoginEvent(sess, hr)
+		if sess != nil {
+			sess.Set(srv.SessionKey, sessValue)
+			sess.Set(srv.SessionTokenKey, sessTokenValue)
+			sess.Set(srv.SessionEmailKey, sessEmailValue)
+			if srv.LoginEvent != nil && sessValue != nil {
+				srv.LoginEvent(sess, hr)
+			}
+			srv.Jaws.Dirty(sess)
 		}
-		srv.Jaws.Dirty(sess)
-	}
-	if err != nil && srv.LoginFailed != nil {
-		sessEmailValue, _ := sessEmailValue.(string)
-		if srv.LoginFailed(hw, hr, statusCode, err, sessEmailValue) {
-			return
+		if err != nil && srv.LoginFailed != nil {
+			sessEmailValue, _ := sessEmailValue.(string)
+			if srv.LoginFailed(hw, hr, statusCode, err, sessEmailValue) {
+				return
+			}
 		}
 	}
 	srv.writeResult(hw, statusCode, err, body)
