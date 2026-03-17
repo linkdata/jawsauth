@@ -31,6 +31,14 @@ func Test_errtext(t *testing.T) {
 	}
 }
 
+func Test_writeHeaders(t *testing.T) {
+	hw := httptest.NewRecorder()
+	writeHeaders(hw, true)
+	if x := hw.Header().Get("Strict-Transport-Security"); x == "" {
+		t.Error("STS not set")
+	}
+}
+
 func Test_sanitizeRedirectTarget(t *testing.T) {
 	if s := sanitizeRedirectTarget("example.com", "https://example.com/safe?x=1"); s != "/safe?x=1" {
 		t.Fatal(s)

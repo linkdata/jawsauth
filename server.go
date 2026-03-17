@@ -33,6 +33,7 @@ type Server struct {
 	PKCE            bool                    // if true, use RFC 7636 PKCE with S256 challenge/verifier
 	oauth2cfg       *oauth2.Config
 	userinfoUrl     string
+	ishttps         bool
 	mu              sync.Mutex          // protects following
 	admins          map[string]struct{} // if not empty, emails of admins
 	handle403       http.Handler        // handler for 403 Forbidden
@@ -54,6 +55,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		if srv.oauth2cfg, err = cfg.Build(overrideUrl); err == nil {
 			var u *url.URL
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
+				srv.ishttps = (u.Scheme == "https")
 				srv.handlePath(u.Path, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
 				srv.handlePath(path.Join(path.Dir(u.Path), "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
 				srv.handlePath(path.Join(path.Dir(u.Path), "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))

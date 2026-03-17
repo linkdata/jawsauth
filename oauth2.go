@@ -137,10 +137,17 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) {
 	_, _ = w.Write(body)
 }
 
-func writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) {
+func writeHeaders(hw http.ResponseWriter, ishttps bool) {
 	hw.Header().Add("Cache-Control", "no-store")
 	hw.Header().Add("Referrer-Policy", "strict-origin-when-cross-origin")
 	hw.Header().Add("X-Content-Type-Options", "nosniff")
+	if ishttps {
+		hw.Header().Add("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
+}
+
+func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) {
+	writeHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
 	writeBody(hw, statusCode, err, body)
 }
@@ -240,5 +247,5 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			return
 		}
 	}
-	writeResult(hw, statusCode, err, body)
+	srv.writeResult(hw, statusCode, err, body)
 }
