@@ -109,6 +109,7 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 		}
 	}
 	hw.Header().Add("Location", location)
+	WriteHeaders(hw, srv.ishttps)
 	hw.WriteHeader(http.StatusFound)
 }
 
@@ -124,6 +125,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 		srv.Jaws.Dirty(sess)
 	}
 	hw.Header().Add("Location", location)
+	WriteHeaders(hw, srv.ishttps)
 	hw.WriteHeader(http.StatusFound)
 }
 
