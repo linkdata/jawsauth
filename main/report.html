@@ -1646,7 +1646,10 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) <span class=
         <span class="cov8" title="1">_, _ = w.Write(body)</span>
 }
 
-func writeHeaders(hw http.ResponseWriter, ishttps bool) <span class="cov8" title="1">{
+// WriteHeaders is called to write HTTP headers for all OAuth endpoint responses
+var WriteHeaders = DefaultWriteHeaders
+
+func DefaultWriteHeaders(hw http.ResponseWriter, ishttps bool) <span class="cov8" title="1">{
         hw.Header().Add("Cache-Control", "no-store")
         hw.Header().Add("Referrer-Policy", "strict-origin-when-cross-origin")
         hw.Header().Add("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
@@ -1659,7 +1662,7 @@ func writeHeaders(hw http.ResponseWriter, ishttps bool) <span class="cov8" title
 }
 
 func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) <span class="cov8" title="1">{
-        writeHeaders(hw, srv.ishttps)
+        WriteHeaders(hw, srv.ishttps)
         hw.WriteHeader(statusCode)
         writeBody(hw, statusCode, err, body)
 }</span>
