@@ -1618,6 +1618,7 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span c
                 }
         }
         <span class="cov8" title="1">hw.Header().Add("Location", location)
+        WriteHeaders(hw, srv.ishttps)
         hw.WriteHeader(http.StatusFound)</span>
 }
 
@@ -1633,6 +1634,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) <span 
                 srv.Jaws.Dirty(sess)</span>
         }
         <span class="cov8" title="1">hw.Header().Add("Location", location)
+        WriteHeaders(hw, srv.ishttps)
         hw.WriteHeader(http.StatusFound)</span>
 }
 
