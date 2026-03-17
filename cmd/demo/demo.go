@@ -200,6 +200,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 		AuthURL:      oidc.AuthURL,
 		TokenURL:     oidc.TokenURL,
 		UserInfoURL:  oidc.UserInfoURL,
+		Issuer:       oidc.Issuer,
 		Scopes:       []string{"openid", "profile", "email"},
 		ClientID:     opts.ClientID,
 		ClientSecret: oidc.ClientSecret,

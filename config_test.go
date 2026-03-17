@@ -14,6 +14,7 @@ func TestConfig_Build(t *testing.T) {
 		AuthURL      string
 		TokenURL     string
 		UserInfoURL  string
+		Issuer       string
 		Scopes       []string
 		ClientID     string
 		ClientSecret string
@@ -24,6 +25,7 @@ func TestConfig_Build(t *testing.T) {
 		AuthURL:      "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/authorize",
 		TokenURL:     "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/token",
 		UserInfoURL:  "https://graph.microsoft.com/v1.0/me?$select=displayName,mail",
+		Issuer:       "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0",
 		Scopes:       []string{"user.read"},
 		ClientID:     "the-client-id",
 		ClientSecret: "the-client-secret",
@@ -82,6 +84,7 @@ func TestConfig_Build(t *testing.T) {
 				AuthURL:      tt.fields.AuthURL,
 				TokenURL:     tt.fields.TokenURL,
 				UserInfoURL:  tt.fields.UserInfoURL,
+				Issuer:       tt.fields.Issuer,
 				Scopes:       tt.fields.Scopes,
 				ClientID:     tt.fields.ClientID,
 				ClientSecret: tt.fields.ClientSecret,
@@ -154,6 +157,14 @@ func TestConfig_ValidateRequiresAbsoluteURLs(t *testing.T) {
 			},
 			wantField: "AuthURL",
 			wantCause: ErrConfigURLMissingHost,
+		},
+		{
+			name: "issuerRelativePath",
+			patch: func(cfg *Config) {
+				cfg.Issuer = "issuer"
+			},
+			wantField: "Issuer",
+			wantCause: ErrConfigURLNotAbsolute,
 		},
 	}
 

@@ -13,6 +13,7 @@ type Config struct {
 	RedirectURL string   // e.g. "https://application.example.com/oauth2/callback"
 	AuthURL     string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/authorize"
 	TokenURL    string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/token"
+	Issuer      string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0": optional, if empty callback "iss" is ignored
 	UserInfoURL string   // e.g. "https://graph.microsoft.com/v1.0/me?$select=displayName,mail"
 	Scopes      []string // e.g. []string{"user.read"}
 	ClientID    string
@@ -81,9 +82,14 @@ func (cfg *Config) Validate() (err error) {
 		if err = validateUrl("AuthURL", cfg.AuthURL); err == nil {
 			if err = validateUrl("TokenURL", cfg.TokenURL); err == nil {
 				if err = validateUrl("UserInfoURL", cfg.UserInfoURL); err == nil {
-					if err = requireStr("ClientID", cfg.ClientID); err == nil {
-						if err = requireStr("ClientSecret", cfg.ClientSecret); err == nil {
-							err = requireLen("Scopes", len(cfg.Scopes))
+					if strings.TrimSpace(cfg.Issuer) != "" {
+						err = validateUrl("Issuer", cfg.Issuer)
+					}
+					if err == nil {
+						if err = requireStr("ClientID", cfg.ClientID); err == nil {
+							if err = requireStr("ClientSecret", cfg.ClientSecret); err == nil {
+								err = requireLen("Scopes", len(cfg.Scopes))
+							}
 						}
 					}
 				}

@@ -43,6 +43,7 @@ type keycloakOIDC struct {
 	AuthURL       string
 	TokenURL      string
 	UserInfoURL   string
+	Issuer        string
 	EndSessionURL string
 	ClientSecret  string
 }
@@ -208,6 +209,7 @@ func (ks *keycloakServer) SetupRealm(ctx context.Context, setup keycloakRealmSet
 		AuthURL:       openidcfg.AuthorizationEndpoint,
 		TokenURL:      openidcfg.TokenEndpoint,
 		UserInfoURL:   openidcfg.UserInfoEndpoint,
+		Issuer:        openidcfg.Issuer,
 		EndSessionURL: openidcfg.EndSessionEndpoint,
 		ClientSecret:  clientSecret,
 	}
@@ -218,6 +220,7 @@ type openIDConfig struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 	UserInfoEndpoint      string `json:"userinfo_endpoint"`
+	Issuer                string `json:"issuer"`
 	EndSessionEndpoint    string `json:"end_session_endpoint"`
 }
 
