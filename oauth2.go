@@ -140,7 +140,10 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) {
 func writeHeaders(hw http.ResponseWriter, ishttps bool) {
 	hw.Header().Add("Cache-Control", "no-store")
 	hw.Header().Add("Referrer-Policy", "strict-origin-when-cross-origin")
+	hw.Header().Add("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 	hw.Header().Add("X-Content-Type-Options", "nosniff")
+	hw.Header().Add("X-Frame-Options", "DENY")
+	hw.Header().Add("X-XSS-Protection", "0")
 	if ishttps {
 		hw.Header().Add("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	}
