@@ -149,6 +149,7 @@ func DefaultWriteHeaders(hw http.ResponseWriter, ishttps bool) {
 	hw.Header().Add("X-Content-Type-Options", "nosniff")
 	hw.Header().Add("X-Frame-Options", "DENY")
 	hw.Header().Add("X-XSS-Protection", "0")
+	hw.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 	if ishttps {
 		hw.Header().Add("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	}
