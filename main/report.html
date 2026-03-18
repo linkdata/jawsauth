@@ -499,7 +499,7 @@ func DefaultWriteHeaders(hw http.ResponseWriter, ishttps bool) <span class="cov8
         hw.Header().Add("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
         hw.Header().Add("X-Content-Type-Options", "nosniff")
         hw.Header().Add("X-Frame-Options", "DENY")
-        hw.Header().Add("X-XSS-Protection", "0")
+        hw.Header().Add("X-Xss-Protection", "0")
         hw.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
         if ishttps </span><span class="cov8" title="1">{
                 hw.Header().Add("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
