@@ -87,46 +87,54 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
 }
 
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
-	oauth2cfg, _, location := srv.begin(hr)
-	if oauth2cfg != nil {
-		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
-			state, _ := sess.Get(oauth2StateKey).(string)
-			if state == "" {
-				b := [32]byte{}
-				_, _ = rand.Read(b[:]) // never returns an error, always fills all of b
-				state = hex.EncodeToString(b[:])
-				sess.Set(oauth2StateKey, state)
+	statusCode := http.StatusMethodNotAllowed
+	if hr.Method == http.MethodGet {
+		oauth2cfg, _, location := srv.begin(hr)
+		if oauth2cfg != nil {
+			if sess := srv.Jaws.GetSession(hr); sess != nil {
+				authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
+				state, _ := sess.Get(oauth2StateKey).(string)
+				if state == "" {
+					b := [32]byte{}
+					_, _ = rand.Read(b[:]) // never returns an error, always fills all of b
+					state = hex.EncodeToString(b[:])
+					sess.Set(oauth2StateKey, state)
+				}
+				sess.Set(oauth2PKCEVerifierKey, nil)
+				if srv.PKCE {
+					verifier := oauth2.GenerateVerifier()
+					sess.Set(oauth2PKCEVerifierKey, verifier)
+					authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+				}
+				sess.Set(oauth2ReferrerKey, location)
+				location = oauth2cfg.AuthCodeURL(state, authOptions...)
 			}
-			sess.Set(oauth2PKCEVerifierKey, nil)
-			if srv.PKCE {
-				verifier := oauth2.GenerateVerifier()
-				sess.Set(oauth2PKCEVerifierKey, verifier)
-				authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-			}
-			sess.Set(oauth2ReferrerKey, location)
-			location = oauth2cfg.AuthCodeURL(state, authOptions...)
 		}
+		hw.Header().Add("Location", location)
+		statusCode = http.StatusFound
 	}
-	hw.Header().Add("Location", location)
 	WriteHeaders(hw, srv.ishttps)
-	hw.WriteHeader(http.StatusFound)
+	hw.WriteHeader(statusCode)
 }
 
 func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
-	_, _, location := srv.begin(hr)
-	if sess := srv.Jaws.GetSession(hr); sess != nil {
-		if srv.LogoutEvent != nil {
-			srv.LogoutEvent(sess, hr)
+	statusCode := http.StatusMethodNotAllowed
+	if hr.Method == http.MethodGet {
+		_, _, location := srv.begin(hr)
+		if sess := srv.Jaws.GetSession(hr); sess != nil {
+			if srv.LogoutEvent != nil {
+				srv.LogoutEvent(sess, hr)
+			}
+			sess.Set(srv.SessionKey, nil)
+			sess.Set(srv.SessionTokenKey, nil)
+			sess.Set(srv.SessionEmailKey, nil)
+			srv.Jaws.Dirty(sess)
 		}
-		sess.Set(srv.SessionKey, nil)
-		sess.Set(srv.SessionTokenKey, nil)
-		sess.Set(srv.SessionEmailKey, nil)
-		srv.Jaws.Dirty(sess)
+		hw.Header().Add("Location", location)
+		statusCode = http.StatusFound
 	}
-	hw.Header().Add("Location", location)
 	WriteHeaders(hw, srv.ishttps)
-	hw.WriteHeader(http.StatusFound)
+	hw.WriteHeader(statusCode)
 }
 
 func writeBody(w io.Writer, statusCode int, err error, body []byte) {
