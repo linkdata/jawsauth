@@ -366,6 +366,7 @@ import (
         "net/url"
         "strings"
 
+        "github.com/linkdata/jaws/secureheaders"
         "golang.org/x/oauth2"
 )
 
@@ -464,7 +465,7 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span c
                 <span class="cov8" title="1">hw.Header().Add("Location", location)
                 statusCode = http.StatusFound</span>
         }
-        <span class="cov8" title="1">WriteHeaders(hw, srv.ishttps)
+        <span class="cov8" title="1">SetHeaders(hw, srv.ishttps)
         hw.WriteHeader(statusCode)</span>
 }
 
@@ -484,7 +485,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) <span 
                 <span class="cov8" title="1">hw.Header().Add("Location", location)
                 statusCode = http.StatusFound</span>
         }
-        <span class="cov8" title="1">WriteHeaders(hw, srv.ishttps)
+        <span class="cov8" title="1">SetHeaders(hw, srv.ishttps)
         hw.WriteHeader(statusCode)</span>
 }
 
@@ -498,24 +499,17 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) <span class=
         <span class="cov8" title="1">_, _ = w.Write(body)</span>
 }
 
-// WriteHeaders is called to write HTTP headers for all OAuth endpoint responses
-var WriteHeaders = DefaultWriteHeaders
+// SetHeaders is called to write HTTP headers for all OAuth endpoint responses
+var SetHeaders = DefaultSetHeaders
 
-func DefaultWriteHeaders(hw http.ResponseWriter, ishttps bool) <span class="cov8" title="1">{
+// DefaultSetHeaders writes response headers for OAuth endpoint responses.
+func DefaultSetHeaders(hw http.ResponseWriter, ishttps bool) <span class="cov8" title="1">{
+        secureheaders.SetHeaders(hw, ishttps)
         hw.Header().Set("Cache-Control", "no-store")
-        hw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-        hw.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
-        hw.Header().Set("X-Content-Type-Options", "nosniff")
-        hw.Header().Set("X-Frame-Options", "DENY")
-        hw.Header().Set("X-Xss-Protection", "0")
-        hw.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
-        if ishttps </span><span class="cov8" title="1">{
-                hw.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-        }</span>
-}
+}</span>
 
 func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) <span class="cov8" title="1">{
-        WriteHeaders(hw, srv.ishttps)
+        SetHeaders(hw, srv.ishttps)
         hw.WriteHeader(statusCode)
         writeBody(hw, statusCode, err, body)
 }</span>
