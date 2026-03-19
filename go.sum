@@ -67,6 +67,8 @@ github.com/linkdata/jaws v0.201.2 h1:D/RmWJrHcCQTzLcjWmO7xbDDS+zLoZdDRSrLDa3hSzw
 github.com/linkdata/jaws v0.201.2/go.mod h1:m0R1Piy6E+pp0JNJklUDQGexDk8rT7p9ohxnj3dNuxE=
 github.com/linkdata/jq v0.0.3 h1:m1eFUh2gJ8ebg3GF5d+etiGbMtYtYSO3M7jn2Gy5cs4=
 github.com/linkdata/jq v0.0.3/go.mod h1:b76MMuWybyXrVEKSHJkv+r5IEattnghPf1bNRJ5PNlE=
+github.com/linkdata/webserv v1.0.2 h1:pzEJuIaWr10xq5ul5wnkSWXdRCynXxxKJuB8O4hwJZ8=
+github.com/linkdata/webserv v1.0.2/go.mod h1:t925mW7aIgkoIJcRxQV4qyCmIQB41920MlFfocx9reQ=
 github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 h1:6E+4a0GO5zZEnZ81pIr0yLvtUWk2if982qA3F3QD6H4=
 github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0/go.mod h1:zJYVVT2jmtg6P3p1VtQj7WsuWi/y4VnjVBn7F8KPB3I=
 github.com/magiconair/properties v1.8.10 h1:s31yESBquKXCV9a/ScB3ESkOjUYYv+X0rg8SYxI99mE=

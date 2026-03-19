@@ -24,6 +24,7 @@ import (
 
 	"github.com/linkdata/jaws"
 	"github.com/linkdata/jawsauth"
+	"github.com/linkdata/webserv"
 	"golang.org/x/oauth2"
 )
 
@@ -106,6 +107,7 @@ type demoServer struct {
 	httpServer *http.Server
 	jaws       *jaws.Jaws
 	keycloak   *keycloakServer
+	certDir    string
 
 	closeOnce sync.Once
 }
@@ -122,6 +124,9 @@ func (d *demoServer) close(ctx context.Context) (err error) {
 		if d.keycloak != nil {
 			errs = append(errs, d.keycloak.Close(ctx))
 		}
+		if d.certDir != "" {
+			errs = append(errs, os.RemoveAll(d.certDir))
+		}
 		err = errors.Join(errs...)
 	})
 	return
@@ -130,7 +135,31 @@ func (d *demoServer) close(ctx context.Context) (err error) {
 func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err error) {
 	opts = opts.withDefaults()
 
-	listener, err := net.Listen("tcp", opts.ListenAddr)
+	listenAddr, err := net.ResolveTCPAddr("tcp", opts.ListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("resolve listen address %q: %w", opts.ListenAddr, err)
+	}
+
+	publicHost, err := resolvePublicHost(opts.PublicHost, listenAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	certDir, err := writeTLSCertDir(publicHost)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(certDir)
+		}
+	}()
+
+	listenCfg := webserv.Config{
+		Address: opts.ListenAddr,
+		CertDir: certDir,
+	}
+	listener, err := listenCfg.Listen()
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
@@ -139,11 +168,6 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 			_ = listener.Close()
 		}
 	}()
-
-	publicHost, err := resolvePublicHost(opts.PublicHost, listener.Addr())
-	if err != nil {
-		return nil, err
-	}
 
 	appURL := "https://" + net.JoinHostPort(publicHost, listenerPort(listener.Addr()))
 
@@ -193,7 +217,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/jaws/", jw)
+	mux.Handle(http.MethodGet+" /jaws/", jw)
 
 	cfg := jawsauth.Config{
 		RedirectURL:  appURL + "/oauth2/callback",
@@ -207,7 +231,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 	}
 
 	handleWithOAuthClient := func(uri string, handler http.Handler) {
-		mux.Handle(uri, http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		mux.Handle(http.MethodGet+" "+uri, http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
 			oauthCtx := context.WithValue(hr.Context(), oauth2.HTTPClient, keycloak.httpClient)
 			handler.ServeHTTP(hw, hr.WithContext(oauthCtx))
 		}))
@@ -220,12 +244,12 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 
 	var sliderMu sync.Mutex
 	var slider float64
-	mux.Handle("/", authServer.Handler("index.html", jaws.Bind(&sliderMu, &slider)))
-	mux.HandleFunc("/logged-out", func(hw http.ResponseWriter, hr *http.Request) {
+	mux.Handle(http.MethodGet+" /", authServer.Handler("index.html", jaws.Bind(&sliderMu, &slider)))
+	mux.HandleFunc(http.MethodGet+" /logged-out", func(hw http.ResponseWriter, hr *http.Request) {
 		hw.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = hw.Write([]byte(`<!doctype html><html lang="en"><body><h1>Signed out</h1><p><a href="/">Sign in again</a></p></body></html>`))
 	})
-	mux.HandleFunc("/logout", func(hw http.ResponseWriter, hr *http.Request) {
+	mux.HandleFunc(http.MethodGet+" /logout", func(hw http.ResponseWriter, hr *http.Request) {
 		var idTokenHint string
 		if sess := jw.GetSession(hr); sess != nil {
 			if tokenSource, ok := sess.Get(authServer.SessionTokenKey).(oauth2.TokenSource); ok && tokenSource != nil {
@@ -261,23 +285,14 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 		http.Redirect(hw, hr, "/logged-out", http.StatusFound)
 	})
 
-	cert, err := generateSelfSignedCertificate(publicHost)
-	if err != nil {
-		return nil, err
-	}
-
 	httpServer := &http.Server{
 		Handler: mux,
-		TLSConfig: &tls.Config{ //nolint:gosec
-			MinVersion:   tls.VersionTLS12,
-			Certificates: []tls.Certificate{cert},
-		},
 	}
 
 	go jw.Serve()
 
 	go func() {
-		_ = httpServer.Serve(tls.NewListener(listener, httpServer.TLSConfig))
+		_ = httpServer.Serve(listener)
 	}()
 
 	if err = waitForHTTPSReady(ctx, appURL+"/jaws/.ping"); err != nil {
@@ -300,6 +315,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 		httpServer:   httpServer,
 		jaws:         jw,
 		keycloak:     keycloak,
+		certDir:      certDir,
 	}, nil
 }
 
@@ -420,16 +436,31 @@ func writePasswordFile(path, password string) error {
 	return nil
 }
 
-func generateSelfSignedCertificate(host string) (tls.Certificate, error) {
+func writeTLSCertDir(host string) (certDir string, err error) {
+	certDir, err = os.MkdirTemp("", "jawsauth-demo-cert-*")
+	if err != nil {
+		return "", fmt.Errorf("create demo cert temp dir: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(certDir)
+		}
+	}()
+
 	certPEM, keyPEM, err := generateSelfSignedCertificatePEM(host)
 	if err != nil {
-		return tls.Certificate{}, err
+		return "", err
 	}
-	certificate, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("load key pair: %w", err)
+
+	certPath := filepath.Join(certDir, webserv.FullchainPem)
+	if err = os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		return "", fmt.Errorf("write demo cert: %w", err)
 	}
-	return certificate, nil
+	keyPath := filepath.Join(certDir, webserv.PrivkeyPem)
+	if err = os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return "", fmt.Errorf("write demo key: %w", err)
+	}
+	return certDir, nil
 }
 
 func generateSelfSignedCertificatePEM(host string) (certPEM, keyPEM []byte, err error) {

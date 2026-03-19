@@ -69,10 +69,10 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	const indexTemplate = `<html>{{with .Auth}}{{.Email}} {{.IsAdmin}} {{.Data}}{{end}}</html>`
 
 	jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse(indexTemplate)))
-	jw.Logger = slog.Default() // optionally set the logger to use
-	jw.Debug = deadlock.Debug  // optionally set the debug flag
-	go jw.Serve()              // start the JaWS processing loop
-	mux.Handle("/jaws/", jw)   // ensure the JaWS routes are handled
+	jw.Logger = slog.Default()               // optionally set the logger to use
+	jw.Debug = deadlock.Debug                // optionally set the debug flag
+	go jw.Serve()                            // start the JaWS processing loop
+	mux.Handle(http.MethodGet+" /jaws/", jw) // ensure the JaWS routes are handled
 
 	cfg := Config{
 		RedirectURL:  hsrv.URL + "/oauth2/callback",
@@ -84,7 +84,10 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		ClientSecret: clientSecret,
 	}
 
-	asrv, err := New(jw, &cfg, mux.Handle)
+	handleGet := func(uri string, handler http.Handler) {
+		mux.Handle(http.MethodGet+" "+uri, handler)
+	}
+	asrv, err := New(jw, &cfg, handleGet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,9 +101,9 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 
 	asrv.Set403Handler(nil)
 
-	mux.Handle("/needauth", asrv.Handler("index.html", nil))
-	mux.Handle("/needadmin", asrv.HandlerAdmin("index.html", nil))
-	mux.Handle("/", ui.Handler(jw, "index.html", nil))
+	mux.Handle(http.MethodGet+" /needauth", asrv.Handler("index.html", nil))
+	mux.Handle(http.MethodGet+" /needadmin", asrv.HandlerAdmin("index.html", nil))
+	mux.Handle(http.MethodGet+" /", ui.Handler(jw, "index.html", nil))
 
 	asrv.Wrap(http.NotFoundHandler())
 	asrv.WrapAdmin(http.NotFoundHandler())
