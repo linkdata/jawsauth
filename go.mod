@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/linkdata/deadlock v0.5.5
-	github.com/linkdata/jaws v0.201.2
+	github.com/linkdata/jaws v0.202.3
 	github.com/linkdata/webserv v1.0.2
 	github.com/testcontainers/testcontainers-go v0.41.0
 	golang.org/x/oauth2 v0.36.0
