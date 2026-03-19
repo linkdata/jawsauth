@@ -438,46 +438,54 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
 }
 
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span class="cov8" title="1">{
-        oauth2cfg, _, location := srv.begin(hr)
-        if oauth2cfg != nil </span><span class="cov8" title="1">{
-                if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
-                        authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
-                        state, _ := sess.Get(oauth2StateKey).(string)
-                        if state == "" </span><span class="cov8" title="1">{
-                                b := [32]byte{}
-                                _, _ = rand.Read(b[:]) // never returns an error, always fills all of b
-                                state = hex.EncodeToString(b[:])
-                                sess.Set(oauth2StateKey, state)
-                        }</span>
-                        <span class="cov8" title="1">sess.Set(oauth2PKCEVerifierKey, nil)
-                        if srv.PKCE </span><span class="cov8" title="1">{
-                                verifier := oauth2.GenerateVerifier()
-                                sess.Set(oauth2PKCEVerifierKey, verifier)
-                                authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-                        }</span>
-                        <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, location)
-                        location = oauth2cfg.AuthCodeURL(state, authOptions...)</span>
+        statusCode := http.StatusMethodNotAllowed
+        if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
+                oauth2cfg, _, location := srv.begin(hr)
+                if oauth2cfg != nil </span><span class="cov8" title="1">{
+                        if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
+                                authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
+                                state, _ := sess.Get(oauth2StateKey).(string)
+                                if state == "" </span><span class="cov8" title="1">{
+                                        b := [32]byte{}
+                                        _, _ = rand.Read(b[:]) // never returns an error, always fills all of b
+                                        state = hex.EncodeToString(b[:])
+                                        sess.Set(oauth2StateKey, state)
+                                }</span>
+                                <span class="cov8" title="1">sess.Set(oauth2PKCEVerifierKey, nil)
+                                if srv.PKCE </span><span class="cov8" title="1">{
+                                        verifier := oauth2.GenerateVerifier()
+                                        sess.Set(oauth2PKCEVerifierKey, verifier)
+                                        authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+                                }</span>
+                                <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, location)
+                                location = oauth2cfg.AuthCodeURL(state, authOptions...)</span>
+                        }
                 }
+                <span class="cov8" title="1">hw.Header().Add("Location", location)
+                statusCode = http.StatusFound</span>
         }
-        <span class="cov8" title="1">hw.Header().Add("Location", location)
-        WriteHeaders(hw, srv.ishttps)
-        hw.WriteHeader(http.StatusFound)</span>
+        <span class="cov8" title="1">WriteHeaders(hw, srv.ishttps)
+        hw.WriteHeader(statusCode)</span>
 }
 
 func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) <span class="cov8" title="1">{
-        _, _, location := srv.begin(hr)
-        if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
-                if srv.LogoutEvent != nil </span><span class="cov8" title="1">{
-                        srv.LogoutEvent(sess, hr)
-                }</span>
-                <span class="cov8" title="1">sess.Set(srv.SessionKey, nil)
-                sess.Set(srv.SessionTokenKey, nil)
-                sess.Set(srv.SessionEmailKey, nil)
-                srv.Jaws.Dirty(sess)</span>
+        statusCode := http.StatusMethodNotAllowed
+        if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
+                _, _, location := srv.begin(hr)
+                if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
+                        if srv.LogoutEvent != nil </span><span class="cov8" title="1">{
+                                srv.LogoutEvent(sess, hr)
+                        }</span>
+                        <span class="cov8" title="1">sess.Set(srv.SessionKey, nil)
+                        sess.Set(srv.SessionTokenKey, nil)
+                        sess.Set(srv.SessionEmailKey, nil)
+                        srv.Jaws.Dirty(sess)</span>
+                }
+                <span class="cov8" title="1">hw.Header().Add("Location", location)
+                statusCode = http.StatusFound</span>
         }
-        <span class="cov8" title="1">hw.Header().Add("Location", location)
-        WriteHeaders(hw, srv.ishttps)
-        hw.WriteHeader(http.StatusFound)</span>
+        <span class="cov8" title="1">WriteHeaders(hw, srv.ishttps)
+        hw.WriteHeader(statusCode)</span>
 }
 
 func writeBody(w io.Writer, statusCode int, err error, body []byte) <span class="cov8" title="1">{
