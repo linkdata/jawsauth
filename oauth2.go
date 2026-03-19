@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/linkdata/jaws/secureheaders"
 	"golang.org/x/oauth2"
 )
 
@@ -113,7 +114,7 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 		hw.Header().Add("Location", location)
 		statusCode = http.StatusFound
 	}
-	WriteHeaders(hw, srv.ishttps)
+	SetHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
 }
 
@@ -133,7 +134,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 		hw.Header().Add("Location", location)
 		statusCode = http.StatusFound
 	}
-	WriteHeaders(hw, srv.ishttps)
+	SetHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
 }
 
@@ -147,24 +148,17 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) {
 	_, _ = w.Write(body)
 }
 
-// WriteHeaders is called to write HTTP headers for all OAuth endpoint responses
-var WriteHeaders = DefaultWriteHeaders
+// SetHeaders is called to write HTTP headers for all OAuth endpoint responses
+var SetHeaders = DefaultSetHeaders
 
-func DefaultWriteHeaders(hw http.ResponseWriter, ishttps bool) {
+// DefaultSetHeaders writes response headers for OAuth endpoint responses.
+func DefaultSetHeaders(hw http.ResponseWriter, ishttps bool) {
+	secureheaders.SetHeaders(hw, ishttps)
 	hw.Header().Set("Cache-Control", "no-store")
-	hw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-	hw.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
-	hw.Header().Set("X-Content-Type-Options", "nosniff")
-	hw.Header().Set("X-Frame-Options", "DENY")
-	hw.Header().Set("X-Xss-Protection", "0")
-	hw.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
-	if ishttps {
-		hw.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-	}
 }
 
 func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) {
-	WriteHeaders(hw, srv.ishttps)
+	SetHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
 	writeBody(hw, statusCode, err, body)
 }

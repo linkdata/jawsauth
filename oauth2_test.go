@@ -33,7 +33,10 @@ func Test_errtext(t *testing.T) {
 
 func Test_writeHeaders(t *testing.T) {
 	hw := httptest.NewRecorder()
-	DefaultWriteHeaders(hw, true)
+	DefaultSetHeaders(hw, true)
+	if x := hw.Header().Get("Cache-Control"); x != "no-store" {
+		t.Errorf("unexpected cache-control header: %q", x)
+	}
 	if x := hw.Header().Get("Strict-Transport-Security"); x == "" {
 		t.Error("STS not set")
 	}
