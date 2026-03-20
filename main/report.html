@@ -520,7 +520,7 @@ var ErrOAuth2MissingState = errors.New("oauth2 missing state")
 var ErrOAuth2WrongState = errors.New("oauth2 wrong state")
 
 func (srv *Server) extractEmail(userinfo map[string]any) (sessEmailValue any) <span class="cov8" title="1">{
-        for _, k := range []string{"email", "mail"} </span><span class="cov8" title="1">{
+        for _, k := range []string{"email", "mail", "public_email"} </span><span class="cov8" title="1">{
                 if s, ok := userinfo[k].(string); ok </span><span class="cov8" title="1">{
                         if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
                                 s = m.Address
