@@ -39,8 +39,8 @@ func TestServerValidateIssuer(t *testing.T) {
 			name:        "expectedIssuerMissingIss",
 			issuer:      "https://issuer.example",
 			query:       "",
-			wantStatus:  http.StatusBadRequest,
-			wantErrIs:   ErrOAuth2MissingIssuer,
+			wantStatus:  http.StatusTeapot,
+			wantErrNil:  true,
 			initialCode: http.StatusTeapot,
 		},
 		{
@@ -94,21 +94,22 @@ func TestNewStoresConfiguredIssuer(t *testing.T) {
 	}
 	defer jw.Close()
 
+	discovery := newOIDCDiscoveryServer(t)
+	defer discovery.Close()
+
 	cfg := &Config{
-		RedirectURL:  "https://application.example.com/oauth2/callback",
-		AuthURL:      "https://login.example.com/oauth2/authorize",
-		TokenURL:     "https://login.example.com/oauth2/token",
-		UserInfoURL:  "https://api.example.com/me",
-		Issuer:       "https://login.example.com",
-		Scopes:       []string{"openid"},
-		ClientID:     "client",
-		ClientSecret: "secret",
+		RedirectURL:         "https://application.example.com/oauth2/callback",
+		Issuer:              discovery.URL,
+		AllowInsecureIssuer: true,
+		Scopes:              []string{"profile"},
+		ClientID:            "client",
+		ClientSecret:        "secret",
 	}
 	srv, err := New(jw, cfg, func(string, http.Handler) {})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if srv.issuer != "https://login.example.com" {
+	if srv.issuer != discovery.URL {
 		t.Fatal(srv.issuer)
 	}
 }

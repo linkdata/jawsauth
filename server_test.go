@@ -75,13 +75,12 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	mux.Handle(http.MethodGet+" /jaws/", jw) // ensure the JaWS routes are handled
 
 	cfg := Config{
-		RedirectURL:  hsrv.URL + "/oauth2/callback",
-		AuthURL:      openidcfg["authorization_endpoint"].(string),
-		TokenURL:     openidcfg["token_endpoint"].(string),
-		UserInfoURL:  openidcfg["userinfo_endpoint"].(string),
-		Scopes:       []string{"openid email"},
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		RedirectURL:         hsrv.URL + "/oauth2/callback",
+		Issuer:              openidcfg["issuer"].(string),
+		AllowInsecureIssuer: true,
+		Scopes:              []string{"profile"},
+		ClientID:            clientID,
+		ClientSecret:        clientSecret,
 	}
 
 	handleGet := func(uri string, handler http.Handler) {
@@ -174,7 +173,16 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(invalidpass)
 	}
 
-	if !strings.HasPrefix(resphtml, "<html>testuser@example.com true map[email:testuser@example.com email_verified:false family_name:User given_name:Test name:Test User preferred_username:testuser sub:") {
+	if !strings.HasPrefix(resphtml, "<html>testuser@example.com true map[") {
+		t.Fatal(resphtml)
+	}
+	if !strings.Contains(resphtml, "email:testuser@example.com") {
+		t.Fatal(resphtml)
+	}
+	if !strings.Contains(resphtml, "email_verified:false") {
+		t.Fatal(resphtml)
+	}
+	if !strings.Contains(resphtml, "sub:") {
 		t.Fatal(resphtml)
 	}
 

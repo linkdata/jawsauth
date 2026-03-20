@@ -221,11 +221,9 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 
 	cfg := jawsauth.Config{
 		RedirectURL:  appURL + "/oauth2/callback",
-		AuthURL:      oidc.AuthURL,
-		TokenURL:     oidc.TokenURL,
-		UserInfoURL:  oidc.UserInfoURL,
 		Issuer:       oidc.Issuer,
-		Scopes:       []string{"openid", "profile", "email"},
+		HTTPClient:   keycloak.httpClient,
+		Scopes:       []string{"profile"},
 		ClientID:     opts.ClientID,
 		ClientSecret: oidc.ClientSecret,
 	}
@@ -265,6 +263,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 			sess.Set(authServer.SessionKey, nil)
 			sess.Set(authServer.SessionTokenKey, nil)
 			sess.Set(authServer.SessionEmailKey, nil)
+			sess.Set(authServer.SessionEmailVerifiedKey, nil)
 			jw.Dirty(sess)
 		}
 

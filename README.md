@@ -5,4 +5,8 @@
 
 # jawsauth
 
-[OAuth2](https://oauth.net/2/) integration with [JaWS](https://github.com/linkdata/jaws) sessions using "golang.org/x/oauth2".
+OIDC-verified authentication for [JaWS](https://github.com/linkdata/jaws) sessions.
+
+- Requires an OIDC-compliant provider.
+- Uses OIDC discovery from the configured issuer.
+- Verifies `id_token` and stores identity claims in session data.

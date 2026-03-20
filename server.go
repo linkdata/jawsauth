@@ -1,6 +1,7 @@
 package jawsauth
 
 import (
+	"context"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/linkdata/jaws"
 	"github.com/linkdata/jaws/ui"
 	"golang.org/x/oauth2"
@@ -22,46 +24,48 @@ type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err
 type Server struct {
 	Jaws *jaws.Jaws
 	//gosec:disable G117
-	SessionKey      string                  // default is "oauth2userinfo", value will be of type map[string]any // #nosec G117
-	SessionTokenKey string                  // default is "oauth2token", value will be of type oauth2.TokenSource
-	SessionEmailKey string                  // default is "email", value will be of type string
-	HandledPaths    map[string]struct{}     // URI paths we have registered handlers for
-	LoginEvent      EventFunc               // if not nil, called after a successful login
-	LogoutEvent     EventFunc               // if not nil, called before logout
-	LoginFailed     FailedFunc              // if not nil, called on failed login
-	Options         []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
-	PKCE            bool                    // if true, use RFC 7636 PKCE with S256 challenge/verifier
-	oauth2cfg       *oauth2.Config
-	userinfoUrl     string
-	issuer          string
-	ishttps         bool
-	mu              sync.Mutex          // protects following
-	admins          map[string]struct{} // if not empty, emails of admins
-	handle403       http.Handler        // handler for 403 Forbidden
+	SessionKey              string                  // default is "oauth2userinfo", value will be of type map[string]any // #nosec G117
+	SessionTokenKey         string                  // default is "oauth2token", value will be of type oauth2.TokenSource
+	SessionEmailKey         string                  // default is "email", value will be of type string
+	SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
+	HandledPaths            map[string]struct{}     // URI paths we have registered handlers for
+	LoginEvent              EventFunc               // if not nil, called after a successful login
+	LogoutEvent             EventFunc               // if not nil, called before logout
+	LoginFailed             FailedFunc              // if not nil, called on failed login
+	Options                 []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
+	oauth2cfg               *oauth2.Config
+	idTokenVerifier         *oidc.IDTokenVerifier
+	userinfoUrl             string
+	issuer                  string
+	httpClient              *http.Client
+	ishttps                 bool
+	mu                      sync.Mutex          // protects following
+	admins                  map[string]struct{} // if not empty, emails of admins
+	handle403               http.Handler        // handler for 403 Forbidden
 }
 
 func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl string) (srv *Server, err error) {
 	srv = &Server{
-		Jaws:            jw,
-		SessionKey:      "oauth2userinfo",
-		SessionTokenKey: "oauth2token",
-		SessionEmailKey: "email",
-		HandledPaths:    make(map[string]struct{}),
-		admins:          make(map[string]struct{}),
-		handle403:       default403handler{},
-		PKCE:            true,
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		HandledPaths:            make(map[string]struct{}),
+		admins:                  make(map[string]struct{}),
+		handle403:               default403handler{},
 	}
 	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
 		jw.MakeAuth = srv.makeAuth
-		if srv.oauth2cfg, err = cfg.Build(overrideUrl); err == nil {
-			srv.issuer = strings.TrimSpace(cfg.Issuer)
+		if srv.oauth2cfg, srv.userinfoUrl, srv.idTokenVerifier, err = cfg.buildContext(context.Background(), overrideUrl); err == nil {
+			srv.issuer = cfg.Issuer
+			srv.httpClient = cfg.HTTPClient
 			var u *url.URL
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
 				srv.ishttps = (u.Scheme == "https")
 				srv.handlePath(u.Path, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
 				srv.handlePath(path.Join(path.Dir(u.Path), "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
 				srv.handlePath(path.Join(path.Dir(u.Path), "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))
-				srv.userinfoUrl = cfg.UserInfoURL
 			}
 		}
 	}
@@ -146,13 +150,14 @@ func (srv *Server) get403Handler() (h http.Handler) {
 	return
 }
 
-// Valid returns true if OAuth2 is configured.
+// Valid returns true if OIDC authentication is configured.
 func (srv *Server) Valid() bool {
-	return srv != nil && srv.oauth2cfg != nil
+	return srv != nil && srv.oauth2cfg != nil && srv.idTokenVerifier != nil
 }
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 // If the Server is not Valid, returns h.
 func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 	rh = h
@@ -164,14 +169,16 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 
 // WrapAdmin returns a http.Handler that requires an authenticated user
 // having an email set using SetAdmins() before invoking h.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 // If the Server is not Valid, returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, true)
 }
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 // If the Server is not Valid, returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, false)
@@ -179,13 +186,15 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 
 // HandlerAdmin returns a http.Handler using a jaws.Template that requires an authenticated user
 // having an email set using SetAdmins() before invoking h.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
 	return srv.wrap(ui.Handler(srv.Jaws, name, dot), true)
 }
 
 // Handler returns a http.Handler using a jaws.Template that requires an authenticated user.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 func (srv *Server) Handler(name string, dot any) http.Handler {
 	return srv.wrap(ui.Handler(srv.Jaws, name, dot), false)
 }

@@ -2,7 +2,9 @@ package jawsauth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,10 +16,43 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/linkdata/jaws"
 	"golang.org/x/oauth2"
 )
+
+type passthroughKeySet struct {
+	forceError error
+}
+
+func (ks passthroughKeySet) VerifySignature(_ context.Context, jwt string) ([]byte, error) {
+	if ks.forceError != nil {
+		return nil, ks.forceError
+	}
+	parts := strings.Split(jwt, ".")
+	if len(parts) != 3 {
+		return nil, errors.New("invalid jwt segments")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func makeIDToken(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT","kid":"test"}`))
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signature := base64.RawURLEncoding.EncodeToString([]byte("sig"))
+	return header + "." + payload + "." + signature
+}
 
 func Test_errtext(t *testing.T) {
 	var sb strings.Builder
@@ -97,7 +132,6 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{"/oauth2/login": {}},
-		PKCE:         true,
 		oauth2cfg: &oauth2.Config{
 			ClientID:    "client",
 			Endpoint:    oauth2.Endpoint{AuthURL: "https://provider.example/auth"},
@@ -145,6 +179,13 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	if gotMethod := values.Get("code_challenge_method"); gotMethod != "S256" {
 		t.Fatal(gotMethod)
 	}
+	nonce, _ := sess.Get(oauth2NonceKey).(string)
+	if len(nonce) != 64 {
+		t.Fatal(nonce)
+	}
+	if gotNonce := values.Get("nonce"); gotNonce != nonce {
+		t.Fatal(gotNonce)
+	}
 	referrer, _ := sess.Get(oauth2ReferrerKey).(string)
 	if referrer != "/secure" {
 		t.Fatal(referrer)
@@ -173,6 +214,18 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 		}
 		mu.Unlock()
 	}
+	const issuer = "https://issuer.example"
+	const wantNonce = "nonce123"
+	idToken := makeIDToken(t, map[string]any{
+		"iss":            issuer,
+		"aud":            "client",
+		"exp":            time.Now().Add(10 * time.Minute).Unix(),
+		"iat":            time.Now().Add(-time.Minute).Unix(),
+		"nonce":          wantNonce,
+		"sub":            "sub-123",
+		"email":          "idtoken@example.com",
+		"email_verified": true,
+	})
 	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
 		switch hr.URL.Path {
 		case "/token":
@@ -186,13 +239,13 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 			gotCode = hr.FormValue("code")
 			mu.Unlock()
 			hw.Header().Set("Content-Type", "application/json")
-			_, _ = hw.Write([]byte(`{"access_token":"token123","token_type":"Bearer","expires_in":3600}`))
+			_, _ = hw.Write([]byte(`{"access_token":"token123","token_type":"Bearer","expires_in":3600,"id_token":"` + idToken + `"}`))
 		case "/userinfo":
 			mu.Lock()
 			gotAuth = hr.Header.Get("Authorization")
 			mu.Unlock()
 			hw.Header().Set("Content-Type", "application/json")
-			_, _ = hw.Write([]byte(`{"email":"user@example.com"}`))
+			_, _ = hw.Write([]byte(`{"email":"userinfo@example.com","name":"Profile Name"}`))
 		default:
 			setProviderErr(fmt.Errorf("unexpected provider path %s", hr.URL.Path))
 			hw.WriteHeader(http.StatusNotFound)
@@ -201,12 +254,12 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	defer provider.Close()
 
 	srv := &Server{
-		Jaws:            jw,
-		SessionKey:      "oauth2userinfo",
-		SessionTokenKey: "oauth2token",
-		SessionEmailKey: "email",
-		HandledPaths:    map[string]struct{}{"/oauth2/callback": {}},
-		PKCE:            true,
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		HandledPaths:            map[string]struct{}{"/oauth2/callback": {}},
 		oauth2cfg: &oauth2.Config{
 			ClientID:     "client",
 			ClientSecret: "secret",
@@ -216,7 +269,8 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 			},
 			RedirectURL: "http://example.com/oauth2/callback",
 		},
-		userinfoUrl: provider.URL + "/userinfo",
+		idTokenVerifier: oidc.NewVerifier(issuer, passthroughKeySet{}, &oidc.Config{ClientID: "client"}),
+		userinfoUrl:     provider.URL + "/userinfo",
 	}
 
 	const wantState = "state123"
@@ -228,6 +282,7 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	sess := jw.NewSession(rec, req)
 	sess.Set(oauth2StateKey, wantState)
 	sess.Set(oauth2PKCEVerifierKey, verifier)
+	sess.Set(oauth2NonceKey, wantNonce)
 	sess.Set(oauth2ReferrerKey, "/secure")
 
 	srv.HandleAuthResponse(rec, req)
@@ -268,14 +323,327 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	if gotVerifier, _ := sess.Get(oauth2PKCEVerifierKey).(string); gotVerifier != "" {
 		t.Fatal(gotVerifier)
 	}
-	if gotEmail, _ := sess.Get(srv.SessionEmailKey).(string); gotEmail != "user@example.com" {
+	if gotNonce, _ := sess.Get(oauth2NonceKey).(string); gotNonce != "" {
+		t.Fatal(gotNonce)
+	}
+	if gotEmail, _ := sess.Get(srv.SessionEmailKey).(string); gotEmail != "idtoken@example.com" {
 		t.Fatal(gotEmail)
 	}
-	if gotUserInfo, ok := sess.Get(srv.SessionKey).(map[string]any); !ok || gotUserInfo["email"] != "user@example.com" {
+	if gotVerified, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool); !gotVerified {
+		t.Fatal(gotVerified)
+	}
+	if gotUserInfo, ok := sess.Get(srv.SessionKey).(map[string]any); !ok || gotUserInfo["email"] != "idtoken@example.com" || gotUserInfo["name"] != "Profile Name" {
 		t.Fatal(gotUserInfo)
 	}
 	if tokenSource, ok := sess.Get(srv.SessionTokenKey).(oauth2.TokenSource); !ok || tokenSource == nil {
 		t.Fatal("missing token source")
+	}
+}
+
+func Test_handleAuthResponseMissingPKCEVerifier(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	var tokenRequests int
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.URL.Path == "/token" {
+			tokenRequests++
+			hw.Header().Set("Content-Type", "application/json")
+			_, _ = hw.Write([]byte(`{"access_token":"token123","token_type":"Bearer","expires_in":3600}`))
+			return
+		}
+		hw.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+
+	srv := &Server{
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		httpClient:              &http.Client{},
+		oauth2cfg: &oauth2.Config{
+			ClientID: "client",
+			Endpoint: oauth2.Endpoint{
+				TokenURL: provider.URL + "/token",
+			},
+			RedirectURL: "http://example.com/oauth2/callback",
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
+	sess := jw.NewSession(rec, req)
+	sess.Set(oauth2StateKey, "state123")
+	sess.Set(oauth2NonceKey, "nonce123")
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatal(resp.Status)
+	}
+	if !strings.Contains(string(body), ErrOAuth2MissingPKCEVerifier.Error()) {
+		t.Fatal(string(body))
+	}
+	if tokenRequests != 0 {
+		t.Fatal(tokenRequests)
+	}
+}
+
+func Test_extractEmailVerified(t *testing.T) {
+	testCases := []struct {
+		name   string
+		claims map[string]any
+		want   bool
+	}{
+		{
+			name:   "bool",
+			claims: map[string]any{"email_verified": true},
+			want:   true,
+		},
+		{
+			name:   "string",
+			claims: map[string]any{"email_verified": "true"},
+			want:   true,
+		},
+		{
+			name:   "float",
+			claims: map[string]any{"email_verified": float64(1)},
+			want:   true,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractEmailVerified(tc.claims); got != tc.want {
+				t.Fatalf("extractEmailVerified() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServer_fetchUserInfoStatusError(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		_ = hr
+		hw.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer provider.Close()
+
+	srv := &Server{}
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{
+		AccessToken: "token",
+		TokenType:   "Bearer",
+	})
+
+	userinfo, err := srv.fetchUserInfo(t.Context(), provider.URL, tokenSource)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if userinfo != nil {
+		t.Fatal(userinfo)
+	}
+	if !strings.Contains(err.Error(), "userinfo status 401 Unauthorized") {
+		t.Fatal(err)
+	}
+}
+
+func Test_handleAuthResponseMissingIDToken(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	const issuer = "https://issuer.example"
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.URL.Path == "/token" {
+			hw.Header().Set("Content-Type", "application/json")
+			_, _ = hw.Write([]byte(`{"access_token":"token123","token_type":"Bearer","expires_in":3600}`))
+			return
+		}
+		hw.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+
+	srv := &Server{
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		oauth2cfg: &oauth2.Config{
+			ClientID: "client",
+			Endpoint: oauth2.Endpoint{
+				TokenURL: provider.URL + "/token",
+			},
+			RedirectURL: "http://example.com/oauth2/callback",
+		},
+		idTokenVerifier: oidc.NewVerifier(issuer, passthroughKeySet{}, &oidc.Config{ClientID: "client"}),
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
+	sess := jw.NewSession(rec, req)
+	sess.Set(oauth2StateKey, "state123")
+	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+	sess.Set(oauth2NonceKey, "nonce123")
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatal(resp.Status)
+	}
+	if !strings.Contains(string(body), ErrOIDCMissingIDToken.Error()) {
+		t.Fatal(string(body))
+	}
+}
+
+func Test_handleAuthResponseInvalidIDToken(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	const issuer = "https://issuer.example"
+	idToken := makeIDToken(t, map[string]any{
+		"iss":   "https://attacker.example",
+		"aud":   "client",
+		"exp":   time.Now().Add(10 * time.Minute).Unix(),
+		"iat":   time.Now().Add(-time.Minute).Unix(),
+		"nonce": "nonce123",
+		"sub":   "sub-123",
+	})
+
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.URL.Path == "/token" {
+			hw.Header().Set("Content-Type", "application/json")
+			_, _ = hw.Write([]byte(`{"access_token":"token123","token_type":"Bearer","expires_in":3600,"id_token":"` + idToken + `"}`))
+			return
+		}
+		hw.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+
+	srv := &Server{
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		oauth2cfg: &oauth2.Config{
+			ClientID: "client",
+			Endpoint: oauth2.Endpoint{
+				TokenURL: provider.URL + "/token",
+			},
+			RedirectURL: "http://example.com/oauth2/callback",
+		},
+		idTokenVerifier: oidc.NewVerifier(issuer, passthroughKeySet{}, &oidc.Config{ClientID: "client"}),
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
+	sess := jw.NewSession(rec, req)
+	sess.Set(oauth2StateKey, "state123")
+	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+	sess.Set(oauth2NonceKey, "nonce123")
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatal(resp.Status)
+	}
+	if !strings.Contains(string(body), ErrOIDCInvalidIDToken.Error()) {
+		t.Fatal(string(body))
+	}
+}
+
+func Test_handleAuthResponseNonceMismatch(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	const issuer = "https://issuer.example"
+	idToken := makeIDToken(t, map[string]any{
+		"iss":   issuer,
+		"aud":   "client",
+		"exp":   time.Now().Add(10 * time.Minute).Unix(),
+		"iat":   time.Now().Add(-time.Minute).Unix(),
+		"nonce": "wrongnonce",
+		"sub":   "sub-123",
+	})
+
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.URL.Path == "/token" {
+			hw.Header().Set("Content-Type", "application/json")
+			_, _ = hw.Write([]byte(`{"access_token":"token123","token_type":"Bearer","expires_in":3600,"id_token":"` + idToken + `"}`))
+			return
+		}
+		hw.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+
+	srv := &Server{
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		oauth2cfg: &oauth2.Config{
+			ClientID: "client",
+			Endpoint: oauth2.Endpoint{
+				TokenURL: provider.URL + "/token",
+			},
+			RedirectURL: "http://example.com/oauth2/callback",
+		},
+		idTokenVerifier: oidc.NewVerifier(issuer, passthroughKeySet{}, &oidc.Config{ClientID: "client"}),
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
+	sess := jw.NewSession(rec, req)
+	sess.Set(oauth2StateKey, "state123")
+	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+	sess.Set(oauth2NonceKey, "nonce123")
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatal(resp.Status)
+	}
+	if !strings.Contains(string(body), ErrOIDCNonceMismatch.Error()) {
+		t.Fatal(string(body))
 	}
 }
 
