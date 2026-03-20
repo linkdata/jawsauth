@@ -247,6 +247,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		var sessEmailValue any
 		var sessEmailVerifiedValue any
 		var sessTokenValue any
+		var claims map[string]any
 		authctx := hr.Context()
 		if srv.httpClient != nil {
 			if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok {
@@ -295,7 +296,6 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 													if wantNonce != "" {
 														err = ErrOIDCNonceMismatch
 														if idToken.Nonce == wantNonce {
-															var claims map[string]any
 															if err = idToken.Claims(&claims); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
 																tokenSource := oauth2Config.TokenSource(authctx, token)
 																sessTokenValue = tokenSource
@@ -332,6 +332,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			sess.Set(srv.SessionTokenKey, sessTokenValue)
 			sess.Set(srv.SessionEmailKey, sessEmailValue)
 			sess.Set(srv.SessionEmailVerifiedKey, sessEmailVerifiedValue)
+			sess.Set(srv.SessionOIDCClaims, claims)
 			if srv.LoginEvent != nil && sessValue != nil {
 				srv.LoginEvent(sess, hr)
 			}

@@ -28,6 +28,7 @@ type Server struct {
 	SessionTokenKey         string                  // default is "oauth2token", value will be of type oauth2.TokenSource
 	SessionEmailKey         string                  // default is "email", value will be of type string
 	SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
+	SessionOIDCClaims       string                  // default is "oidc_claims", value will be of type map[string]any
 	HandledPaths            map[string]struct{}     // URI paths we have registered handlers for
 	LoginEvent              EventFunc               // if not nil, called after a successful login
 	LogoutEvent             EventFunc               // if not nil, called before logout
@@ -51,6 +52,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		SessionTokenKey:         "oauth2token",
 		SessionEmailKey:         "email",
 		SessionEmailVerifiedKey: "email_verified",
+		SessionOIDCClaims:       "oidc_claims",
 		HandledPaths:            make(map[string]struct{}),
 		admins:                  make(map[string]struct{}),
 		handle403:               default403handler{},
