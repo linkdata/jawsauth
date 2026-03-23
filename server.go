@@ -36,7 +36,6 @@ type Server struct {
 	oauth2cfg               *oauth2.Config
 	idTokenVerifier         *oidc.IDTokenVerifier
 	userinfoUrl             string
-	issuer                  string
 	httpClient              *http.Client
 	ishttps                 bool
 	mu                      sync.Mutex          // protects following
@@ -58,7 +57,6 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
 		jw.MakeAuth = srv.makeAuth
 		if srv.oauth2cfg, srv.userinfoUrl, srv.idTokenVerifier, err = cfg.buildContext(context.Background(), overrideUrl); err == nil {
-			srv.issuer = cfg.Issuer
 			srv.httpClient = cfg.HTTPClient
 			var u *url.URL
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
