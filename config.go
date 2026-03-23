@@ -184,11 +184,3 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 	}
 	return
 }
-
-// Build creates a oauth2.Config using OIDC discovery.
-// If overrideUrl is provided, its scheme, host and port are used instead of
-// the ones in RedirectURL. This is useful when testing.
-func (cfg *Config) Build(overrideUrl string) (oauth2cfg *oauth2.Config, err error) {
-	oauth2cfg, _, _, err = cfg.buildContext(context.Background(), overrideUrl)
-	return
-}

@@ -70,7 +70,7 @@ func assertOAuth2ConfigEqual(t *testing.T, got, want *oauth2.Config) {
 	}
 }
 
-func TestConfig_Build(t *testing.T) {
+func TestConfig_buildContext(t *testing.T) {
 	discovery := newOIDCDiscoveryServer(t)
 	defer discovery.Close()
 
@@ -165,7 +165,7 @@ func TestConfig_Build(t *testing.T) {
 				ClientID:            tt.fields.ClientID,
 				ClientSecret:        tt.fields.ClientSecret,
 			}
-			gotOAuth2cfg, err := cfg.Build(tt.overrideURL)
+			gotOAuth2cfg, _, _, err := cfg.buildContext(t.Context(), tt.overrideURL)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Config.Build() error = %v, wantErr %v", err, tt.wantErr)
 				return
