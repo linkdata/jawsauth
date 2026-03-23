@@ -2,7 +2,6 @@ package jawsauth
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -30,7 +29,7 @@ type Config struct {
 
 func requireLen(k string, n int) (err error) {
 	if n < 1 {
-		err = fmt.Errorf("missing %s", k)
+		err = errConfig{field: k, cause: ErrConfigMissingValue}
 	}
 	return
 }
@@ -60,6 +59,8 @@ func validateUrl(k, u, defaultURL string, optional bool) (value string, err erro
 			if err != nil {
 				err = errConfig{field: k, cause: err}
 			}
+		} else {
+			err = errConfig{field: k, cause: err}
 		}
 	}
 	return
