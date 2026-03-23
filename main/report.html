@@ -59,17 +59,19 @@
 				
 				<option value="file1">github.com/linkdata/jawsauth/default403handler.go (100.0%)</option>
 				
-				<option value="file2">github.com/linkdata/jawsauth/erroauth2callback.go (100.0%)</option>
+				<option value="file2">github.com/linkdata/jawsauth/errconfig.go (100.0%)</option>
 				
-				<option value="file3">github.com/linkdata/jawsauth/issuer.go (100.0%)</option>
+				<option value="file3">github.com/linkdata/jawsauth/erroauth2callback.go (100.0%)</option>
 				
-				<option value="file4">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
+				<option value="file4">github.com/linkdata/jawsauth/erroidc.go (100.0%)</option>
 				
-				<option value="file5">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
+				<option value="file5">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
 				
-				<option value="file6">github.com/linkdata/jawsauth/server.go (100.0%)</option>
+				<option value="file6">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
 				
-				<option value="file7">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
+				<option value="file7">github.com/linkdata/jawsauth/server.go (100.0%)</option>
+				
+				<option value="file8">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
 				
 				</select>
 			</div>
@@ -86,29 +88,35 @@
 		<pre class="file" id="file0" style="display: none">package jawsauth
 
 import (
-        "errors"
-        "fmt"
+        "context"
+        "net/http"
         "net/url"
+        "slices"
         "strings"
 
+        "github.com/coreos/go-oidc/v3/oidc"
         "golang.org/x/oauth2"
 )
 
 type Config struct {
-        RedirectURL string   // e.g. "https://application.example.com/oauth2/callback"
-        AuthURL     string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/authorize"
-        TokenURL    string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/token"
-        Issuer      string   // e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0": optional, if empty callback "iss" is ignored
-        UserInfoURL string   // e.g. "https://graph.microsoft.com/v1.0/me?$select=displayName,mail"
-        Scopes      []string // e.g. []string{"user.read"}
-        ClientID    string
+        RedirectURL string // required. e.g. "https://application.example.com/oauth2/callback"
+        Issuer      string // required. e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
+        AuthURL     string // optional override for discovered authorization_endpoint
+        TokenURL    string // optional override for discovered token_endpoint
+        UserInfoURL string // optional override for discovered userinfo_endpoint
+        // AllowInsecureIssuer permits "http://" Issuer URLs and should only be used for tests/dev.
+        AllowInsecureIssuer bool
+        // HTTPClient is used for OIDC discovery at startup.
+        HTTPClient *http.Client
+        Scopes     []string // optional additional scopes, "openid" and "email" are always ensured
+        ClientID   string
         //gosec:disable G117
         ClientSecret string
 }
 
 func requireLen(k string, n int) (err error) <span class="cov8" title="1">{
         if n &lt; 1 </span><span class="cov8" title="1">{
-                err = fmt.Errorf("missing %s", k)
+                err = errConfig{field: k, cause: ErrConfigMissingValue}
         }</span>
         <span class="cov8" title="1">return</span>
 }
@@ -117,10 +125,17 @@ func requireStr(k, u string) error <span class="cov8" title="1">{
         return requireLen(k, len(strings.TrimSpace(u)))
 }</span>
 
-func validateUrl(k, u string) (err error) <span class="cov8" title="1">{
-        if err = requireStr(k, u); err == nil </span><span class="cov8" title="1">{
+func validateUrl(k, u, defaultURL string, optional bool) (value string, err error) <span class="cov8" title="1">{
+        value = u
+        if value == "" </span><span class="cov8" title="1">{
+                value = defaultURL
+        }</span>
+        <span class="cov8" title="1">if optional &amp;&amp; value == "" </span><span class="cov8" title="1">{
+                return
+        }</span>
+        <span class="cov8" title="1">if err = requireStr(k, value); err == nil </span><span class="cov8" title="1">{
                 var parsed *url.URL
-                if parsed, err = url.Parse(u); err == nil </span><span class="cov8" title="1">{
+                if parsed, err = url.Parse(value); err == nil </span><span class="cov8" title="1">{
                         err = ErrConfigURLNotAbsolute
                         if parsed.IsAbs() </span><span class="cov8" title="1">{
                                 err = ErrConfigURLMissingHost
@@ -129,51 +144,32 @@ func validateUrl(k, u string) (err error) <span class="cov8" title="1">{
                                 }</span>
                         }
                         <span class="cov8" title="1">if err != nil </span><span class="cov8" title="1">{
-                                err = configFieldError{field: k, cause: err}
+                                err = errConfig{field: k, cause: err}
                         }</span>
-                }
-        }
-        <span class="cov8" title="1">return</span>
-}
-
-var ErrConfigURLNotAbsolute = errors.New("url is not absolute")
-var ErrConfigURLMissingHost = errors.New("url host is missing")
-
-type configFieldError struct {
-        field string
-        cause error
-}
-
-func (e configFieldError) Error() string <span class="cov8" title="1">{
-        return "invalid " + e.field + ": " + e.cause.Error()
-}</span>
-
-func (e configFieldError) Unwrap() error <span class="cov8" title="1">{
-        return e.cause
-}</span>
-
-func (e configFieldError) Is(target error) (matches bool) <span class="cov8" title="1">{
-        if t, ok := target.(configFieldError); ok </span><span class="cov8" title="1">{
-                matches = e.field == t.field
-                if matches </span><span class="cov8" title="1">{
-                        matches = errors.Is(e.cause, t.cause)
+                } else<span class="cov8" title="1"> {
+                        err = errConfig{field: k, cause: err}
                 }</span>
         }
         <span class="cov8" title="1">return</span>
 }
 
 func (cfg *Config) Validate() (err error) <span class="cov8" title="1">{
-        if err = validateUrl("RedirectURL", cfg.RedirectURL); err == nil </span><span class="cov8" title="1">{
-                if err = validateUrl("AuthURL", cfg.AuthURL); err == nil </span><span class="cov8" title="1">{
-                        if err = validateUrl("TokenURL", cfg.TokenURL); err == nil </span><span class="cov8" title="1">{
-                                if err = validateUrl("UserInfoURL", cfg.UserInfoURL); err == nil </span><span class="cov8" title="1">{
-                                        if strings.TrimSpace(cfg.Issuer) != "" </span><span class="cov8" title="1">{
-                                                err = validateUrl("Issuer", cfg.Issuer)
+        if _, err = validateUrl("RedirectURL", cfg.RedirectURL, "", false); err == nil </span><span class="cov8" title="1">{
+                if _, err = validateUrl("Issuer", cfg.Issuer, "", false); err == nil </span><span class="cov8" title="1">{
+                        if !cfg.AllowInsecureIssuer </span><span class="cov8" title="1">{
+                                var issuer *url.URL
+                                if issuer, err = url.Parse(cfg.Issuer); err == nil </span><span class="cov8" title="1">{
+                                        if issuer.Scheme != "https" </span><span class="cov8" title="1">{
+                                                err = errConfig{field: "Issuer", cause: ErrConfigIssuerMustBeHTTPS}
                                         }</span>
-                                        <span class="cov8" title="1">if err == nil </span><span class="cov8" title="1">{
-                                                if err = requireStr("ClientID", cfg.ClientID); err == nil </span><span class="cov8" title="1">{
-                                                        if err = requireStr("ClientSecret", cfg.ClientSecret); err == nil </span><span class="cov8" title="1">{
-                                                                err = requireLen("Scopes", len(cfg.Scopes))
+                                }
+                        }
+                        <span class="cov8" title="1">if err == nil </span><span class="cov8" title="1">{
+                                if _, err = validateUrl("AuthURL", cfg.AuthURL, "", true); err == nil </span><span class="cov8" title="1">{
+                                        if _, err = validateUrl("TokenURL", cfg.TokenURL, "", true); err == nil </span><span class="cov8" title="1">{
+                                                if _, err = validateUrl("UserInfoURL", cfg.UserInfoURL, "", true); err == nil </span><span class="cov8" title="1">{
+                                                        if err = requireStr("ClientID", cfg.ClientID); err == nil </span><span class="cov8" title="1">{
+                                                                err = requireStr("ClientSecret", cfg.ClientSecret)
                                                         }</span>
                                                 }
                                         }
@@ -190,26 +186,60 @@ func overrideStr(a *string, b string) <span class="cov8" title="1">{
         }</span>
 }
 
-// Build creates a oauth2.Config. If overrideUrl is provided, it's scheme, host
-// and port are used instead of the ones in RedirectURL. This is useful when testing.
-func (cfg *Config) Build(overrideUrl string) (oauth2cfg *oauth2.Config, err error) <span class="cov8" title="1">{
+func ensureScopes(rawScopes []string) (scopes []string) <span class="cov8" title="1">{
+        scopes = append(scopes, "openid")
+        scopes = append(scopes, "email")
+        for _, set := range rawScopes </span><span class="cov8" title="1">{
+                for scope := range strings.FieldsSeq(set) </span><span class="cov8" title="1">{
+                        scopes = append(scopes, scope)
+                }</span>
+        }
+        <span class="cov8" title="1">slices.Sort(scopes)
+        scopes = slices.Compact(scopes)
+        return</span>
+}
+
+func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2cfg *oauth2.Config, userInfoURL string, verifier *oidc.IDTokenVerifier, err error) <span class="cov8" title="1">{
         if err = cfg.Validate(); err == nil </span><span class="cov8" title="1">{
-                var redir *url.URL
-                if redir, err = url.Parse(cfg.RedirectURL); err == nil </span><span class="cov8" title="1">{
-                        if u, e := url.Parse(overrideUrl); e == nil </span><span class="cov8" title="1">{
-                                overrideStr(&amp;redir.Scheme, u.Scheme)
-                                overrideStr(&amp;redir.Host, u.Host)
-                        }</span>
-                        <span class="cov8" title="1">oauth2cfg = &amp;oauth2.Config{
-                                ClientID:     cfg.ClientID,
-                                ClientSecret: cfg.ClientSecret,
-                                Endpoint: oauth2.Endpoint{
-                                        AuthURL:  cfg.AuthURL,
-                                        TokenURL: cfg.TokenURL,
-                                },
-                                RedirectURL: redir.String(),
-                                Scopes:      cfg.Scopes,
-                        }</span>
+                if cfg.HTTPClient != nil </span><span class="cov8" title="1">{
+                        ctx = context.WithValue(ctx, oauth2.HTTPClient, cfg.HTTPClient)
+                }</span>
+
+                <span class="cov8" title="1">var provider *oidc.Provider
+                if provider, err = oidc.NewProvider(ctx, cfg.Issuer); wrapOIDC(ErrOIDCDiscovery, &amp;err) == nil </span><span class="cov8" title="1">{
+                        var metadata struct {
+                                AuthorizationEndpoint string `json:"authorization_endpoint"`
+                                TokenEndpoint         string `json:"token_endpoint"`
+                                UserinfoEndpoint      string `json:"userinfo_endpoint"`
+                        }
+                        if err = provider.Claims(&amp;metadata); wrapOIDC(ErrOIDCProviderMetadata, &amp;err) == nil </span><span class="cov8" title="1">{
+                                var authURL string
+                                var tokenURL string
+                                if authURL, err = validateUrl("AuthURL", cfg.AuthURL, metadata.AuthorizationEndpoint, true); wrapOIDC(ErrOIDCProviderMetadata, &amp;err) == nil </span><span class="cov8" title="1">{
+                                        if tokenURL, err = validateUrl("TokenURL", cfg.TokenURL, metadata.TokenEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &amp;err) == nil </span><span class="cov8" title="1">{
+                                                if userInfoURL, err = validateUrl("UserInfoURL", cfg.UserInfoURL, metadata.UserinfoEndpoint, true); wrapOIDC(ErrOIDCProviderMetadata, &amp;err) == nil </span><span class="cov8" title="1">{
+                                                        var redir *url.URL
+                                                        if redir, err = url.Parse(cfg.RedirectURL); err == nil </span><span class="cov8" title="1">{
+                                                                if u, e := url.Parse(overrideUrl); e == nil </span><span class="cov8" title="1">{
+                                                                        overrideStr(&amp;redir.Scheme, u.Scheme)
+                                                                        overrideStr(&amp;redir.Host, u.Host)
+                                                                }</span>
+                                                                <span class="cov8" title="1">oauth2cfg = &amp;oauth2.Config{
+                                                                        ClientID:     cfg.ClientID,
+                                                                        ClientSecret: cfg.ClientSecret,
+                                                                        Endpoint: oauth2.Endpoint{
+                                                                                AuthURL:  authURL,
+                                                                                TokenURL: tokenURL,
+                                                                        },
+                                                                        RedirectURL: redir.String(),
+                                                                        Scopes:      ensureScopes(cfg.Scopes),
+                                                                }
+                                                                verifier = provider.Verifier(&amp;oidc.Config{ClientID: cfg.ClientID})</span>
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
                 }
         }
         <span class="cov8" title="1">return</span>
@@ -229,6 +259,52 @@ func (default403handler) ServeHTTP(hw http.ResponseWriter, hr *http.Request) <sp
 </pre>
 		
 		<pre class="file" id="file2" style="display: none">package jawsauth
+
+import (
+        "errors"
+)
+
+// ErrConfig matches all configuration validation errors.
+var ErrConfig errConfig
+
+// ErrConfigMissingValue means a required configuration value is missing.
+var ErrConfigMissingValue = errors.New("config value is missing")
+
+// ErrConfigURLNotAbsolute means a configured URL is not absolute.
+var ErrConfigURLNotAbsolute = errors.New("url is not absolute")
+
+// ErrConfigURLMissingHost means a configured URL does not include a host.
+var ErrConfigURLMissingHost = errors.New("url host is missing")
+
+// ErrConfigIssuerMustBeHTTPS means Issuer must use the https scheme unless AllowInsecureIssuer is enabled.
+var ErrConfigIssuerMustBeHTTPS = errors.New("issuer url must use https")
+
+type errConfig struct {
+        field string
+        cause error
+}
+
+func (e errConfig) Error() (s string) <span class="cov8" title="1">{
+        s = "invalid config"
+        if e.field != "" </span><span class="cov8" title="1">{
+                s = "invalid " + e.field
+        }</span>
+        <span class="cov8" title="1">if e.cause != nil </span><span class="cov8" title="1">{
+                s += ": " + e.cause.Error()
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
+func (e errConfig) Unwrap() error <span class="cov8" title="1">{
+        return e.cause
+}</span>
+
+func (e errConfig) Is(target error) (matches bool) <span class="cov8" title="1">{
+        return target == ErrConfig
+}</span>
+</pre>
+		
+		<pre class="file" id="file3" style="display: none">package jawsauth
 
 import (
         "errors"
@@ -291,37 +367,55 @@ func oauth2CallbackError(statusCode int, hr *http.Request) (nextStatusCode int, 
 }
 </pre>
 		
-		<pre class="file" id="file3" style="display: none">package jawsauth
+		<pre class="file" id="file4" style="display: none">package jawsauth
 
-import (
-        "errors"
-        "net/http"
-        "strings"
-)
+import "errors"
 
-// ErrOAuth2MissingIssuer means the callback did not include the required "iss" parameter.
-var ErrOAuth2MissingIssuer = errors.New("oauth2 missing issuer")
+// ErrOIDCDiscovery means OIDC provider discovery failed.
+var ErrOIDCDiscovery = errors.New("oidc discovery failed")
 
-// ErrOAuth2WrongIssuer means the callback "iss" parameter does not match the expected issuer.
-var ErrOAuth2WrongIssuer = errors.New("oauth2 wrong issuer")
+// ErrOIDCProviderMetadata means discovered OIDC metadata was invalid.
+var ErrOIDCProviderMetadata = errors.New("oidc provider metadata invalid")
 
-func (srv *Server) validateIssuer(hr *http.Request, statusCode int) (nextStatusCode int, err error) <span class="cov8" title="1">{
-        nextStatusCode = statusCode
-        if srv.issuer != "" </span><span class="cov8" title="1">{
-                gotIssuer := strings.TrimSpace(hr.FormValue("iss"))
-                if gotIssuer != srv.issuer </span><span class="cov8" title="1">{
-                        nextStatusCode = http.StatusBadRequest
-                        err = ErrOAuth2WrongIssuer
-                        if gotIssuer == "" </span><span class="cov8" title="1">{
-                                err = ErrOAuth2MissingIssuer
-                        }</span>
-                }
-        }
+// ErrOIDCMissingIDToken means the token response did not include an id_token.
+var ErrOIDCMissingIDToken = errors.New("oidc missing id_token")
+
+// ErrOIDCInvalidIDToken means id_token verification failed.
+var ErrOIDCInvalidIDToken = errors.New("oidc invalid id_token")
+
+// ErrOIDCMissingNonce means the login request did not include a nonce.
+var ErrOIDCMissingNonce = errors.New("oidc missing nonce")
+
+// ErrOIDCNonceMismatch means the id_token nonce did not match the stored session nonce.
+var ErrOIDCNonceMismatch = errors.New("oidc nonce mismatch")
+
+type errOIDC struct {
+        kind  error
+        cause error
+}
+
+func (e errOIDC) Error() string <span class="cov8" title="1">{
+        return e.kind.Error() + ": " + e.cause.Error()
+}</span>
+
+func (e errOIDC) Unwrap() error <span class="cov8" title="1">{
+        return e.cause
+}</span>
+
+func (e errOIDC) Is(target error) bool <span class="cov8" title="1">{
+        return target == e.kind
+}</span>
+
+func wrapOIDC(kind error, perr *error) (err error) <span class="cov8" title="1">{
+        if err = *perr; err != nil </span><span class="cov8" title="1">{
+                err = errOIDC{kind: kind, cause: *perr}
+                *perr = err
+        }</span>
         <span class="cov8" title="1">return</span>
 }
 </pre>
 		
-		<pre class="file" id="file4" style="display: none">package jawsauth
+		<pre class="file" id="file5" style="display: none">package jawsauth
 
 import "github.com/linkdata/jaws"
 
@@ -344,12 +438,19 @@ func (a *JawsAuth) Email() (s string) <span class="cov8" title="1">{
         <span class="cov8" title="1">return</span>
 }
 
+func (a *JawsAuth) EmailVerified() (yes bool) <span class="cov8" title="1">{
+        if a != nil </span><span class="cov8" title="1">{
+                yes, _ = a.sess.Get(a.server.SessionEmailVerifiedKey).(bool)
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
 func (a *JawsAuth) IsAdmin() (yes bool) <span class="cov8" title="1">{
         return a == nil || a.server.IsAdmin(a.Email())
 }</span>
 </pre>
 		
-		<pre class="file" id="file5" style="display: none">package jawsauth
+		<pre class="file" id="file6" style="display: none">package jawsauth
 
 import (
         "context"
@@ -364,17 +465,18 @@ import (
         "net/http"
         "net/mail"
         "net/url"
+        "strconv"
         "strings"
 
+        "github.com/coreos/go-oidc/v3/oidc"
         "github.com/linkdata/jaws/secureheaders"
         "golang.org/x/oauth2"
 )
 
-var ErrInconsistentState = errors.New("oauth2 inconsistent state")
-
 const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
 const oauth2PKCEVerifierKey = "oauth2pkceverifier"
+const oauth2NonceKey = "oauth2nonce"
 
 func normalizeHost(hostport string) (normalized string) <span class="cov8" title="1">{
         normalized = strings.TrimSpace(hostport)
@@ -447,18 +549,16 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span c
                                 authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
                                 state, _ := sess.Get(oauth2StateKey).(string)
                                 if state == "" </span><span class="cov8" title="1">{
-                                        b := [32]byte{}
-                                        _, _ = rand.Read(b[:]) // never returns an error, always fills all of b
-                                        state = hex.EncodeToString(b[:])
+                                        state = randomHexString()
                                         sess.Set(oauth2StateKey, state)
                                 }</span>
-                                <span class="cov8" title="1">sess.Set(oauth2PKCEVerifierKey, nil)
-                                if srv.PKCE </span><span class="cov8" title="1">{
-                                        verifier := oauth2.GenerateVerifier()
-                                        sess.Set(oauth2PKCEVerifierKey, verifier)
-                                        authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-                                }</span>
-                                <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, location)
+                                <span class="cov8" title="1">nonce := randomHexString()
+                                sess.Set(oauth2NonceKey, nonce)
+                                authOptions = append(authOptions, oidc.Nonce(nonce))
+                                verifier := oauth2.GenerateVerifier()
+                                sess.Set(oauth2PKCEVerifierKey, verifier)
+                                authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+                                sess.Set(oauth2ReferrerKey, location)
                                 location = oauth2cfg.AuthCodeURL(state, authOptions...)</span>
                         }
                 }
@@ -480,6 +580,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) <span 
                         <span class="cov8" title="1">sess.Set(srv.SessionKey, nil)
                         sess.Set(srv.SessionTokenKey, nil)
                         sess.Set(srv.SessionEmailKey, nil)
+                        sess.Set(srv.SessionEmailVerifiedKey, nil)
                         srv.Jaws.Dirty(sess)</span>
                 }
                 <span class="cov8" title="1">hw.Header().Add("Location", location)
@@ -519,9 +620,28 @@ var ErrOAuth2MissingSession = errors.New("oauth2 missing session")
 var ErrOAuth2MissingState = errors.New("oauth2 missing state")
 var ErrOAuth2WrongState = errors.New("oauth2 wrong state")
 
-func (srv *Server) extractEmail(userinfo map[string]any) (sessEmailValue any) <span class="cov8" title="1">{
+// ErrOAuth2MissingPKCEVerifier means the callback session did not contain the required PKCE verifier.
+var ErrOAuth2MissingPKCEVerifier = errors.New("oauth2 missing pkce verifier")
+
+func randomHexString() string <span class="cov8" title="1">{
+        b := [32]byte{}
+        _, _ = rand.Read(b[:]) // never returns an error, always fills all of b
+        return hex.EncodeToString(b[:])
+}</span>
+
+func mergeMissingClaims(dst, src map[string]any) <span class="cov8" title="1">{
+        if dst != nil </span><span class="cov8" title="1">{
+                for k, v := range src </span><span class="cov8" title="1">{
+                        if _, ok := dst[k]; !ok </span><span class="cov8" title="1">{
+                                dst[k] = v
+                        }</span>
+                }
+        }
+}
+
+func (srv *Server) extractEmail(claims map[string]any) (sessEmailValue any) <span class="cov8" title="1">{
         for _, k := range []string{"email", "mail", "public_email"} </span><span class="cov8" title="1">{
-                if s, ok := userinfo[k].(string); ok </span><span class="cov8" title="1">{
+                if s, ok := claims[k].(string); ok </span><span class="cov8" title="1">{
                         if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
                                 s = m.Address
                         }</span>
@@ -529,22 +649,61 @@ func (srv *Server) extractEmail(userinfo map[string]any) (sessEmailValue any) <s
                 }
         }
         <span class="cov8" title="1">if l := srv.Jaws.Logger; l != nil </span><span class="cov8" title="1">{
-                l.Warn("jawsauth: no email found", "userinfo", userinfo)
+                l.Warn("jawsauth: no email found", "userinfo", claims)
         }</span>
+        <span class="cov8" title="1">return</span>
+}
+
+func extractEmailVerified(claims map[string]any) (verified bool) <span class="cov8" title="1">{
+        if claims != nil </span><span class="cov8" title="1">{
+                switch value := claims["email_verified"].(type) </span>{
+                case bool:<span class="cov8" title="1">
+                        verified = value</span>
+                case string:<span class="cov8" title="1">
+                        verified, _ = strconv.ParseBool(value)</span>
+                case float64:<span class="cov8" title="1">
+                        verified = value != 0</span>
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenSource oauth2.TokenSource) (userinfo map[string]any, err error) <span class="cov8" title="1">{
+        if userinfoURL != "" &amp;&amp; tokenSource != nil </span><span class="cov8" title="1">{
+                client := oauth2.NewClient(ctx, tokenSource)
+                var resp *http.Response
+                if resp, err = client.Get(userinfoURL); /*#nosec G704*/ err == nil </span><span class="cov8" title="1">{
+                        defer resp.Body.Close()
+                        var body []byte
+                        if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); err == nil </span><span class="cov8" title="1">{
+                                if resp.StatusCode == http.StatusOK </span><span class="cov8" title="1">{
+                                        err = json.Unmarshal(body, &amp;userinfo)
+                                }</span> else<span class="cov8" title="1"> {
+                                        err = fmt.Errorf("userinfo status %s", resp.Status)
+                                }</span>
+                        }
+                }
+        }
         <span class="cov8" title="1">return</span>
 }
 
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) <span class="cov8" title="1">{
         statusCode := http.StatusMethodNotAllowed
         err := ErrOAuth2Callback
-        var body []byte
 
         if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
                 oauth2Config, userinfourl, location := srv.begin(hr)
                 var sessValue any
                 var sessEmailValue any
+                var sessEmailVerifiedValue any
                 var sessTokenValue any
-                sess := srv.Jaws.GetSession(hr)
+                authctx := hr.Context()
+                if srv.httpClient != nil </span><span class="cov8" title="1">{
+                        if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok </span><span class="cov8" title="1">{
+                                authctx = context.WithValue(authctx, oauth2.HTTPClient, srv.httpClient)
+                        }</span>
+                }
+                <span class="cov8" title="1">sess := srv.Jaws.GetSession(hr)
                 err = ErrOAuth2NotConfigured
                 statusCode = http.StatusInternalServerError
 
@@ -555,39 +714,56 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                                 gotState := hr.FormValue("state")
                                 wantState, _ := sess.Get(oauth2StateKey).(string)
                                 verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
+                                wantNonce, _ := sess.Get(oauth2NonceKey).(string)
                                 sess.Set(oauth2StateKey, nil)
                                 sess.Set(oauth2PKCEVerifierKey, nil)
+                                sess.Set(oauth2NonceKey, nil)
                                 err = ErrOAuth2MissingState
                                 if wantState != "" </span><span class="cov8" title="1">{
                                         err = ErrOAuth2WrongState
                                         if wantState == gotState </span><span class="cov8" title="1">{
-                                                if statusCode, err = srv.validateIssuer(hr, statusCode); err == nil </span><span class="cov8" title="1">{
-                                                        if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil </span><span class="cov8" title="1">{
+                                                if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil </span><span class="cov8" title="1">{
+                                                        err = ErrOAuth2MissingPKCEVerifier
+                                                        if verifier != "" </span><span class="cov8" title="1">{
                                                                 var token *oauth2.Token
-                                                                exchangeOptions := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
-                                                                if verifier != "" </span><span class="cov8" title="1">{
-                                                                        exchangeOptions = append(exchangeOptions, oauth2.VerifierOption(verifier))
-                                                                }</span>
-                                                                <span class="cov8" title="1">if token, err = oauth2Config.Exchange(hr.Context(), hr.FormValue("code"), exchangeOptions...); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                                        tokensource := oauth2Config.TokenSource(context.Background(), token)
-                                                                        client := oauth2.NewClient(hr.Context(), tokensource)
-                                                                        var resp *http.Response
-                                                                        if resp, err = client.Get(userinfourl); /* #nosec G704 */ srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                                                defer resp.Body.Close()
-                                                                                if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                                                        if statusCode = resp.StatusCode; statusCode == http.StatusOK </span><span class="cov8" title="1">{
-                                                                                                var userinfo map[string]any
-                                                                                                if err = json.Unmarshal(body, &amp;userinfo); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
-                                                                                                        body = nil
-                                                                                                        sessValue = userinfo
-                                                                                                        sessTokenValue = tokensource
-                                                                                                        sessEmailValue = srv.extractEmail(userinfo)
-                                                                                                        if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
-                                                                                                                location = sanitizeRedirectTarget(hr.Host, s)
-                                                                                                        }</span>
-                                                                                                        <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
-                                                                                                        hw.Header().Add("Location", location)
-                                                                                                        statusCode = http.StatusFound</span>
+                                                                exchangeOptions := []oauth2.AuthCodeOption{
+                                                                        oauth2.AccessTypeOffline,
+                                                                        oauth2.VerifierOption(verifier),
+                                                                }
+                                                                if token, err = oauth2Config.Exchange(authctx, hr.FormValue("code"), exchangeOptions...); srv.Jaws.Log(err) == nil </span><span class="cov8" title="1">{
+                                                                        err = ErrOAuth2NotConfigured
+                                                                        statusCode = http.StatusInternalServerError
+                                                                        if srv.idTokenVerifier != nil </span><span class="cov8" title="1">{
+                                                                                rawIDToken, _ := token.Extra("id_token").(string)
+                                                                                statusCode = http.StatusUnauthorized
+                                                                                err = ErrOIDCMissingIDToken
+                                                                                if rawIDToken != "" </span><span class="cov8" title="1">{
+                                                                                        var idToken *oidc.IDToken
+                                                                                        if idToken, err = srv.idTokenVerifier.Verify(authctx, rawIDToken); wrapOIDC(ErrOIDCInvalidIDToken, &amp;err) == nil </span><span class="cov8" title="1">{
+                                                                                                err = ErrOIDCMissingNonce
+                                                                                                if wantNonce != "" </span><span class="cov8" title="1">{
+                                                                                                        err = ErrOIDCNonceMismatch
+                                                                                                        if idToken.Nonce == wantNonce </span><span class="cov8" title="1">{
+                                                                                                                var claims map[string]any
+                                                                                                                if err = idToken.Claims(&amp;claims); wrapOIDC(ErrOIDCInvalidIDToken, &amp;err) == nil </span><span class="cov8" title="1">{
+                                                                                                                        tokenSource := oauth2Config.TokenSource(authctx, token)
+                                                                                                                        sessTokenValue = tokenSource
+                                                                                                                        sessValue = claims
+                                                                                                                        if fallback, e := srv.fetchUserInfo(authctx, userinfourl, tokenSource); srv.Jaws.Log(e) == nil </span><span class="cov8" title="1">{
+                                                                                                                                mergeMissingClaims(claims, fallback)
+                                                                                                                        }</span>
+                                                                                                                        <span class="cov8" title="1">verified := extractEmailVerified(claims)
+                                                                                                                        claims["email_verified"] = verified
+                                                                                                                        sessEmailValue = srv.extractEmail(claims)
+                                                                                                                        sessEmailVerifiedValue = verified
+                                                                                                                        if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
+                                                                                                                                location = sanitizeRedirectTarget(hr.Host, s)
+                                                                                                                        }</span>
+                                                                                                                        <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
+                                                                                                                        hw.Header().Add("Location", location)
+                                                                                                                        statusCode = http.StatusFound</span>
+                                                                                                                }
+                                                                                                        }
                                                                                                 }
                                                                                         }
                                                                                 }
@@ -603,6 +779,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                         sess.Set(srv.SessionKey, sessValue)
                         sess.Set(srv.SessionTokenKey, sessTokenValue)
                         sess.Set(srv.SessionEmailKey, sessEmailValue)
+                        sess.Set(srv.SessionEmailVerifiedKey, sessEmailVerifiedValue)
                         if srv.LoginEvent != nil &amp;&amp; sessValue != nil </span><span class="cov8" title="1">{
                                 srv.LoginEvent(sess, hr)
                         }</span>
@@ -615,13 +792,14 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                         }</span>
                 }
         }
-        <span class="cov8" title="1">srv.writeResult(hw, statusCode, err, body)</span>
+        <span class="cov8" title="1">srv.writeResult(hw, statusCode, err, nil)</span>
 }
 </pre>
 		
-		<pre class="file" id="file6" style="display: none">package jawsauth
+		<pre class="file" id="file7" style="display: none">package jawsauth
 
 import (
+        "context"
         "net/http"
         "net/mail"
         "net/url"
@@ -630,6 +808,7 @@ import (
         "strings"
         "sync"
 
+        "github.com/coreos/go-oidc/v3/oidc"
         "github.com/linkdata/jaws"
         "github.com/linkdata/jaws/ui"
         "golang.org/x/oauth2"
@@ -643,46 +822,46 @@ type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err
 type Server struct {
         Jaws *jaws.Jaws
         //gosec:disable G117
-        SessionKey      string                  // default is "oauth2userinfo", value will be of type map[string]any // #nosec G117
-        SessionTokenKey string                  // default is "oauth2token", value will be of type oauth2.TokenSource
-        SessionEmailKey string                  // default is "email", value will be of type string
-        HandledPaths    map[string]struct{}     // URI paths we have registered handlers for
-        LoginEvent      EventFunc               // if not nil, called after a successful login
-        LogoutEvent     EventFunc               // if not nil, called before logout
-        LoginFailed     FailedFunc              // if not nil, called on failed login
-        Options         []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
-        PKCE            bool                    // if true, use RFC 7636 PKCE with S256 challenge/verifier
-        oauth2cfg       *oauth2.Config
-        userinfoUrl     string
-        issuer          string
-        ishttps         bool
-        mu              sync.Mutex          // protects following
-        admins          map[string]struct{} // if not empty, emails of admins
-        handle403       http.Handler        // handler for 403 Forbidden
+        SessionKey              string                  // default is "oidc_claims", value will be of type map[string]any // #nosec G117
+        SessionTokenKey         string                  // default is "oauth2_tokensource", value will be of type oauth2.TokenSource
+        SessionEmailKey         string                  // default is "email", value will be of type string
+        SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
+        HandledPaths            map[string]struct{}     // URI paths we have registered handlers for
+        LoginEvent              EventFunc               // if not nil, called after a successful login
+        LogoutEvent             EventFunc               // if not nil, called before logout
+        LoginFailed             FailedFunc              // if not nil, called on failed login
+        Options                 []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
+        oauth2cfg               *oauth2.Config
+        idTokenVerifier         *oidc.IDTokenVerifier
+        userinfoUrl             string
+        httpClient              *http.Client
+        ishttps                 bool
+        mu                      sync.Mutex          // protects following
+        admins                  map[string]struct{} // if not empty, emails of admins
+        handle403               http.Handler        // handler for 403 Forbidden
 }
 
 func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl string) (srv *Server, err error) <span class="cov8" title="1">{
         srv = &amp;Server{
-                Jaws:            jw,
-                SessionKey:      "oauth2userinfo",
-                SessionTokenKey: "oauth2token",
-                SessionEmailKey: "email",
-                HandledPaths:    make(map[string]struct{}),
-                admins:          make(map[string]struct{}),
-                handle403:       default403handler{},
-                PKCE:            true,
-        }
+                Jaws:                    jw,
+                SessionKey:              "oidc_claims",
+                SessionTokenKey:         "oauth2_tokensource",
+                SessionEmailKey:         "email",
+                SessionEmailVerifiedKey: "email_verified",
+                HandledPaths:            make(map[string]struct{}),
+                admins:                  make(map[string]struct{}),
+                handle403:               default403handler{},
+        } // #nosec G101
         if cfg != nil &amp;&amp; handleFn != nil &amp;&amp; cfg.RedirectURL != "" </span><span class="cov8" title="1">{
                 jw.MakeAuth = srv.makeAuth
-                if srv.oauth2cfg, err = cfg.Build(overrideUrl); err == nil </span><span class="cov8" title="1">{
-                        srv.issuer = strings.TrimSpace(cfg.Issuer)
+                if srv.oauth2cfg, srv.userinfoUrl, srv.idTokenVerifier, err = cfg.buildContext(context.Background(), overrideUrl); err == nil </span><span class="cov8" title="1">{
+                        srv.httpClient = cfg.HTTPClient
                         var u *url.URL
                         if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil </span><span class="cov8" title="1">{
                                 srv.ishttps = (u.Scheme == "https")
                                 srv.handlePath(u.Path, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
                                 srv.handlePath(path.Join(path.Dir(u.Path), "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
                                 srv.handlePath(path.Join(path.Dir(u.Path), "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))
-                                srv.userinfoUrl = cfg.UserInfoURL
                         }</span>
                 }
         }
@@ -767,13 +946,14 @@ func (srv *Server) get403Handler() (h http.Handler) <span class="cov8" title="1"
         <span class="cov8" title="1">return</span>
 }
 
-// Valid returns true if OAuth2 is configured.
+// Valid returns true if OIDC authentication is configured.
 func (srv *Server) Valid() bool <span class="cov8" title="1">{
-        return srv != nil &amp;&amp; srv.oauth2cfg != nil
+        return srv != nil &amp;&amp; srv.oauth2cfg != nil &amp;&amp; srv.idTokenVerifier != nil
 }</span>
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 // If the Server is not Valid, returns h.
 func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) <span class="cov8" title="1">{
         rh = h
@@ -785,14 +965,16 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) <span clas
 
 // WrapAdmin returns a http.Handler that requires an authenticated user
 // having an email set using SetAdmins() before invoking h.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 // If the Server is not Valid, returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) <span class="cov8" title="1">{
         return srv.wrap(h, true)
 }</span>
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 // If the Server is not Valid, returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) <span class="cov8" title="1">{
         return srv.wrap(h, false)
@@ -800,19 +982,21 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) <span class="cov8" tit
 
 // HandlerAdmin returns a http.Handler using a jaws.Template that requires an authenticated user
 // having an email set using SetAdmins() before invoking h.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler <span class="cov8" title="1">{
         return srv.wrap(ui.Handler(srv.Jaws, name, dot), true)
 }</span>
 
 // Handler returns a http.Handler using a jaws.Template that requires an authenticated user.
-// Sets the jaws Session value srv.SessionKey to what UserInfoURL returned.
+// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
+// optional fallback values from UserInfo.
 func (srv *Server) Handler(name string, dot any) http.Handler <span class="cov8" title="1">{
         return srv.wrap(ui.Handler(srv.Jaws, name, dot), false)
 }</span>
 </pre>
 		
-		<pre class="file" id="file7" style="display: none">package jawsauth
+		<pre class="file" id="file8" style="display: none">package jawsauth
 
 import (
         "net/http"
