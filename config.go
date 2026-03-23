@@ -2,7 +2,6 @@ package jawsauth
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -59,35 +58,8 @@ func validateUrl(k, u, defaultURL string, optional bool) (value string, err erro
 				}
 			}
 			if err != nil {
-				err = configFieldError{field: k, cause: err}
+				err = errConfig{field: k, cause: err}
 			}
-		}
-	}
-	return
-}
-
-var ErrConfigURLNotAbsolute = errors.New("url is not absolute")
-var ErrConfigURLMissingHost = errors.New("url host is missing")
-var ErrConfigIssuerMustBeHTTPS = errors.New("issuer url must use https")
-
-type configFieldError struct {
-	field string
-	cause error
-}
-
-func (e configFieldError) Error() string {
-	return "invalid " + e.field + ": " + e.cause.Error()
-}
-
-func (e configFieldError) Unwrap() error {
-	return e.cause
-}
-
-func (e configFieldError) Is(target error) (matches bool) {
-	if t, ok := target.(configFieldError); ok {
-		matches = e.field == t.field
-		if matches {
-			matches = errors.Is(e.cause, t.cause)
 		}
 	}
 	return
@@ -100,7 +72,7 @@ func (cfg *Config) Validate() (err error) {
 				var issuer *url.URL
 				if issuer, err = url.Parse(cfg.Issuer); err == nil {
 					if issuer.Scheme != "https" {
-						err = configFieldError{field: "Issuer", cause: ErrConfigIssuerMustBeHTTPS}
+						err = errConfig{field: "Issuer", cause: ErrConfigIssuerMustBeHTTPS}
 					}
 				}
 			}
