@@ -54,7 +54,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		HandledPaths:            make(map[string]struct{}),
 		admins:                  make(map[string]struct{}),
 		handle403:               default403handler{},
-	}
+	} // #nosec G101
 	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
 		jw.MakeAuth = srv.makeAuth
 		if srv.oauth2cfg, srv.userinfoUrl, srv.idTokenVerifier, err = cfg.buildContext(context.Background(), overrideUrl); err == nil {

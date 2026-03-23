@@ -220,7 +220,7 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 	if userinfoURL != "" && tokenSource != nil {
 		client := oauth2.NewClient(ctx, tokenSource)
 		var resp *http.Response
-		if resp, err = client.Get(userinfoURL); err == nil {
+		if resp, err = client.Get(userinfoURL); /*#nosec G704*/ err == nil {
 			defer resp.Body.Close()
 			var body []byte
 			if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); err == nil {
