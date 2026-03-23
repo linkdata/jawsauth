@@ -24,11 +24,10 @@ type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err
 type Server struct {
 	Jaws *jaws.Jaws
 	//gosec:disable G117
-	SessionKey              string                  // default is "oauth2userinfo", value will be of type map[string]any // #nosec G117
-	SessionTokenKey         string                  // default is "oauth2token", value will be of type oauth2.TokenSource
+	SessionKey              string                  // default is "oidc_claims", value will be of type map[string]any // #nosec G117
+	SessionTokenKey         string                  // default is "oauth2_tokensource", value will be of type oauth2.TokenSource
 	SessionEmailKey         string                  // default is "email", value will be of type string
 	SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
-	SessionOIDCClaims       string                  // default is "oidc_claims", value will be of type map[string]any
 	HandledPaths            map[string]struct{}     // URI paths we have registered handlers for
 	LoginEvent              EventFunc               // if not nil, called after a successful login
 	LogoutEvent             EventFunc               // if not nil, called before logout
@@ -48,11 +47,10 @@ type Server struct {
 func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl string) (srv *Server, err error) {
 	srv = &Server{
 		Jaws:                    jw,
-		SessionKey:              "oauth2userinfo",
-		SessionTokenKey:         "oauth2token",
+		SessionKey:              "oidc_claims",
+		SessionTokenKey:         "oauth2_tokensource",
 		SessionEmailKey:         "email",
 		SessionEmailVerifiedKey: "email_verified",
-		SessionOIDCClaims:       "oidc_claims",
 		HandledPaths:            make(map[string]struct{}),
 		admins:                  make(map[string]struct{}),
 		handle403:               default403handler{},

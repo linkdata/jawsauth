@@ -21,8 +21,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-var ErrInconsistentState = errors.New("oauth2 inconsistent state")
-
 const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
 const oauth2PKCEVerifierKey = "oauth2pkceverifier"
@@ -247,7 +245,6 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		var sessEmailValue any
 		var sessEmailVerifiedValue any
 		var sessTokenValue any
-		var claims map[string]any
 		authctx := hr.Context()
 		if srv.httpClient != nil {
 			if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok {
@@ -273,47 +270,46 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 				if wantState != "" {
 					err = ErrOAuth2WrongState
 					if wantState == gotState {
-						if statusCode, err = srv.validateIssuer(hr, statusCode); err == nil {
-							if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil {
-								err = ErrOAuth2MissingPKCEVerifier
-								if verifier != "" {
-									var token *oauth2.Token
-									exchangeOptions := []oauth2.AuthCodeOption{
-										oauth2.AccessTypeOffline,
-										oauth2.VerifierOption(verifier),
-									}
-									if token, err = oauth2Config.Exchange(authctx, hr.FormValue("code"), exchangeOptions...); srv.Jaws.Log(err) == nil {
-										err = ErrOAuth2NotConfigured
-										statusCode = http.StatusInternalServerError
-										if srv.idTokenVerifier != nil {
-											rawIDToken, _ := token.Extra("id_token").(string)
-											statusCode = http.StatusUnauthorized
-											err = ErrOIDCMissingIDToken
-											if rawIDToken != "" {
-												var idToken *oidc.IDToken
-												if idToken, err = srv.idTokenVerifier.Verify(authctx, rawIDToken); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
-													err = ErrOIDCMissingNonce
-													if wantNonce != "" {
-														err = ErrOIDCNonceMismatch
-														if idToken.Nonce == wantNonce {
-															if err = idToken.Claims(&claims); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
-																tokenSource := oauth2Config.TokenSource(authctx, token)
-																sessTokenValue = tokenSource
-																sessValue = claims
-																if fallback, e := srv.fetchUserInfo(authctx, userinfourl, tokenSource); srv.Jaws.Log(e) == nil {
-																	mergeMissingClaims(claims, fallback)
-																}
-																verified := extractEmailVerified(claims)
-																claims["email_verified"] = verified
-																sessEmailValue = srv.extractEmail(claims)
-																sessEmailVerifiedValue = verified
-																if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
-																	location = sanitizeRedirectTarget(hr.Host, s)
-																}
-																sess.Set(oauth2ReferrerKey, nil)
-																hw.Header().Add("Location", location)
-																statusCode = http.StatusFound
+						if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil {
+							err = ErrOAuth2MissingPKCEVerifier
+							if verifier != "" {
+								var token *oauth2.Token
+								exchangeOptions := []oauth2.AuthCodeOption{
+									oauth2.AccessTypeOffline,
+									oauth2.VerifierOption(verifier),
+								}
+								if token, err = oauth2Config.Exchange(authctx, hr.FormValue("code"), exchangeOptions...); srv.Jaws.Log(err) == nil {
+									err = ErrOAuth2NotConfigured
+									statusCode = http.StatusInternalServerError
+									if srv.idTokenVerifier != nil {
+										rawIDToken, _ := token.Extra("id_token").(string)
+										statusCode = http.StatusUnauthorized
+										err = ErrOIDCMissingIDToken
+										if rawIDToken != "" {
+											var idToken *oidc.IDToken
+											if idToken, err = srv.idTokenVerifier.Verify(authctx, rawIDToken); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
+												err = ErrOIDCMissingNonce
+												if wantNonce != "" {
+													err = ErrOIDCNonceMismatch
+													if idToken.Nonce == wantNonce {
+														var claims map[string]any
+														if err = idToken.Claims(&claims); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
+															tokenSource := oauth2Config.TokenSource(authctx, token)
+															sessTokenValue = tokenSource
+															sessValue = claims
+															if fallback, e := srv.fetchUserInfo(authctx, userinfourl, tokenSource); srv.Jaws.Log(e) == nil {
+																mergeMissingClaims(claims, fallback)
 															}
+															verified := extractEmailVerified(claims)
+															claims["email_verified"] = verified
+															sessEmailValue = srv.extractEmail(claims)
+															sessEmailVerifiedValue = verified
+															if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
+																location = sanitizeRedirectTarget(hr.Host, s)
+															}
+															sess.Set(oauth2ReferrerKey, nil)
+															hw.Header().Add("Location", location)
+															statusCode = http.StatusFound
 														}
 													}
 												}
@@ -332,7 +328,6 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			sess.Set(srv.SessionTokenKey, sessTokenValue)
 			sess.Set(srv.SessionEmailKey, sessEmailValue)
 			sess.Set(srv.SessionEmailVerifiedKey, sessEmailVerifiedValue)
-			sess.Set(srv.SessionOIDCClaims, claims)
 			if srv.LoginEvent != nil && sessValue != nil {
 				srv.LoginEvent(sess, hr)
 			}
