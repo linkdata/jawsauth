@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -59,6 +60,23 @@ const indexTemplate = `<!doctype html>
 </body>
 </html>
 `
+
+const loginFailedTemplate = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign-in failed</title>
+</head>
+<body>
+  <h1>Sign-in failed</h1>
+  <p>We could not complete your sign-in request. Please try again.</p>
+  <p><a href="/">Back to sign in</a></p>
+</body>
+</html>
+`
+
+var demoLoginFailedLogger = log.Default()
 
 type demoOptions struct {
 	ListenAddr    string
@@ -239,6 +257,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 	if err != nil {
 		return nil, fmt.Errorf("create auth server: %w", err)
 	}
+	authServer.LoginFailed = demoLoginFailed
 
 	var sliderMu sync.Mutex
 	var slider float64
@@ -316,6 +335,25 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 		keycloak:     keycloak,
 		certDir:      certDir,
 	}, nil
+}
+
+func demoLoginFailed(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (handled bool) {
+	if httpCode < http.StatusBadRequest {
+		httpCode = http.StatusInternalServerError
+	}
+
+	if email != "" {
+		demoLoginFailedLogger.Printf("demo login failed: status=%d email=%q err=%v", httpCode, email, err)
+	} else {
+		demoLoginFailedLogger.Printf("demo login failed: status=%d err=%v", httpCode, err)
+	}
+
+	https := hr != nil && hr.TLS != nil
+	hw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	jawsauth.SetHeaders(hw, https)
+	hw.WriteHeader(httpCode)
+	_, _ = hw.Write([]byte(loginFailedTemplate))
+	return true
 }
 
 func resolvePublicHost(publicHost string, addr net.Addr) (host string, err error) {
