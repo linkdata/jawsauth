@@ -529,8 +529,8 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
         }</span>
         <span class="cov8" title="1">location = sanitizeRedirectTarget(hr.Host, location)
         for s := range srv.HandledPaths </span><span class="cov8" title="1">{
-                if strings.HasSuffix(location, s) </span><span class="cov8" title="1">{
-                        location = strings.TrimSuffix(location, s)
+                if before, ok := strings.CutSuffix(location, s); ok </span><span class="cov8" title="1">{
+                        location = before
                         break</span>
                 }
         }
@@ -594,7 +594,7 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) <span class=
         const tmpl = `&lt;html&gt;&lt;body&gt;&lt;h2&gt;%03d %s&lt;/h2&gt;&lt;p&gt;%s&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;`
         if body == nil </span><span class="cov8" title="1">{
                 if err != nil </span><span class="cov8" title="1">{
-                        body = []byte(fmt.Sprintf(tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error())))
+                        body = fmt.Appendf(nil, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
                 }</span>
         }
         <span class="cov8" title="1">_, _ = w.Write(body)</span>
