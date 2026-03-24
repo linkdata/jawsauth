@@ -106,7 +106,6 @@ func TestConfig_ValidateRequiresAbsoluteURLs(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base
 			tc.patch(&cfg)
@@ -171,7 +170,6 @@ func TestConfig_ValidateRequiresRequiredFields(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base
 			tc.patch(&cfg)

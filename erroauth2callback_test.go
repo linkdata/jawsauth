@@ -38,7 +38,6 @@ func Test_oauth2CallbackError(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
 			statusCode, err := oauth2CallbackError(http.StatusTeapot, req)

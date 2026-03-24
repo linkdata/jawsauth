@@ -77,8 +77,8 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
 	}
 	location = sanitizeRedirectTarget(hr.Host, location)
 	for s := range srv.HandledPaths {
-		if strings.HasSuffix(location, s) {
-			location = strings.TrimSuffix(location, s)
+		if before, ok := strings.CutSuffix(location, s); ok {
+			location = before
 			break
 		}
 	}
@@ -142,7 +142,7 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) {
 	const tmpl = `<html><body><h2>%03d %s</h2><p>%s</p></body></html>`
 	if body == nil {
 		if err != nil {
-			body = []byte(fmt.Sprintf(tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error())))
+			body = fmt.Appendf(nil, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
 		}
 	}
 	_, _ = w.Write(body)

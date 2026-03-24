@@ -49,14 +49,14 @@ func TestWrapperServeHTTPSet403HandlerConcurrent(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 2000; i++ {
+		for range 2000 {
 			srv.Set403Handler(testStatusHandler{statusCode: http.StatusForbidden})
 			srv.Set403Handler(testStatusHandler{statusCode: http.StatusUnauthorized})
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 2000; i++ {
+		for range 2000 {
 			w.ServeHTTP(httptest.NewRecorder(), req)
 		}
 	}()

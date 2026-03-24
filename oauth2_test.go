@@ -424,7 +424,6 @@ func Test_extractEmailVerified(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if got := extractEmailVerified(tc.claims); got != tc.want {
 				t.Fatalf("extractEmailVerified() = %v, want %v", got, tc.want)
@@ -814,7 +813,6 @@ func TestServerExtractEmail(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			handler := &recordingHandler{}
 			jw.Logger = slog.New(handler)

@@ -150,7 +150,7 @@ func getAdminToken(ctx context.Context, baseURL, username, password string) (str
 		return "", fmt.Errorf("failed to get admin token, status: %s, body: %s", resp.Status, string(body))
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
@@ -160,7 +160,7 @@ func getAdminToken(ctx context.Context, baseURL, username, password string) (str
 
 func createRealm(ctx context.Context, baseURL, token, realm string) error {
 	url := fmt.Sprintf("%s/admin/realms", baseURL)
-	realmData := map[string]interface{}{
+	realmData := map[string]any{
 		"realm":   realm,
 		"enabled": true,
 	}
@@ -193,7 +193,7 @@ func createRealm(ctx context.Context, baseURL, token, realm string) error {
 
 func createClient(ctx context.Context, baseURL, token, realm, clientName string) (string, error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/clients", baseURL, realm)
-	clientData := map[string]interface{}{
+	clientData := map[string]any{
 		"clientId":     clientName,
 		"enabled":      true,
 		"publicClient": false, // Ensures client secret is used
@@ -232,7 +232,7 @@ func createClient(ctx context.Context, baseURL, token, realm, clientName string)
 func setClientSecret(ctx context.Context, baseURL, token, realm, clientID, secret string) (string, error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/clients/%s/client-secret", baseURL, realm, clientID)
 
-	secretData := map[string]interface{}{
+	secretData := map[string]any{
 		"value": secret,
 	}
 
@@ -259,7 +259,7 @@ func setClientSecret(ctx context.Context, baseURL, token, realm, clientID, secre
 		return "", fmt.Errorf("failed to set client secret, status: %s, body: %s", resp.Status, string(body))
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
@@ -269,7 +269,7 @@ func setClientSecret(ctx context.Context, baseURL, token, realm, clientID, secre
 
 func createUser(ctx context.Context, baseURL, token, realm, username, email, firstName, lastName string) (string, error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/users", baseURL, realm)
-	userData := map[string]interface{}{
+	userData := map[string]any{
 		"username":  username,
 		"email":     email,
 		"firstName": firstName,
@@ -308,7 +308,7 @@ func createUser(ctx context.Context, baseURL, token, realm, username, email, fir
 
 func setUserPassword(ctx context.Context, baseURL, token, realm, userID, password string) error {
 	url := fmt.Sprintf("%s/admin/realms/%s/users/%s/reset-password", baseURL, realm, userID)
-	passwordData := map[string]interface{}{
+	passwordData := map[string]any{
 		"type":      "password",
 		"value":     password,
 		"temporary": false,
@@ -361,7 +361,7 @@ func getUserAccessToken(ctx context.Context, baseURL, realm, clientID, clientSec
 		return "", fmt.Errorf("failed to get user access token, status: %s, body: %s", resp.Status, string(body))
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
@@ -389,7 +389,7 @@ func getUserInfoEmail(ctx context.Context, baseURL, realm, accessToken string) (
 		return "", fmt.Errorf("failed to get userinfo, status: %s, body: %s", resp.Status, string(body))
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
@@ -415,7 +415,7 @@ func waitForKeycloak(ctx context.Context, container testcontainers.Container) er
 
 	url := fmt.Sprintf("http://%s:%s/", host, mappedPort.Port())
 
-	for i := 0; i < 20; i++ { // Retry for ~60 seconds (20 attempts, 3 seconds each)
+	for range 20 { // Retry for ~60 seconds (20 attempts, 3 seconds each)
 		resp, err := http.Get(url)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			return nil
@@ -447,7 +447,7 @@ func getScopeID(ctx context.Context, baseURL, token, realm, scopeName string) (s
 		return "", fmt.Errorf("failed to get scope list, status: %s, body: %s", resp.Status, string(body))
 	}
 
-	var scopes []map[string]interface{}
+	var scopes []map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&scopes); err != nil {
 		return "", err
 	}
@@ -497,11 +497,11 @@ func assignEmailScopeToClient(ctx context.Context, baseURL, token, realm, client
 
 func ensureEmailScope(ctx context.Context, baseURL, token, realm string) error {
 	url := fmt.Sprintf("%s/admin/realms/%s/client-scopes", baseURL, realm)
-	scopeData := map[string]interface{}{
+	scopeData := map[string]any{
 		"name":        "email",
 		"description": "Access user's email information",
 		"protocol":    "openid-connect",
-		"attributes": map[string]interface{}{
+		"attributes": map[string]any{
 			"include.in.token.scope":          "true",
 			"display.on.consent.screen":       "true",
 			"consent.screen.text":             "Access your email",
@@ -560,7 +560,7 @@ func enableDirectAccessGrants(ctx context.Context, baseURL, token, realm, client
 		return fmt.Errorf("failed to get client details, status: %s, body: %s", resp.Status, string(body))
 	}
 
-	var clientConfig map[string]interface{}
+	var clientConfig map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&clientConfig); err != nil {
 		return err
 	}
