@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/linkdata/jaws"
+	"github.com/linkdata/jaws/lib/bind"
 	"github.com/linkdata/jawsauth"
 	"github.com/linkdata/webserv"
 	"golang.org/x/oauth2"
@@ -261,7 +262,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 
 	var sliderMu sync.Mutex
 	var slider float64
-	mux.Handle(http.MethodGet+" /", authServer.Handler("index.html", jaws.Bind(&sliderMu, &slider)))
+	mux.Handle(http.MethodGet+" /", authServer.Handler("index.html", bind.New(&sliderMu, &slider)))
 	mux.HandleFunc(http.MethodGet+" /logged-out", func(hw http.ResponseWriter, hr *http.Request) {
 		hw.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = hw.Write([]byte(`<!doctype html><html lang="en"><body><h1>Signed out</h1><p><a href="/">Sign in again</a></p></body></html>`))

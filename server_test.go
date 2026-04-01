@@ -18,7 +18,7 @@ import (
 
 	"github.com/linkdata/deadlock"
 	"github.com/linkdata/jaws"
-	"github.com/linkdata/jaws/ui"
+	"github.com/linkdata/jaws/lib/ui"
 )
 
 func getOpenIDConfig(baseURL, realm string) (openidcfg map[string]any, err error) {

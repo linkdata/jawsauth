@@ -12,7 +12,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/linkdata/jaws"
-	"github.com/linkdata/jaws/ui"
+	"github.com/linkdata/jaws/lib/ui"
 	"golang.org/x/oauth2"
 )
 
