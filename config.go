@@ -126,7 +126,7 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 			if err = provider.Claims(&metadata); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
 				var authURL string
 				var tokenURL string
-				if authURL, err = validateUrl("AuthURL", cfg.AuthURL, metadata.AuthorizationEndpoint, true); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
+				if authURL, err = validateUrl("AuthURL", cfg.AuthURL, metadata.AuthorizationEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
 					if tokenURL, err = validateUrl("TokenURL", cfg.TokenURL, metadata.TokenEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
 						if userInfoURL, err = validateUrl("UserInfoURL", cfg.UserInfoURL, metadata.UserinfoEndpoint, true); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
 							var redir *url.URL
