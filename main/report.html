@@ -131,6 +131,20 @@ func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) 
         <span class="cov8" title="1">return</span>
 }
 
+func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (current, present bool) <span class="cov8" title="1">{
+        if srv != nil &amp;&amp; sess != nil </span><span class="cov8" title="1">{
+                expiryValue := sess.Get(oauth2IDTokenExpiryKey)
+                authValue := sess.Get(srv.SessionKey)
+                present = authValue != nil || expiryValue != nil
+                if authValue != nil &amp;&amp; now != nil </span><span class="cov8" title="1">{
+                        if expiry, _ := expiryValue.(time.Time); !expiry.IsZero() </span><span class="cov8" title="1">{
+                                current = expiry.After(now())
+                        }</span>
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
 func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState) (err error) <span class="cov8" title="1">{
         err = ErrOAuth2NotConfigured
         if srv != nil </span><span class="cov8" title="1">{
@@ -151,6 +165,7 @@ func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Sessio
                                 claims["email_verified"] = verified
                                 sess.Set(srv.SessionKey, claims)
                                 sess.Set(srv.SessionTokenKey, tokenSource)
+                                sess.Set(oauth2IDTokenExpiryKey, expiry)
                                 sess.Set(srv.SessionEmailKey, srv.extractEmail(claims))
                                 sess.Set(srv.SessionEmailVerifiedKey, verified)
                                 if srv.Jaws != nil </span><span class="cov8" title="1">{
@@ -283,11 +298,20 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
         }
 }
 
+func clearSessionOAuthFlow(sess *jaws.Session) <span class="cov8" title="1">{
+        sess.Set(oauth2StateKey, nil)
+        sess.Set(oauth2PKCEVerifierKey, nil)
+        sess.Set(oauth2NonceKey, nil)
+        sess.Set(oauth2ReferrerKey, nil)
+}</span>
+
 func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, callLogout, reload bool, entry *authTimerState) (cleared bool) <span class="cov8" title="1">{
         if srv != nil &amp;&amp; sess != nil </span><span class="cov8" title="1">{
                 if srv.stopSessionAuthTimer(sess, entry) </span><span class="cov8" title="1">{
+                        clearSessionOAuthFlow(sess)
                         sess.Set(srv.SessionKey, nil)
                         sess.Set(srv.SessionTokenKey, nil)
+                        sess.Set(oauth2IDTokenExpiryKey, nil)
                         sess.Set(srv.SessionEmailKey, nil)
                         sess.Set(srv.SessionEmailVerifiedKey, nil)
                         if callLogout &amp;&amp; srv.LogoutEvent != nil </span><span class="cov8" title="1">{
@@ -696,6 +720,7 @@ const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
 const oauth2PKCEVerifierKey = "oauth2pkceverifier"
 const oauth2NonceKey = "oauth2nonce"
+const oauth2IDTokenExpiryKey = "oauth2idtokenexpiry" // #nosec G101
 
 func normalizeHost(hostport string) (normalized string) <span class="cov8" title="1">{
         normalized = strings.TrimSpace(hostport)
@@ -758,21 +783,24 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span c
         if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
                 oauth2cfg, _, location := srv.begin(hr)
                 if oauth2cfg != nil </span><span class="cov8" title="1">{
-                        if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
-                                authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
-                                state, _ := sess.Get(oauth2StateKey).(string)
-                                if state == "" </span><span class="cov8" title="1">{
-                                        state = randomHexString()
-                                        sess.Set(oauth2StateKey, state)
+                        if srv.Jaws != nil </span><span class="cov8" title="1">{
+                                sess := srv.Jaws.GetSession(hr)
+                                if sess == nil </span><span class="cov8" title="1">{
+                                        sess = srv.Jaws.NewSession(hw, hr)
                                 }</span>
-                                <span class="cov8" title="1">nonce := randomHexString()
-                                sess.Set(oauth2NonceKey, nonce)
-                                authOptions = append(authOptions, oidc.Nonce(nonce))
-                                verifier := oauth2.GenerateVerifier()
-                                sess.Set(oauth2PKCEVerifierKey, verifier)
-                                authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-                                sess.Set(oauth2ReferrerKey, location)
-                                location = oauth2cfg.AuthCodeURL(state, authOptions...)</span>
+                                <span class="cov8" title="1">if sess != nil </span><span class="cov8" title="1">{
+                                        authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
+                                        state := randomHexString()
+                                        sess.Set(oauth2StateKey, state)
+                                        nonce := randomHexString()
+                                        sess.Set(oauth2NonceKey, nonce)
+                                        authOptions = append(authOptions, oidc.Nonce(nonce))
+                                        verifier := oauth2.GenerateVerifier()
+                                        sess.Set(oauth2PKCEVerifierKey, verifier)
+                                        authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+                                        sess.Set(oauth2ReferrerKey, location)
+                                        location = oauth2cfg.AuthCodeURL(state, authOptions...)
+                                }</span>
                         }
                 }
                 <span class="cov8" title="1">hw.Header().Add("Location", location)
@@ -1100,7 +1128,10 @@ func (srv *Server) SetAdmins(emails []string) <span class="cov8" title="1">{
         if srv != nil </span><span class="cov8" title="1">{
                 srv.mu.Lock()
                 defer srv.mu.Unlock()
-                clear(srv.admins)
+                if srv.admins == nil </span><span class="cov8" title="1">{
+                        srv.admins = make(map[string]struct{})
+                }</span>
+                <span class="cov8" title="1">clear(srv.admins)
                 for _, s := range emails </span><span class="cov8" title="1">{
                         if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
                                 s = m.Address
@@ -1200,6 +1231,7 @@ func (srv *Server) Handler(name string, dot any) http.Handler <span class="cov8"
 
 import (
         "net/http"
+        "time"
 )
 
 type wrapper struct {
@@ -1214,10 +1246,13 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) <span class
         if sess == nil </span><span class="cov8" title="1">{
                 sess = w.server.Jaws.NewSession(hw, hr)
         }</span>
-        <span class="cov8" title="1">if sess.Get(w.server.SessionKey) == nil </span><span class="cov8" title="1">{
-                w.server.HandleLogin(hw, hr)
-                return
-        }</span>
+        <span class="cov8" title="1">if current, present := w.server.sessionAuthStatus(sess, time.Now); !current </span><span class="cov8" title="1">{
+                if present </span><span class="cov8" title="1">{
+                        w.server.clearSessionAuth(sess, hr, true, false, nil)
+                }</span>
+                <span class="cov8" title="1">w.server.HandleLogin(hw, hr)
+                return</span>
+        }
 
         <span class="cov8" title="1">if w.admin </span><span class="cov8" title="1">{
                 email, _ := sess.Get(w.server.SessionEmailKey).(string)
