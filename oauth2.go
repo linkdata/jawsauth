@@ -25,6 +25,7 @@ const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
 const oauth2PKCEVerifierKey = "oauth2pkceverifier"
 const oauth2NonceKey = "oauth2nonce"
+const oauth2IDTokenExpiryKey = "oauth2idtokenexpiry"
 
 func normalizeHost(hostport string) (normalized string) {
 	normalized = strings.TrimSpace(hostport)
@@ -87,21 +88,24 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method == http.MethodGet {
 		oauth2cfg, _, location := srv.begin(hr)
 		if oauth2cfg != nil {
-			if sess := srv.Jaws.GetSession(hr); sess != nil {
-				authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
-				state, _ := sess.Get(oauth2StateKey).(string)
-				if state == "" {
-					state = randomHexString()
-					sess.Set(oauth2StateKey, state)
+			if srv.Jaws != nil {
+				sess := srv.Jaws.GetSession(hr)
+				if sess == nil {
+					sess = srv.Jaws.NewSession(hw, hr)
 				}
-				nonce := randomHexString()
-				sess.Set(oauth2NonceKey, nonce)
-				authOptions = append(authOptions, oidc.Nonce(nonce))
-				verifier := oauth2.GenerateVerifier()
-				sess.Set(oauth2PKCEVerifierKey, verifier)
-				authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-				sess.Set(oauth2ReferrerKey, location)
-				location = oauth2cfg.AuthCodeURL(state, authOptions...)
+				if sess != nil {
+					authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
+					state := randomHexString()
+					sess.Set(oauth2StateKey, state)
+					nonce := randomHexString()
+					sess.Set(oauth2NonceKey, nonce)
+					authOptions = append(authOptions, oidc.Nonce(nonce))
+					verifier := oauth2.GenerateVerifier()
+					sess.Set(oauth2PKCEVerifierKey, verifier)
+					authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+					sess.Set(oauth2ReferrerKey, location)
+					location = oauth2cfg.AuthCodeURL(state, authOptions...)
+				}
 			}
 		}
 		hw.Header().Add("Location", location)

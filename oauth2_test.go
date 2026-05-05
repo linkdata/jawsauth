@@ -215,6 +215,108 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	}
 }
 
+func Test_handleLoginCreatesSessionAndRotatesState(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := &Server{
+		Jaws:         jw,
+		HandledPaths: map[string]struct{}{"/oauth2/login": {}},
+		oauth2cfg: &oauth2.Config{
+			ClientID:    "client",
+			Endpoint:    oauth2.Endpoint{AuthURL: "https://provider.example/auth"},
+			RedirectURL: "https://example.com/oauth2/callback",
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
+	rec := httptest.NewRecorder()
+	srv.HandleLogin(rec, req)
+
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusFound {
+		resp.Body.Close()
+		t.Fatal(resp.Status)
+	}
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+	if !strings.HasPrefix(loc, "https://provider.example/auth?") {
+		t.Fatal(loc)
+	}
+	sess := jw.GetSession(req)
+	if sess == nil {
+		t.Fatal("missing session")
+	}
+	firstState, _ := sess.Get(oauth2StateKey).(string)
+	if firstState == "" {
+		t.Fatal("missing state")
+	}
+
+	rec = httptest.NewRecorder()
+	srv.HandleLogin(rec, req)
+	secondState, _ := sess.Get(oauth2StateKey).(string)
+	if secondState == "" {
+		t.Fatal("missing replacement state")
+	}
+	if secondState == firstState {
+		t.Fatal("state was reused")
+	}
+}
+
+func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := &Server{
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		HandledPaths:            map[string]struct{}{"/oauth2/logout": {}},
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/logout", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	sess.Set(oauth2StateKey, "state123")
+	sess.Set(oauth2PKCEVerifierKey, "verifier123")
+	sess.Set(oauth2NonceKey, "nonce123")
+	sess.Set(oauth2ReferrerKey, "/protected")
+	sess.Set(srv.SessionKey, map[string]any{"email": "user@example.com"})
+	sess.Set(srv.SessionTokenKey, oauth2.StaticTokenSource(makeOAuth2Token("access", "", "")))
+	sess.Set(oauth2IDTokenExpiryKey, time.Now().Add(time.Hour))
+	sess.Set(srv.SessionEmailKey, "user@example.com")
+	sess.Set(srv.SessionEmailVerifiedKey, true)
+
+	rec := httptest.NewRecorder()
+	srv.HandleLogout(rec, req)
+
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusFound {
+		resp.Body.Close()
+		t.Fatal(resp.Status)
+	}
+	resp.Body.Close()
+	if value := sess.Get(oauth2StateKey); value != nil {
+		t.Fatal(value)
+	}
+	if value := sess.Get(oauth2PKCEVerifierKey); value != nil {
+		t.Fatal(value)
+	}
+	if value := sess.Get(oauth2NonceKey); value != nil {
+		t.Fatal(value)
+	}
+	if value := sess.Get(oauth2ReferrerKey); value != nil {
+		t.Fatal(value)
+	}
+	if value := sess.Get(oauth2IDTokenExpiryKey); value != nil {
+		t.Fatal(value)
+	}
+}
+
 func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {

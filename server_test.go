@@ -251,3 +251,18 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(resp.Status)
 	}
 }
+
+func TestSetAdminsInitializesZeroValueMap(t *testing.T) {
+	srv := &Server{}
+	srv.SetAdmins([]string{"Admin <admin@example.com>"})
+
+	if got := strings.Join(srv.GetAdmins(), ","); got != "admin@example.com" {
+		t.Fatal(got)
+	}
+	if !srv.IsAdmin("admin@example.com") {
+		t.Fatal("admin was not accepted")
+	}
+	if srv.IsAdmin("user@example.com") {
+		t.Fatal("unexpected admin")
+	}
+}

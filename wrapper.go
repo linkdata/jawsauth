@@ -2,6 +2,7 @@ package jawsauth
 
 import (
 	"net/http"
+	"time"
 )
 
 type wrapper struct {
@@ -16,7 +17,10 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 	if sess == nil {
 		sess = w.server.Jaws.NewSession(hw, hr)
 	}
-	if sess.Get(w.server.SessionKey) == nil {
+	if current, present := w.server.sessionAuthStatus(sess, time.Now); !current {
+		if present {
+			w.server.clearSessionAuth(sess, hr, true, false, nil)
+		}
 		w.server.HandleLogin(hw, hr)
 		return
 	}

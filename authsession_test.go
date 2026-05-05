@@ -130,6 +130,9 @@ func TestStoreSessionAuthClaimsSchedulesTimer(t *testing.T) {
 	if gotVerified, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool); !gotVerified {
 		t.Fatal(gotVerified)
 	}
+	if gotExpiry, _ := sess.Get(oauth2IDTokenExpiryKey).(time.Time); !gotExpiry.Equal(expiry) {
+		t.Fatal(gotExpiry)
+	}
 	if factory.len() != 1 {
 		t.Fatal(factory.len())
 	}

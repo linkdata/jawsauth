@@ -42,6 +42,20 @@ func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) 
 	return
 }
 
+func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (current, present bool) {
+	if srv != nil && sess != nil {
+		expiryValue := sess.Get(oauth2IDTokenExpiryKey)
+		authValue := sess.Get(srv.SessionKey)
+		present = authValue != nil || expiryValue != nil
+		if authValue != nil && now != nil {
+			if expiry, _ := expiryValue.(time.Time); !expiry.IsZero() {
+				current = expiry.After(now())
+			}
+		}
+	}
+	return
+}
+
 func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState) (err error) {
 	err = ErrOAuth2NotConfigured
 	if srv != nil {
@@ -62,6 +76,7 @@ func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Sessio
 				claims["email_verified"] = verified
 				sess.Set(srv.SessionKey, claims)
 				sess.Set(srv.SessionTokenKey, tokenSource)
+				sess.Set(oauth2IDTokenExpiryKey, expiry)
 				sess.Set(srv.SessionEmailKey, srv.extractEmail(claims))
 				sess.Set(srv.SessionEmailVerifiedKey, verified)
 				if srv.Jaws != nil {
@@ -194,11 +209,20 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 	}
 }
 
+func clearSessionOAuthFlow(sess *jaws.Session) {
+	sess.Set(oauth2StateKey, nil)
+	sess.Set(oauth2PKCEVerifierKey, nil)
+	sess.Set(oauth2NonceKey, nil)
+	sess.Set(oauth2ReferrerKey, nil)
+}
+
 func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, callLogout, reload bool, entry *authTimerState) (cleared bool) {
 	if srv != nil && sess != nil {
 		if srv.stopSessionAuthTimer(sess, entry) {
+			clearSessionOAuthFlow(sess)
 			sess.Set(srv.SessionKey, nil)
 			sess.Set(srv.SessionTokenKey, nil)
+			sess.Set(oauth2IDTokenExpiryKey, nil)
 			sess.Set(srv.SessionEmailKey, nil)
 			sess.Set(srv.SessionEmailVerifiedKey, nil)
 			if callLogout && srv.LogoutEvent != nil {

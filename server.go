@@ -106,6 +106,9 @@ func (srv *Server) SetAdmins(emails []string) {
 	if srv != nil {
 		srv.mu.Lock()
 		defer srv.mu.Unlock()
+		if srv.admins == nil {
+			srv.admins = make(map[string]struct{})
+		}
 		clear(srv.admins)
 		for _, s := range emails {
 			if m, e := mail.ParseAddress(s); e == nil {
