@@ -76,13 +76,7 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
 		location = hr.RequestURI
 	}
 	location = sanitizeRedirectTarget(hr.Host, location)
-	for s := range srv.HandledPaths {
-		if before, ok := strings.CutSuffix(location, s); ok {
-			location = before
-			break
-		}
-	}
-	if location == "" {
+	if _, handled := srv.HandledPaths[location]; handled {
 		location = "/"
 	}
 	return
@@ -285,7 +279,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 													if idToken.Nonce == wantNonce {
 														var claims map[string]any
 														if err = idToken.Claims(&claims); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
-															tokenSource := oauth2Config.TokenSource(authctx, token)
+															tokenSource := oauth2Config.TokenSource(srv.oauth2Context(context.Background()), token)
 															if err = srv.storeSessionAuthClaims(authctx, sess, claims, tokenSource, idToken.Expiry, nil); err == nil {
 																sessValue = claims
 																sessEmailValue, _ = sess.Get(srv.SessionEmailKey).(string)

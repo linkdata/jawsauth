@@ -123,6 +123,29 @@ func Test_beginReferrerHandling(t *testing.T) {
 	}
 }
 
+// Test_beginPathBoundary verifies that a handled path is only stripped on an
+// exact match, not whenever it happens to be a string suffix of the referrer.
+// Regression for non-deterministic over-stripping when registered paths share
+// a suffix with unrelated user pages.
+func Test_beginPathBoundary(t *testing.T) {
+	srv := &Server{HandledPaths: map[string]struct{}{"/login": {}, "/admin/login": {}}}
+	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
+	hr.Header.Set("Referer", "https://example.com/admin/login")
+	for range 50 {
+		_, _, location := srv.begin(hr)
+		if location != "/" {
+			t.Fatal(location)
+		}
+	}
+
+	srv = &Server{HandledPaths: map[string]struct{}{"/login": {}}}
+	hr.Header.Set("Referer", "https://example.com/admin/login")
+	_, _, location := srv.begin(hr)
+	if location != "/admin/login" {
+		t.Fatal(location)
+	}
+}
+
 func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {
@@ -337,6 +360,85 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	}
 	if tokenSource, ok := sess.Get(srv.SessionTokenKey).(oauth2.TokenSource); !ok || tokenSource == nil {
 		t.Fatal("missing token source")
+	}
+}
+
+// Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel verifies that
+// the TokenSource stored in the session does not capture the request context.
+// Regression: previously the TokenSource was created with the request context,
+// so the first scheduled refresh after the request finished would fail with
+// "context canceled" and force an unexpected logout.
+func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	const issuer = "https://issuer.example"
+	const wantNonce = "nonce123"
+	makeToken := func() string {
+		return makeIDToken(t, map[string]any{
+			"iss":   issuer,
+			"aud":   "client",
+			"exp":   time.Now().Add(time.Hour).Unix(),
+			"iat":   time.Now().Add(-time.Minute).Unix(),
+			"nonce": wantNonce,
+			"sub":   "sub-123",
+			"email": "user@example.com",
+		})
+	}
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.URL.Path != "/token" {
+			hw.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hw.Header().Set("Content-Type", "application/json")
+		// expires_in=1 puts the access token inside oauth2's 10s skew on
+		// arrival, so reuseTokenSource will call the underlying refresher on
+		// the next Token() invocation.
+		_, _ = hw.Write([]byte(`{"access_token":"acc","token_type":"Bearer","expires_in":1,"refresh_token":"refresh","id_token":"` + makeToken() + `"}`))
+	}))
+	defer provider.Close()
+
+	srv := &Server{
+		Jaws:                    jw,
+		SessionKey:              "claims",
+		SessionTokenKey:         "token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "ev",
+		HandledPaths:            map[string]struct{}{},
+		oauth2cfg: &oauth2.Config{
+			ClientID:     "client",
+			ClientSecret: "secret",
+			Endpoint:     oauth2.Endpoint{TokenURL: provider.URL + "/token"},
+			RedirectURL:  "http://example.com/oauth2/callback",
+		},
+		idTokenVerifier: oidc.NewVerifier(issuer, passthroughKeySet{}, &oidc.Config{ClientID: "client"}),
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state&code=code", nil).WithContext(ctx)
+	sess := jw.NewSession(rec, req)
+	sess.Set(oauth2StateKey, "state")
+	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+	sess.Set(oauth2NonceKey, wantNonce)
+
+	srv.HandleAuthResponse(rec, req)
+
+	if status := rec.Result().StatusCode; status != http.StatusFound {
+		t.Fatal(status)
+	}
+
+	cancel()
+
+	tokenSource, ok := sess.Get(srv.SessionTokenKey).(oauth2.TokenSource)
+	if !ok || tokenSource == nil {
+		t.Fatal("missing token source")
+	}
+	if _, err := tokenSource.Token(); err != nil {
+		t.Fatal(err)
 	}
 }
 
