@@ -55,23 +55,25 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/linkdata/jawsauth/config.go (100.0%)</option>
+				<option value="file0">github.com/linkdata/jawsauth/authsession.go (100.0%)</option>
 				
-				<option value="file1">github.com/linkdata/jawsauth/default403handler.go (100.0%)</option>
+				<option value="file1">github.com/linkdata/jawsauth/config.go (100.0%)</option>
 				
-				<option value="file2">github.com/linkdata/jawsauth/errconfig.go (100.0%)</option>
+				<option value="file2">github.com/linkdata/jawsauth/default403handler.go (100.0%)</option>
 				
-				<option value="file3">github.com/linkdata/jawsauth/erroauth2callback.go (100.0%)</option>
+				<option value="file3">github.com/linkdata/jawsauth/errconfig.go (100.0%)</option>
 				
-				<option value="file4">github.com/linkdata/jawsauth/erroidc.go (100.0%)</option>
+				<option value="file4">github.com/linkdata/jawsauth/erroauth2callback.go (100.0%)</option>
 				
-				<option value="file5">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
+				<option value="file5">github.com/linkdata/jawsauth/erroidc.go (100.0%)</option>
 				
-				<option value="file6">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
+				<option value="file6">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
 				
-				<option value="file7">github.com/linkdata/jawsauth/server.go (100.0%)</option>
+				<option value="file7">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
 				
-				<option value="file8">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
+				<option value="file8">github.com/linkdata/jawsauth/server.go (100.0%)</option>
+				
+				<option value="file9">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
 				
 				</select>
 			</div>
@@ -86,6 +88,225 @@
 		<div id="content">
 		
 		<pre class="file" id="file0" style="display: none">package jawsauth
+
+import (
+        "context"
+        "errors"
+        "net/http"
+        "time"
+
+        "github.com/coreos/go-oidc/v3/oidc"
+        "github.com/linkdata/jaws"
+        "golang.org/x/oauth2"
+)
+
+const authRefreshSkew = 10 * time.Second
+
+var errOIDCStaleIDToken = errors.New("oidc stale id_token")
+var errAuthTimerStale = errors.New("auth timer stale")
+var errOIDCInvalidExpiry = errors.New("oidc invalid exp")
+
+type authTimer interface {
+        Stop() bool
+}
+
+type authTimerAfterFunc func(time.Duration, func()) authTimer
+
+type authTimerState struct {
+        timer  authTimer
+        expiry time.Time
+}
+
+func realAuthTimerAfterFunc(delay time.Duration, callback func()) authTimer <span class="cov8" title="1">{
+        return time.AfterFunc(delay, callback)
+}</span>
+
+func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) <span class="cov8" title="1">{
+        authctx = ctx
+        if srv != nil &amp;&amp; srv.httpClient != nil </span><span class="cov8" title="1">{
+                if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok </span><span class="cov8" title="1">{
+                        authctx = context.WithValue(authctx, oauth2.HTTPClient, srv.httpClient)
+                }</span>
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState) (err error) <span class="cov8" title="1">{
+        err = ErrOAuth2NotConfigured
+        if srv != nil </span><span class="cov8" title="1">{
+                err = ErrOAuth2MissingSession
+                if sess != nil </span><span class="cov8" title="1">{
+                        err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
+                        if !expiry.IsZero() </span><span class="cov8" title="1">{
+                                if fallback, e := srv.fetchUserInfo(ctx, srv.userinfoUrl, tokenSource); srv.Jaws.Log(e) == nil </span><span class="cov8" title="1">{
+                                        mergeMissingClaims(claims, fallback)
+                                }</span>
+                                <span class="cov8" title="1">if entry != nil </span><span class="cov8" title="1">{
+                                        if !srv.sessionAuthTimerCurrent(sess, entry) </span><span class="cov8" title="1">{
+                                                err = errAuthTimerStale
+                                                return
+                                        }</span>
+                                }
+                                <span class="cov8" title="1">verified := extractEmailVerified(claims)
+                                claims["email_verified"] = verified
+                                sess.Set(srv.SessionKey, claims)
+                                sess.Set(srv.SessionTokenKey, tokenSource)
+                                sess.Set(srv.SessionEmailKey, srv.extractEmail(claims))
+                                sess.Set(srv.SessionEmailVerifiedKey, verified)
+                                if srv.Jaws != nil </span><span class="cov8" title="1">{
+                                        srv.Jaws.Dirty(sess)
+                                }</span>
+                                <span class="cov8" title="1">srv.scheduleSessionAuthTimer(sess, expiry)
+                                err = nil</span>
+                        }
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Session, tokenSource oauth2.TokenSource, token *oauth2.Token, minExpiry time.Time, entry *authTimerState) (err error) <span class="cov8" title="1">{
+        err = ErrOAuth2NotConfigured
+        if srv != nil &amp;&amp; srv.idTokenVerifier != nil </span><span class="cov8" title="1">{
+                err = ErrOIDCMissingIDToken
+                if token != nil </span><span class="cov8" title="1">{
+                        rawIDToken, _ := token.Extra("id_token").(string)
+                        if rawIDToken != "" </span><span class="cov8" title="1">{
+                                var idToken *oidc.IDToken
+                                if idToken, err = srv.idTokenVerifier.Verify(ctx, rawIDToken); wrapOIDC(ErrOIDCInvalidIDToken, &amp;err) == nil </span><span class="cov8" title="1">{
+                                        var claims map[string]any
+                                        if err = idToken.Claims(&amp;claims); wrapOIDC(ErrOIDCInvalidIDToken, &amp;err) == nil </span><span class="cov8" title="1">{
+                                                if idToken.Expiry.IsZero() </span><span class="cov8" title="1">{
+                                                        err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
+                                                }</span> else<span class="cov8" title="1"> if !minExpiry.IsZero() &amp;&amp; !idToken.Expiry.After(minExpiry) </span><span class="cov8" title="1">{
+                                                        err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCStaleIDToken}
+                                                }</span> else<span class="cov8" title="1"> {
+                                                        err = srv.storeSessionAuthClaims(ctx, sess, claims, tokenSource, idToken.Expiry, entry)
+                                                }</span>
+                                        }
+                                }
+                        }
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, minExpiry time.Time, entry *authTimerState) (err error) <span class="cov8" title="1">{
+        err = ErrOAuth2NotConfigured
+        if srv != nil &amp;&amp; sess != nil &amp;&amp; srv.oauth2cfg != nil &amp;&amp; srv.idTokenVerifier != nil </span><span class="cov8" title="1">{
+                tokenSource, _ := sess.Get(srv.SessionTokenKey).(oauth2.TokenSource)
+                err = ErrOIDCMissingIDToken
+                if tokenSource != nil </span><span class="cov8" title="1">{
+                        authctx := srv.oauth2Context(ctx)
+                        var token *oauth2.Token
+                        if token, err = tokenSource.Token(); err == nil </span><span class="cov8" title="1">{
+                                err = srv.setSessionAuthFromToken(authctx, sess, tokenSource, token, minExpiry, entry)
+                                if err != nil &amp;&amp; token != nil &amp;&amp; token.RefreshToken != "" &amp;&amp; !errors.Is(err, errAuthTimerStale) </span><span class="cov8" title="1">{
+                                        tokenSource = srv.oauth2cfg.TokenSource(authctx, &amp;oauth2.Token{
+                                                RefreshToken: token.RefreshToken,
+                                        })
+                                        if token, err = tokenSource.Token(); err == nil </span><span class="cov8" title="1">{
+                                                err = srv.setSessionAuthFromToken(authctx, sess, tokenSource, token, minExpiry, entry)
+                                        }</span>
+                                }
+                        }
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func (srv *Server) scheduleSessionAuthTimer(sess *jaws.Session, expiry time.Time) <span class="cov8" title="1">{
+        if srv != nil &amp;&amp; sess != nil &amp;&amp; !expiry.IsZero() </span><span class="cov8" title="1">{
+                delay := max(time.Until(expiry.Add(-authRefreshSkew)), 0)
+                entry := &amp;authTimerState{expiry: expiry}
+                srv.mu.Lock()
+                defer srv.mu.Unlock()
+                if srv.authTimers == nil </span><span class="cov8" title="1">{
+                        srv.authTimers = make(map[uint64]*authTimerState)
+                }</span>
+                <span class="cov8" title="1">if srv.authTimerAfterFunc == nil </span><span class="cov8" title="1">{
+                        srv.authTimerAfterFunc = realAuthTimerAfterFunc
+                }</span>
+                <span class="cov8" title="1">if old := srv.authTimers[sess.ID()]; old != nil &amp;&amp; old.timer != nil </span><span class="cov8" title="1">{
+                        old.timer.Stop()
+                }</span>
+                <span class="cov8" title="1">srv.authTimers[sess.ID()] = entry
+                entry.timer = srv.authTimerAfterFunc(delay, func() </span><span class="cov8" title="1">{
+                        srv.handleSessionAuthTimer(sess, entry)
+                }</span>)
+        }
+}
+
+func (srv *Server) sessionAuthTimerCurrent(sess *jaws.Session, entry *authTimerState) (current bool) <span class="cov8" title="1">{
+        if srv != nil &amp;&amp; sess != nil &amp;&amp; entry != nil </span><span class="cov8" title="1">{
+                srv.mu.Lock()
+                current = srv.authTimers[sess.ID()] == entry
+                srv.mu.Unlock()
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
+func (srv *Server) stopSessionAuthTimer(sess *jaws.Session, entry *authTimerState) (stopped bool) <span class="cov8" title="1">{
+        if srv != nil &amp;&amp; sess != nil </span><span class="cov8" title="1">{
+                srv.mu.Lock()
+                defer srv.mu.Unlock()
+                if entry == nil </span><span class="cov8" title="1">{
+                        if old := srv.authTimers[sess.ID()]; old != nil </span><span class="cov8" title="1">{
+                                delete(srv.authTimers, sess.ID())
+                                if old.timer != nil </span><span class="cov8" title="1">{
+                                        old.timer.Stop()
+                                }</span>
+                        }
+                        <span class="cov8" title="1">stopped = true</span>
+                } else<span class="cov8" title="1"> if srv.authTimers[sess.ID()] == entry </span><span class="cov8" title="1">{
+                        delete(srv.authTimers, sess.ID())
+                        if entry.timer != nil </span><span class="cov8" title="1">{
+                                entry.timer.Stop()
+                        }</span>
+                        <span class="cov8" title="1">stopped = true</span>
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerState) <span class="cov8" title="1">{
+        if srv.sessionAuthTimerCurrent(sess, entry) </span><span class="cov8" title="1">{
+                err := srv.refreshSessionAuth(context.Background(), sess, entry.expiry, entry)
+                if err != nil </span><span class="cov8" title="1">{
+                        if errors.Is(err, errAuthTimerStale) </span><span class="cov8" title="1">{
+                                return
+                        }</span>
+                        <span class="cov8" title="1">if srv.Jaws != nil </span><span class="cov8" title="1">{
+                                _ = srv.Jaws.Log(err)
+                        }</span>
+                        <span class="cov8" title="1">srv.clearSessionAuth(sess, nil, true, true, entry)</span>
+                }
+        }
+}
+
+func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, callLogout, reload bool, entry *authTimerState) (cleared bool) <span class="cov8" title="1">{
+        if srv != nil &amp;&amp; sess != nil </span><span class="cov8" title="1">{
+                if srv.stopSessionAuthTimer(sess, entry) </span><span class="cov8" title="1">{
+                        sess.Set(srv.SessionKey, nil)
+                        sess.Set(srv.SessionTokenKey, nil)
+                        sess.Set(srv.SessionEmailKey, nil)
+                        sess.Set(srv.SessionEmailVerifiedKey, nil)
+                        if callLogout &amp;&amp; srv.LogoutEvent != nil </span><span class="cov8" title="1">{
+                                srv.LogoutEvent(sess, hr)
+                        }</span>
+                        <span class="cov8" title="1">if srv.Jaws != nil </span><span class="cov8" title="1">{
+                                srv.Jaws.Dirty(sess)
+                        }</span>
+                        <span class="cov8" title="1">if reload </span><span class="cov8" title="1">{
+                                sess.Reload()
+                        }</span>
+                        <span class="cov8" title="1">cleared = true</span>
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">package jawsauth
 
 import (
         "context"
@@ -246,7 +467,7 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 }
 </pre>
 		
-		<pre class="file" id="file1" style="display: none">package jawsauth
+		<pre class="file" id="file2" style="display: none">package jawsauth
 
 import "net/http"
 
@@ -258,7 +479,7 @@ func (default403handler) ServeHTTP(hw http.ResponseWriter, hr *http.Request) <sp
 }</span>
 </pre>
 		
-		<pre class="file" id="file2" style="display: none">package jawsauth
+		<pre class="file" id="file3" style="display: none">package jawsauth
 
 import (
         "errors"
@@ -304,7 +525,7 @@ func (e errConfig) Is(target error) (matches bool) <span class="cov8" title="1">
 }</span>
 </pre>
 		
-		<pre class="file" id="file3" style="display: none">package jawsauth
+		<pre class="file" id="file4" style="display: none">package jawsauth
 
 import (
         "errors"
@@ -367,7 +588,7 @@ func oauth2CallbackError(statusCode int, hr *http.Request) (nextStatusCode int, 
 }
 </pre>
 		
-		<pre class="file" id="file4" style="display: none">package jawsauth
+		<pre class="file" id="file5" style="display: none">package jawsauth
 
 import "errors"
 
@@ -415,7 +636,7 @@ func wrapOIDC(kind error, perr *error) (err error) <span class="cov8" title="1">
 }
 </pre>
 		
-		<pre class="file" id="file5" style="display: none">package jawsauth
+		<pre class="file" id="file6" style="display: none">package jawsauth
 
 import "github.com/linkdata/jaws"
 
@@ -450,7 +671,7 @@ func (a *JawsAuth) IsAdmin() (yes bool) <span class="cov8" title="1">{
 }</span>
 </pre>
 		
-		<pre class="file" id="file6" style="display: none">package jawsauth
+		<pre class="file" id="file7" style="display: none">package jawsauth
 
 import (
         "context"
@@ -574,15 +795,8 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) <span 
         if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
                 _, _, location := srv.begin(hr)
                 if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
-                        if srv.LogoutEvent != nil </span><span class="cov8" title="1">{
-                                srv.LogoutEvent(sess, hr)
-                        }</span>
-                        <span class="cov8" title="1">sess.Set(srv.SessionKey, nil)
-                        sess.Set(srv.SessionTokenKey, nil)
-                        sess.Set(srv.SessionEmailKey, nil)
-                        sess.Set(srv.SessionEmailVerifiedKey, nil)
-                        srv.Jaws.Dirty(sess)</span>
-                }
+                        srv.clearSessionAuth(sess, hr, true, false, nil)
+                }</span>
                 <span class="cov8" title="1">hw.Header().Add("Location", location)
                 statusCode = http.StatusFound</span>
         }
@@ -692,11 +906,9 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
         err := ErrOAuth2Callback
 
         if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
-                oauth2Config, userinfourl, location := srv.begin(hr)
+                oauth2Config, _, location := srv.begin(hr)
                 var sessValue any
                 var sessEmailValue any
-                var sessEmailVerifiedValue any
-                var sessTokenValue any
                 authctx := hr.Context()
                 if srv.httpClient != nil </span><span class="cov8" title="1">{
                         if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok </span><span class="cov8" title="1">{
@@ -747,21 +959,16 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                                                                                                                 var claims map[string]any
                                                                                                                 if err = idToken.Claims(&amp;claims); wrapOIDC(ErrOIDCInvalidIDToken, &amp;err) == nil </span><span class="cov8" title="1">{
                                                                                                                         tokenSource := oauth2Config.TokenSource(authctx, token)
-                                                                                                                        sessTokenValue = tokenSource
-                                                                                                                        sessValue = claims
-                                                                                                                        if fallback, e := srv.fetchUserInfo(authctx, userinfourl, tokenSource); srv.Jaws.Log(e) == nil </span><span class="cov8" title="1">{
-                                                                                                                                mergeMissingClaims(claims, fallback)
-                                                                                                                        }</span>
-                                                                                                                        <span class="cov8" title="1">verified := extractEmailVerified(claims)
-                                                                                                                        claims["email_verified"] = verified
-                                                                                                                        sessEmailValue = srv.extractEmail(claims)
-                                                                                                                        sessEmailVerifiedValue = verified
-                                                                                                                        if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
-                                                                                                                                location = sanitizeRedirectTarget(hr.Host, s)
-                                                                                                                        }</span>
-                                                                                                                        <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
-                                                                                                                        hw.Header().Add("Location", location)
-                                                                                                                        statusCode = http.StatusFound</span>
+                                                                                                                        if err = srv.storeSessionAuthClaims(authctx, sess, claims, tokenSource, idToken.Expiry, nil); err == nil </span><span class="cov8" title="1">{
+                                                                                                                                sessValue = claims
+                                                                                                                                sessEmailValue, _ = sess.Get(srv.SessionEmailKey).(string)
+                                                                                                                                if s, ok := sess.Get(oauth2ReferrerKey).(string); ok </span><span class="cov8" title="1">{
+                                                                                                                                        location = sanitizeRedirectTarget(hr.Host, s)
+                                                                                                                                }</span>
+                                                                                                                                <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
+                                                                                                                                hw.Header().Add("Location", location)
+                                                                                                                                statusCode = http.StatusFound</span>
+                                                                                                                        }
                                                                                                                 }
                                                                                                         }
                                                                                                 }
@@ -776,14 +983,11 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                         }
                 }
                 <span class="cov8" title="1">if sess != nil </span><span class="cov8" title="1">{
-                        sess.Set(srv.SessionKey, sessValue)
-                        sess.Set(srv.SessionTokenKey, sessTokenValue)
-                        sess.Set(srv.SessionEmailKey, sessEmailValue)
-                        sess.Set(srv.SessionEmailVerifiedKey, sessEmailVerifiedValue)
-                        if srv.LoginEvent != nil &amp;&amp; sessValue != nil </span><span class="cov8" title="1">{
+                        if sessValue == nil </span><span class="cov8" title="1">{
+                                srv.clearSessionAuth(sess, nil, false, false, nil)
+                        }</span> else<span class="cov8" title="1"> if srv.LoginEvent != nil </span><span class="cov8" title="1">{
                                 srv.LoginEvent(sess, hr)
                         }</span>
-                        <span class="cov8" title="1">srv.Jaws.Dirty(sess)</span>
                 }
                 <span class="cov8" title="1">if err != nil &amp;&amp; srv.LoginFailed != nil </span><span class="cov8" title="1">{
                         sessEmailValue, _ := sessEmailValue.(string)
@@ -796,7 +1000,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 }
 </pre>
 		
-		<pre class="file" id="file7" style="display: none">package jawsauth
+		<pre class="file" id="file8" style="display: none">package jawsauth
 
 import (
         "context"
@@ -828,7 +1032,7 @@ type Server struct {
         SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
         HandledPaths            map[string]struct{}     // URI paths we have registered handlers for
         LoginEvent              EventFunc               // if not nil, called after a successful login
-        LogoutEvent             EventFunc               // if not nil, called before logout
+        LogoutEvent             EventFunc               // if not nil, called before logout; hr may be nil for timer-driven logout
         LoginFailed             FailedFunc              // if not nil, called on failed login
         Options                 []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
         oauth2cfg               *oauth2.Config
@@ -839,6 +1043,8 @@ type Server struct {
         mu                      sync.Mutex          // protects following
         admins                  map[string]struct{} // if not empty, emails of admins
         handle403               http.Handler        // handler for 403 Forbidden
+        authTimers              map[uint64]*authTimerState
+        authTimerAfterFunc      authTimerAfterFunc
 }
 
 func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl string) (srv *Server, err error) <span class="cov8" title="1">{
@@ -851,6 +1057,8 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
                 HandledPaths:            make(map[string]struct{}),
                 admins:                  make(map[string]struct{}),
                 handle403:               default403handler{},
+                authTimers:              make(map[uint64]*authTimerState),
+                authTimerAfterFunc:      realAuthTimerAfterFunc,
         } // #nosec G101
         if cfg != nil &amp;&amp; handleFn != nil &amp;&amp; cfg.RedirectURL != "" </span><span class="cov8" title="1">{
                 jw.MakeAuth = srv.makeAuth
@@ -996,7 +1204,7 @@ func (srv *Server) Handler(name string, dot any) http.Handler <span class="cov8"
 }</span>
 </pre>
 		
-		<pre class="file" id="file8" style="display: none">package jawsauth
+		<pre class="file" id="file9" style="display: none">package jawsauth
 
 import (
         "net/http"
