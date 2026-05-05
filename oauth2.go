@@ -25,7 +25,7 @@ const oauth2ReferrerKey = "oauth2referrer"
 const oauth2StateKey = "oauth2state"
 const oauth2PKCEVerifierKey = "oauth2pkceverifier"
 const oauth2NonceKey = "oauth2nonce"
-const oauth2IDTokenExpiryKey = "oauth2idtokenexpiry"
+const oauth2IDTokenExpiryKey = "oauth2idtokenexpiry" // #nosec G101
 
 func normalizeHost(hostport string) (normalized string) {
 	normalized = strings.TrimSpace(hostport)
