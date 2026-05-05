@@ -119,8 +119,10 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
 	if hr.Method == http.MethodGet {
 		_, _, location := srv.begin(hr)
-		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			srv.clearSessionAuth(sess, hr, true, false, nil)
+		if srv.Jaws != nil {
+			if sess := srv.Jaws.GetSession(hr); sess != nil {
+				srv.clearSessionAuth(sess, hr, true, false, nil)
+			}
 		}
 		hw.Header().Add("Location", location)
 		statusCode = http.StatusFound
@@ -181,10 +183,11 @@ func mergeMissingClaims(dst, src map[string]any) {
 func (srv *Server) extractEmail(claims map[string]any) (sessEmailValue any) {
 	for _, k := range []string{"email", "mail", "public_email"} {
 		if s, ok := claims[k].(string); ok {
-			if m, e := mail.ParseAddress(s); e == nil {
-				s = m.Address
+			if s = strings.TrimSpace(s); s != "" {
+				if m, err := mail.ParseAddress(s); err == nil {
+					return strings.ToLower(strings.TrimSpace(m.Address))
+				}
 			}
-			return strings.ToLower(strings.TrimSpace(s))
 		}
 	}
 	if l := srv.Jaws.Logger; l != nil {
