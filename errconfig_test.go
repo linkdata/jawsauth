@@ -28,6 +28,17 @@ func TestConfig_ValidateRequiresHTTPSIssuerByDefault(t *testing.T) {
 	}
 }
 
+func TestConfig_ValidateAllowsPublicClientWithoutSecret(t *testing.T) {
+	cfg := Config{
+		RedirectURL: "https://application.example.com/oauth2/callback",
+		Issuer:      "https://issuer.example.com",
+		ClientID:    "the-client-id",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConfig_ValidateAllowsInsecureIssuerWhenEnabled(t *testing.T) {
 	cfg := Config{
 		RedirectURL:         "https://application.example.com/oauth2/callback",
@@ -159,13 +170,6 @@ func TestConfig_ValidateRequiresRequiredFields(t *testing.T) {
 				cfg.ClientID = " "
 			},
 			wantField: "ClientID",
-		},
-		{
-			name: "missingClientSecret",
-			patch: func(cfg *Config) {
-				cfg.ClientSecret = " "
-			},
-			wantField: "ClientSecret",
 		},
 	}
 

@@ -81,9 +81,7 @@ func (cfg *Config) Validate() (err error) {
 				if _, err = validateUrl("AuthURL", cfg.AuthURL, "", true); err == nil {
 					if _, err = validateUrl("TokenURL", cfg.TokenURL, "", true); err == nil {
 						if _, err = validateUrl("UserInfoURL", cfg.UserInfoURL, "", true); err == nil {
-							if err = requireStr("ClientID", cfg.ClientID); err == nil {
-								err = requireStr("ClientSecret", cfg.ClientSecret)
-							}
+							err = requireStr("ClientID", cfg.ClientID)
 						}
 					}
 				}
