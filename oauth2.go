@@ -122,14 +122,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method == http.MethodGet {
 		_, _, location := srv.begin(hr)
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			if srv.LogoutEvent != nil {
-				srv.LogoutEvent(sess, hr)
-			}
-			sess.Set(srv.SessionKey, nil)
-			sess.Set(srv.SessionTokenKey, nil)
-			sess.Set(srv.SessionEmailKey, nil)
-			sess.Set(srv.SessionEmailVerifiedKey, nil)
-			srv.Jaws.Dirty(sess)
+			srv.clearSessionAuth(sess, hr, true, false, nil)
 		}
 		hw.Header().Add("Location", location)
 		statusCode = http.StatusFound
@@ -240,11 +233,9 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 	err := ErrOAuth2Callback
 
 	if hr.Method == http.MethodGet {
-		oauth2Config, userinfourl, location := srv.begin(hr)
+		oauth2Config, _, location := srv.begin(hr)
 		var sessValue any
 		var sessEmailValue any
-		var sessEmailVerifiedValue any
-		var sessTokenValue any
 		authctx := hr.Context()
 		if srv.httpClient != nil {
 			if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok {
@@ -295,21 +286,16 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 														var claims map[string]any
 														if err = idToken.Claims(&claims); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
 															tokenSource := oauth2Config.TokenSource(authctx, token)
-															sessTokenValue = tokenSource
-															sessValue = claims
-															if fallback, e := srv.fetchUserInfo(authctx, userinfourl, tokenSource); srv.Jaws.Log(e) == nil {
-																mergeMissingClaims(claims, fallback)
+															if err = srv.storeSessionAuthClaims(authctx, sess, claims, tokenSource, idToken.Expiry, nil); err == nil {
+																sessValue = claims
+																sessEmailValue, _ = sess.Get(srv.SessionEmailKey).(string)
+																if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
+																	location = sanitizeRedirectTarget(hr.Host, s)
+																}
+																sess.Set(oauth2ReferrerKey, nil)
+																hw.Header().Add("Location", location)
+																statusCode = http.StatusFound
 															}
-															verified := extractEmailVerified(claims)
-															claims["email_verified"] = verified
-															sessEmailValue = srv.extractEmail(claims)
-															sessEmailVerifiedValue = verified
-															if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
-																location = sanitizeRedirectTarget(hr.Host, s)
-															}
-															sess.Set(oauth2ReferrerKey, nil)
-															hw.Header().Add("Location", location)
-															statusCode = http.StatusFound
 														}
 													}
 												}
@@ -324,14 +310,11 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			}
 		}
 		if sess != nil {
-			sess.Set(srv.SessionKey, sessValue)
-			sess.Set(srv.SessionTokenKey, sessTokenValue)
-			sess.Set(srv.SessionEmailKey, sessEmailValue)
-			sess.Set(srv.SessionEmailVerifiedKey, sessEmailVerifiedValue)
-			if srv.LoginEvent != nil && sessValue != nil {
+			if sessValue == nil {
+				srv.clearSessionAuth(sess, nil, false, false, nil)
+			} else if srv.LoginEvent != nil {
 				srv.LoginEvent(sess, hr)
 			}
-			srv.Jaws.Dirty(sess)
 		}
 		if err != nil && srv.LoginFailed != nil {
 			sessEmailValue, _ := sessEmailValue.(string)

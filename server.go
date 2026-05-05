@@ -30,7 +30,7 @@ type Server struct {
 	SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
 	HandledPaths            map[string]struct{}     // URI paths we have registered handlers for
 	LoginEvent              EventFunc               // if not nil, called after a successful login
-	LogoutEvent             EventFunc               // if not nil, called before logout
+	LogoutEvent             EventFunc               // if not nil, called before logout; hr may be nil for timer-driven logout
 	LoginFailed             FailedFunc              // if not nil, called on failed login
 	Options                 []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
 	oauth2cfg               *oauth2.Config
@@ -41,6 +41,8 @@ type Server struct {
 	mu                      sync.Mutex          // protects following
 	admins                  map[string]struct{} // if not empty, emails of admins
 	handle403               http.Handler        // handler for 403 Forbidden
+	authTimers              map[uint64]*authTimerState
+	authTimerAfterFunc      authTimerAfterFunc
 }
 
 func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl string) (srv *Server, err error) {
@@ -53,6 +55,8 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		HandledPaths:            make(map[string]struct{}),
 		admins:                  make(map[string]struct{}),
 		handle403:               default403handler{},
+		authTimers:              make(map[uint64]*authTimerState),
+		authTimerAfterFunc:      realAuthTimerAfterFunc,
 	} // #nosec G101
 	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
 		jw.MakeAuth = srv.makeAuth
