@@ -389,10 +389,8 @@ func (cfg *Config) Validate() (err error) <span class="cov8" title="1">{
                                 if _, err = validateUrl("AuthURL", cfg.AuthURL, "", true); err == nil </span><span class="cov8" title="1">{
                                         if _, err = validateUrl("TokenURL", cfg.TokenURL, "", true); err == nil </span><span class="cov8" title="1">{
                                                 if _, err = validateUrl("UserInfoURL", cfg.UserInfoURL, "", true); err == nil </span><span class="cov8" title="1">{
-                                                        if err = requireStr("ClientID", cfg.ClientID); err == nil </span><span class="cov8" title="1">{
-                                                                err = requireStr("ClientSecret", cfg.ClientSecret)
-                                                        }</span>
-                                                }
+                                                        err = requireStr("ClientID", cfg.ClientID)
+                                                }</span>
                                         }
                                 }
                         }
@@ -749,13 +747,7 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
                 location = hr.RequestURI
         }</span>
         <span class="cov8" title="1">location = sanitizeRedirectTarget(hr.Host, location)
-        for s := range srv.HandledPaths </span><span class="cov8" title="1">{
-                if before, ok := strings.CutSuffix(location, s); ok </span><span class="cov8" title="1">{
-                        location = before
-                        break</span>
-                }
-        }
-        <span class="cov8" title="1">if location == "" </span><span class="cov8" title="1">{
+        if _, handled := srv.HandledPaths[location]; handled </span><span class="cov8" title="1">{
                 location = "/"
         }</span>
         <span class="cov8" title="1">return</span>
@@ -958,7 +950,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                                                                                                         if idToken.Nonce == wantNonce </span><span class="cov8" title="1">{
                                                                                                                 var claims map[string]any
                                                                                                                 if err = idToken.Claims(&amp;claims); wrapOIDC(ErrOIDCInvalidIDToken, &amp;err) == nil </span><span class="cov8" title="1">{
-                                                                                                                        tokenSource := oauth2Config.TokenSource(authctx, token)
+                                                                                                                        tokenSource := oauth2Config.TokenSource(srv.oauth2Context(context.Background()), token)
                                                                                                                         if err = srv.storeSessionAuthClaims(authctx, sess, claims, tokenSource, idToken.Expiry, nil); err == nil </span><span class="cov8" title="1">{
                                                                                                                                 sessValue = claims
                                                                                                                                 sessEmailValue, _ = sess.Get(srv.SessionEmailKey).(string)
