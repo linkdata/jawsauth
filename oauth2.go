@@ -236,7 +236,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 	if hr.Method == http.MethodGet {
 		oauth2Config, _, location := srv.begin(hr)
 		var sessValue any
-		var sessEmailValue any
+		var sessEmail string
 		authctx := hr.Context()
 		if srv.httpClient != nil {
 			if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok {
@@ -244,6 +244,9 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			}
 		}
 		sess := srv.Jaws.GetSession(hr)
+		if sess != nil {
+			sessEmail, _ = sess.Get(srv.SessionEmailKey).(string)
+		}
 		err = ErrOAuth2NotConfigured
 		statusCode = http.StatusInternalServerError
 
@@ -289,7 +292,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 															tokenSource := oauth2Config.TokenSource(srv.oauth2Context(context.Background()), token)
 															if err = srv.storeSessionAuthClaims(authctx, sess, claims, tokenSource, idToken.Expiry, nil); err == nil {
 																sessValue = claims
-																sessEmailValue, _ = sess.Get(srv.SessionEmailKey).(string)
+																sessEmail, _ = sess.Get(srv.SessionEmailKey).(string)
 																if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
 																	location = sanitizeRedirectTarget(hr.Host, s)
 																}
@@ -321,8 +324,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			}
 		}
 		if err != nil && srv.LoginFailed != nil {
-			sessEmailValue, _ := sessEmailValue.(string)
-			if srv.LoginFailed(hw, hr, statusCode, err, sessEmailValue) {
+			if srv.LoginFailed(hw, hr, statusCode, err, sessEmail) {
 				return
 			}
 		}
