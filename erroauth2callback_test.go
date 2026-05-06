@@ -159,3 +159,60 @@ func Test_handleAuthResponseOAuthErrorCallback(t *testing.T) {
 		t.Fatal(state)
 	}
 }
+
+func Test_handleAuthResponseOAuthErrorCallbackReceivesSessionEmail(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := &Server{
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		HandledPaths:            map[string]struct{}{},
+		oauth2cfg: &oauth2.Config{
+			ClientID:    "client",
+			Endpoint:    oauth2.Endpoint{TokenURL: "https://provider.example/token"},
+			RedirectURL: "https://example.com/oauth2/callback",
+		},
+		userinfoUrl: "https://provider.example/userinfo",
+	}
+	var callbackEmail string
+	srv.LoginFailed = func(hw http.ResponseWriter, hr *http.Request, httpCode int, callErr error, email string) bool {
+		_ = hw
+		_ = hr
+		_ = httpCode
+		if !errors.Is(callErr, ErrOAuth2Callback) {
+			t.Fatal(callErr)
+		}
+		callbackEmail = email
+		return false
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"http://example.com/oauth2/callback?state=state123&error=access_denied",
+		nil,
+	)
+	sess := jw.NewSession(rec, req)
+	sess.Set(oauth2StateKey, "state123")
+	sess.Set(srv.SessionKey, map[string]any{"email": "user@example.com"})
+	sess.Set(srv.SessionEmailKey, "user@example.com")
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatal(resp.Status)
+	}
+	if callbackEmail != "user@example.com" {
+		t.Fatal(callbackEmail)
+	}
+	if email, _ := sess.Get(srv.SessionEmailKey).(string); email != "user@example.com" {
+		t.Fatal(email)
+	}
+}
