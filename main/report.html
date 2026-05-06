@@ -71,7 +71,7 @@
 				
 				<option value="file7">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
 				
-				<option value="file8">github.com/linkdata/jawsauth/server.go (100.0%)</option>
+				<option value="file8">github.com/linkdata/jawsauth/server.go (98.5%)</option>
 				
 				<option value="file9">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
 				
@@ -458,7 +458,7 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
                         if err = provider.Claims(&amp;metadata); wrapOIDC(ErrOIDCProviderMetadata, &amp;err) == nil </span><span class="cov8" title="1">{
                                 var authURL string
                                 var tokenURL string
-                                if authURL, err = validateUrl("AuthURL", cfg.AuthURL, metadata.AuthorizationEndpoint, true); wrapOIDC(ErrOIDCProviderMetadata, &amp;err) == nil </span><span class="cov8" title="1">{
+                                if authURL, err = validateUrl("AuthURL", cfg.AuthURL, metadata.AuthorizationEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &amp;err) == nil </span><span class="cov8" title="1">{
                                         if tokenURL, err = validateUrl("TokenURL", cfg.TokenURL, metadata.TokenEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &amp;err) == nil </span><span class="cov8" title="1">{
                                                 if userInfoURL, err = validateUrl("UserInfoURL", cfg.UserInfoURL, metadata.UserinfoEndpoint, true); wrapOIDC(ErrOIDCProviderMetadata, &amp;err) == nil </span><span class="cov8" title="1">{
                                                         var redir *url.URL
@@ -814,9 +814,11 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) <span 
         statusCode := http.StatusMethodNotAllowed
         if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
                 _, _, location := srv.begin(hr)
-                if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
-                        srv.clearSessionAuth(sess, hr, true, false, nil)
-                }</span>
+                if srv.Jaws != nil </span><span class="cov8" title="1">{
+                        if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
+                                srv.clearSessionAuth(sess, hr, true, false, nil)
+                        }</span>
+                }
                 <span class="cov8" title="1">hw.Header().Add("Location", location)
                 statusCode = http.StatusFound</span>
         }
@@ -876,10 +878,11 @@ func mergeMissingClaims(dst, src map[string]any) <span class="cov8" title="1">{
 func (srv *Server) extractEmail(claims map[string]any) (sessEmailValue any) <span class="cov8" title="1">{
         for _, k := range []string{"email", "mail", "public_email"} </span><span class="cov8" title="1">{
                 if s, ok := claims[k].(string); ok </span><span class="cov8" title="1">{
-                        if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
-                                s = m.Address
-                        }</span>
-                        <span class="cov8" title="1">return strings.ToLower(strings.TrimSpace(s))</span>
+                        if s = strings.TrimSpace(s); s != "" </span><span class="cov8" title="1">{
+                                if m, err := mail.ParseAddress(s); err == nil </span><span class="cov8" title="1">{
+                                        return strings.ToLower(strings.TrimSpace(m.Address))
+                                }</span>
+                        }
                 }
         }
         <span class="cov8" title="1">if l := srv.Jaws.Logger; l != nil </span><span class="cov8" title="1">{
@@ -1087,10 +1090,15 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
                         var u *url.URL
                         if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil </span><span class="cov8" title="1">{
                                 srv.ishttps = (u.Scheme == "https")
-                                srv.handlePath(u.Path, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
-                                srv.handlePath(path.Join(path.Dir(u.Path), "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
-                                srv.handlePath(path.Join(path.Dir(u.Path), "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))
-                        }</span>
+                                callbackPath := path.Clean(u.Path)
+                                if callbackPath == "" || callbackPath == "." </span><span class="cov0" title="0">{
+                                        callbackPath = "/"
+                                }</span>
+                                <span class="cov8" title="1">dir := path.Dir(callbackPath)
+                                srv.handlePath(callbackPath, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
+                                srv.handlePath(path.Join(dir, "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
+                                srv.handlePath(path.Join(dir, "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))</span>
+                        }
                 }
         }
         <span class="cov8" title="1">return</span>
