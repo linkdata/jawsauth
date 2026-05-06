@@ -73,7 +73,7 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 		cleanupTempDir()
 		return nil, fmt.Errorf("write keycloak cert: %w", err)
 	}
-	if err = os.WriteFile(keyPath, keyPEM, 0o644); err != nil {
+	if err = os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
 		cleanupTempDir()
 		return nil, fmt.Errorf("write keycloak key: %w", err)
 	}
