@@ -16,6 +16,14 @@ import (
 	"golang.org/x/oauth2"
 )
 
+func normalizeEmail(s string) (email string) {
+	if m, e := mail.ParseAddress(s); e == nil {
+		s = m.Address
+	}
+	email = strings.ToLower(strings.TrimSpace(s))
+	return
+}
+
 type HandleFunc func(uri string, handler http.Handler)
 
 type EventFunc func(sess *jaws.Session, hr *http.Request)
@@ -94,10 +102,11 @@ func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) {
 	}
 }
 
-// IsAdmin returns true if email belongs to an admin or if the list of admins is empty or the server is not valod.
+// IsAdmin returns true if email belongs to an admin or if the list of admins is empty or the server is not valid.
 func (srv *Server) IsAdmin(email string) (yes bool) {
 	yes = true
 	if srv != nil {
+		email = normalizeEmail(email)
 		srv.mu.Lock()
 		_, yes = srv.admins[email]
 		yes = yes || len(srv.admins) == 0
@@ -116,10 +125,7 @@ func (srv *Server) SetAdmins(emails []string) {
 		}
 		clear(srv.admins)
 		for _, s := range emails {
-			if m, e := mail.ParseAddress(s); e == nil {
-				s = m.Address
-			}
-			if s = strings.ToLower(strings.TrimSpace(s)); s != "" {
+			if s = normalizeEmail(s); s != "" {
 				srv.admins[s] = struct{}{}
 			}
 		}

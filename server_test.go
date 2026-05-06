@@ -262,6 +262,9 @@ func TestSetAdminsInitializesZeroValueMap(t *testing.T) {
 	if !srv.IsAdmin("admin@example.com") {
 		t.Fatal("admin was not accepted")
 	}
+	if !srv.IsAdmin("Admin <ADMIN@example.com>") {
+		t.Fatal("admin check was not normalized")
+	}
 	if srv.IsAdmin("user@example.com") {
 		t.Fatal("unexpected admin")
 	}
