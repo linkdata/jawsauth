@@ -81,6 +81,55 @@ func (fn tokenSourceFunc) Token() (*oauth2.Token, error) {
 	return fn()
 }
 
+type testAuthDebugLog struct {
+	msg  string
+	args []any
+}
+
+type testAuthDebugLogger struct {
+	mu     sync.Mutex
+	infos  []testAuthDebugLog
+	warns  []testAuthDebugLog
+	errors []testAuthDebugLog
+}
+
+func (logger *testAuthDebugLogger) Info(msg string, args ...any) {
+	logger.mu.Lock()
+	logger.infos = append(logger.infos, testAuthDebugLog{msg: msg, args: append([]any{}, args...)})
+	logger.mu.Unlock()
+}
+
+func (logger *testAuthDebugLogger) Warn(msg string, args ...any) {
+	logger.mu.Lock()
+	logger.warns = append(logger.warns, testAuthDebugLog{msg: msg, args: append([]any{}, args...)})
+	logger.mu.Unlock()
+}
+
+func (logger *testAuthDebugLogger) Error(msg string, args ...any) {
+	logger.mu.Lock()
+	logger.errors = append(logger.errors, testAuthDebugLog{msg: msg, args: append([]any{}, args...)})
+	logger.mu.Unlock()
+}
+
+func (logger *testAuthDebugLogger) hasInfo(msg string) (found bool) {
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	for _, record := range logger.infos {
+		if record.msg == msg {
+			found = true
+			return
+		}
+	}
+	return
+}
+
+func (logger *testAuthDebugLogger) infoCount() (n int) {
+	logger.mu.Lock()
+	n = len(logger.infos)
+	logger.mu.Unlock()
+	return
+}
+
 func makeOAuth2Token(accessToken, idToken, refreshToken string) *oauth2.Token {
 	token := &oauth2.Token{
 		AccessToken:  accessToken,
@@ -452,6 +501,87 @@ func TestAuthTimerRefreshFailureClearsAuth(t *testing.T) {
 				t.Fatal(tokenRequests)
 			}
 		})
+	}
+}
+
+func TestAuthTimerDebugLogsRefreshFailure(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	logger := &testAuthDebugLogger{}
+	jw.Debug = true
+	jw.Logger = logger
+
+	const issuer = "https://issuer.example"
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, issuer, factory)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	expiry := time.Now().Add(30 * time.Second).Truncate(time.Second)
+
+	err = srv.storeSessionAuthClaims(t.Context(), sess, map[string]any{
+		"exp":            expiry.Unix(),
+		"email":          "old@example.com",
+		"email_verified": true,
+	}, tokenSourceFunc(func() (*oauth2.Token, error) {
+		return nil, errAuthSessionTestToken
+	}), expiry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	factory.timer(0).fire()
+
+	for _, msg := range []string{
+		"jawsauth: scheduled auth refresh timer",
+		"jawsauth: auth refresh timer fired",
+		"jawsauth: refresh session auth started",
+		"jawsauth: requesting token from stored token source",
+		"jawsauth: stored token source failed",
+		"jawsauth: auth refresh timer failed; clearing auth",
+		"jawsauth: cleared session auth",
+	} {
+		if !logger.hasInfo(msg) {
+			t.Fatal(msg)
+		}
+	}
+}
+
+func TestAuthTimerDebugLogsRequireJawsDebug(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	logger := &testAuthDebugLogger{}
+	jw.Logger = logger
+
+	const issuer = "https://issuer.example"
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, issuer, factory)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	expiry := time.Now().Add(30 * time.Second).Truncate(time.Second)
+
+	err = srv.storeSessionAuthClaims(t.Context(), sess, map[string]any{
+		"exp":            expiry.Unix(),
+		"email":          "old@example.com",
+		"email_verified": true,
+	}, tokenSourceFunc(func() (*oauth2.Token, error) {
+		return nil, errAuthSessionTestToken
+	}), expiry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	factory.timer(0).fire()
+
+	if count := logger.infoCount(); count != 0 {
+		t.Fatal(count)
 	}
 }
 
