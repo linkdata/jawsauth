@@ -71,7 +71,7 @@
 				
 				<option value="file7">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
 				
-				<option value="file8">github.com/linkdata/jawsauth/server.go (98.5%)</option>
+				<option value="file8">github.com/linkdata/jawsauth/server.go (98.6%)</option>
 				
 				<option value="file9">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
 				
@@ -1007,8 +1007,11 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                 }
                 <span class="cov8" title="1">if sess != nil </span><span class="cov8" title="1">{
                         if sessValue == nil </span><span class="cov8" title="1">{
-                                srv.clearSessionAuth(sess, nil, false, false, nil)
-                        }</span> else<span class="cov8" title="1"> if srv.LoginEvent != nil </span><span class="cov8" title="1">{
+                                clearSessionOAuthFlow(sess)
+                                if srv.Jaws != nil </span><span class="cov8" title="1">{
+                                        srv.Jaws.Dirty(sess)
+                                }</span>
+                        } else<span class="cov8" title="1"> if srv.LoginEvent != nil </span><span class="cov8" title="1">{
                                 srv.LoginEvent(sess, hr)
                         }</span>
                 }
@@ -1040,6 +1043,14 @@ import (
         "github.com/linkdata/jaws/lib/ui"
         "golang.org/x/oauth2"
 )
+
+func normalizeEmail(s string) (email string) <span class="cov8" title="1">{
+        if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
+                s = m.Address
+        }</span>
+        <span class="cov8" title="1">email = strings.ToLower(strings.TrimSpace(s))
+        return</span>
+}
 
 type HandleFunc func(uri string, handler http.Handler)
 
@@ -1119,10 +1130,11 @@ func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) <sp
         }</span>
 }
 
-// IsAdmin returns true if email belongs to an admin or if the list of admins is empty or the server is not valod.
+// IsAdmin returns true if email belongs to an admin or if the list of admins is empty or the server is not valid.
 func (srv *Server) IsAdmin(email string) (yes bool) <span class="cov8" title="1">{
         yes = true
         if srv != nil </span><span class="cov8" title="1">{
+                email = normalizeEmail(email)
                 srv.mu.Lock()
                 _, yes = srv.admins[email]
                 yes = yes || len(srv.admins) == 0
@@ -1141,10 +1153,7 @@ func (srv *Server) SetAdmins(emails []string) <span class="cov8" title="1">{
                 }</span>
                 <span class="cov8" title="1">clear(srv.admins)
                 for _, s := range emails </span><span class="cov8" title="1">{
-                        if m, e := mail.ParseAddress(s); e == nil </span><span class="cov8" title="1">{
-                                s = m.Address
-                        }</span>
-                        <span class="cov8" title="1">if s = strings.ToLower(strings.TrimSpace(s)); s != "" </span><span class="cov8" title="1">{
+                        if s = normalizeEmail(s); s != "" </span><span class="cov8" title="1">{
                                 srv.admins[s] = struct{}{}
                         }</span>
                 }
