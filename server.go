@@ -65,9 +65,14 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 			var u *url.URL
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
 				srv.ishttps = (u.Scheme == "https")
-				srv.handlePath(u.Path, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
-				srv.handlePath(path.Join(path.Dir(u.Path), "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
-				srv.handlePath(path.Join(path.Dir(u.Path), "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))
+				callbackPath := path.Clean(u.Path)
+				if callbackPath == "" || callbackPath == "." {
+					callbackPath = "/"
+				}
+				dir := path.Dir(callbackPath)
+				srv.handlePath(callbackPath, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
+				srv.handlePath(path.Join(dir, "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
+				srv.handlePath(path.Join(dir, "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))
 			}
 		}
 	}
