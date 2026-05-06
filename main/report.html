@@ -55,7 +55,7 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/linkdata/jawsauth/authsession.go (100.0%)</option>
+				<option value="file0">github.com/linkdata/jawsauth/authsession.go (98.8%)</option>
 				
 				<option value="file1">github.com/linkdata/jawsauth/config.go (100.0%)</option>
 				
@@ -115,6 +115,35 @@ type authTimerAfterFunc func(time.Duration, func()) authTimer
 type authTimerState struct {
         timer  authTimer
         expiry time.Time
+}
+
+func (srv *Server) debugLog(msg string, args ...any) <span class="cov8" title="1">{
+        if srv != nil &amp;&amp; srv.Jaws != nil &amp;&amp; srv.Jaws.Debug &amp;&amp; srv.Jaws.Logger != nil </span><span class="cov8" title="1">{
+                srv.Jaws.Logger.Info(msg, args...)
+        }</span>
+}
+
+func authTimerEntryExpiry(entry *authTimerState) (expiry time.Time) <span class="cov8" title="1">{
+        if entry != nil </span><span class="cov8" title="1">{
+                expiry = entry.expiry
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
+func tokenDebugAttrs(token *oauth2.Token) []any <span class="cov8" title="1">{
+        attrs := []any{"token_nil", token == nil}
+        if token != nil </span><span class="cov8" title="1">{
+                rawIDToken, _ := token.Extra("id_token").(string)
+                attrs = append(attrs,
+                        "access_token_present", token.AccessToken != "",
+                        "refresh_token_present", token.RefreshToken != "",
+                        "token_expiry", token.Expiry,
+                        "token_valid", token.Valid(),
+                        "id_token_present", rawIDToken != "",
+                        "id_token_len", len(rawIDToken),
+                )
+        }</span>
+        <span class="cov8" title="1">return attrs</span>
 }
 
 func realAuthTimerAfterFunc(delay time.Duration, callback func()) authTimer <span class="cov8" title="1">{
@@ -204,6 +233,16 @@ func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Sessi
 }
 
 func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, minExpiry time.Time, entry *authTimerState) (err error) <span class="cov8" title="1">{
+        var sessionID uint64
+        if sess != nil </span><span class="cov8" title="1">{
+                sessionID = sess.ID()
+        }</span>
+        <span class="cov8" title="1">srv.debugLog("jawsauth: refresh session auth started",
+                "session_id", sessionID,
+                "min_expiry", minExpiry,
+                "timer_entry", entry != nil,
+                "entry_expiry", authTimerEntryExpiry(entry),
+        )
         err = ErrOAuth2NotConfigured
         if srv != nil &amp;&amp; sess != nil &amp;&amp; srv.oauth2cfg != nil &amp;&amp; srv.idTokenVerifier != nil </span><span class="cov8" title="1">{
                 tokenSource, _ := sess.Get(srv.SessionTokenKey).(oauth2.TokenSource)
@@ -211,19 +250,47 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
                 if tokenSource != nil </span><span class="cov8" title="1">{
                         authctx := srv.oauth2Context(ctx)
                         var token *oauth2.Token
+                        srv.debugLog("jawsauth: requesting token from stored token source", "session_id", sessionID)
                         if token, err = tokenSource.Token(); err == nil </span><span class="cov8" title="1">{
+                                srv.debugLog("jawsauth: stored token source returned token", append([]any{"session_id", sessionID}, tokenDebugAttrs(token)...)...)
                                 err = srv.setSessionAuthFromToken(authctx, sess, tokenSource, token, minExpiry, entry)
-                                if err != nil &amp;&amp; token != nil &amp;&amp; token.RefreshToken != "" &amp;&amp; !errors.Is(err, errAuthTimerStale) </span><span class="cov8" title="1">{
+                                if err == nil </span><span class="cov0" title="0">{
+                                        srv.debugLog("jawsauth: stored token refreshed session auth", "session_id", sessionID)
+                                }</span> else<span class="cov8" title="1"> {
+                                        srv.debugLog("jawsauth: stored token did not refresh session auth", "session_id", sessionID, "err", err)
+                                }</span>
+                                <span class="cov8" title="1">if err != nil &amp;&amp; token != nil &amp;&amp; token.RefreshToken != "" &amp;&amp; !errors.Is(err, errAuthTimerStale) </span><span class="cov8" title="1">{
+                                        srv.debugLog("jawsauth: forcing refresh with refresh token", "session_id", sessionID, "err", err)
                                         tokenSource = srv.oauth2cfg.TokenSource(authctx, &amp;oauth2.Token{
                                                 RefreshToken: token.RefreshToken,
                                         })
                                         if token, err = tokenSource.Token(); err == nil </span><span class="cov8" title="1">{
+                                                srv.debugLog("jawsauth: forced refresh returned token", append([]any{"session_id", sessionID}, tokenDebugAttrs(token)...)...)
                                                 err = srv.setSessionAuthFromToken(authctx, sess, tokenSource, token, minExpiry, entry)
+                                                if err == nil </span><span class="cov8" title="1">{
+                                                        srv.debugLog("jawsauth: forced refresh updated session auth", "session_id", sessionID)
+                                                }</span> else<span class="cov8" title="1"> {
+                                                        srv.debugLog("jawsauth: forced refresh did not update session auth", "session_id", sessionID, "err", err)
+                                                }</span>
+                                        } else<span class="cov0" title="0"> {
+                                                srv.debugLog("jawsauth: forced refresh token source failed", "session_id", sessionID, "err", err)
                                         }</span>
                                 }
-                        }
-                }
-        }
+                        } else<span class="cov8" title="1"> {
+                                srv.debugLog("jawsauth: stored token source failed", "session_id", sessionID, "err", err)
+                        }</span>
+                } else<span class="cov8" title="1"> {
+                        srv.debugLog("jawsauth: refresh session auth missing token source", "session_id", sessionID)
+                }</span>
+        } else<span class="cov8" title="1"> {
+                srv.debugLog("jawsauth: refresh session auth not configured",
+                        "session_id", sessionID,
+                        "server_nil", srv == nil,
+                        "session_nil", sess == nil,
+                        "oauth2_configured", srv != nil &amp;&amp; srv.oauth2cfg != nil,
+                        "id_token_verifier_configured", srv != nil &amp;&amp; srv.idTokenVerifier != nil,
+                )
+        }</span>
         <span class="cov8" title="1">return</span>
 }
 
@@ -232,20 +299,29 @@ func (srv *Server) scheduleSessionAuthTimer(sess *jaws.Session, expiry time.Time
                 delay := max(time.Until(expiry.Add(-authRefreshSkew)), 0)
                 entry := &amp;authTimerState{expiry: expiry}
                 srv.mu.Lock()
-                defer srv.mu.Unlock()
                 if srv.authTimers == nil </span><span class="cov8" title="1">{
                         srv.authTimers = make(map[uint64]*authTimerState)
                 }</span>
                 <span class="cov8" title="1">if srv.authTimerAfterFunc == nil </span><span class="cov8" title="1">{
                         srv.authTimerAfterFunc = realAuthTimerAfterFunc
                 }</span>
-                <span class="cov8" title="1">if old := srv.authTimers[sess.ID()]; old != nil &amp;&amp; old.timer != nil </span><span class="cov8" title="1">{
+                <span class="cov8" title="1">replaced := false
+                if old := srv.authTimers[sess.ID()]; old != nil &amp;&amp; old.timer != nil </span><span class="cov8" title="1">{
+                        replaced = true
                         old.timer.Stop()
                 }</span>
                 <span class="cov8" title="1">srv.authTimers[sess.ID()] = entry
                 entry.timer = srv.authTimerAfterFunc(delay, func() </span><span class="cov8" title="1">{
                         srv.handleSessionAuthTimer(sess, entry)
                 }</span>)
+                <span class="cov8" title="1">srv.mu.Unlock()
+                srv.debugLog("jawsauth: scheduled auth refresh timer",
+                        "session_id", sess.ID(),
+                        "expiry", expiry,
+                        "delay", delay,
+                        "refresh_skew", authRefreshSkew,
+                        "replaced_existing", replaced,
+                )</span>
         }
 }
 
@@ -283,15 +359,38 @@ func (srv *Server) stopSessionAuthTimer(sess *jaws.Session, entry *authTimerStat
 
 func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerState) <span class="cov8" title="1">{
         if srv.sessionAuthTimerCurrent(sess, entry) </span><span class="cov8" title="1">{
+                current, present := srv.sessionAuthStatus(sess, time.Now)
+                srv.debugLog("jawsauth: auth refresh timer fired",
+                        "session_id", sess.ID(),
+                        "entry_expiry", authTimerEntryExpiry(entry),
+                        "session_current", current,
+                        "session_present", present,
+                )
                 err := srv.refreshSessionAuth(context.Background(), sess, entry.expiry, entry)
                 if err != nil </span><span class="cov8" title="1">{
                         if errors.Is(err, errAuthTimerStale) </span><span class="cov8" title="1">{
+                                srv.debugLog("jawsauth: auth refresh timer became stale", "session_id", sess.ID(), "err", err)
                                 return
                         }</span>
-                        <span class="cov8" title="1">_ = srv.Jaws.Log(err)
+                        <span class="cov8" title="1">current, present = srv.sessionAuthStatus(sess, time.Now)
+                        srv.debugLog("jawsauth: auth refresh timer failed; clearing auth",
+                                "session_id", sess.ID(),
+                                "entry_expiry", authTimerEntryExpiry(entry),
+                                "session_current", current,
+                                "session_present", present,
+                                "err", err,
+                        )
+                        _ = srv.Jaws.Log(err)
                         srv.clearSessionAuth(sess, nil, true, true, entry)</span>
-                }
-        }
+                } else<span class="cov8" title="1"> {
+                        srv.debugLog("jawsauth: auth refresh timer completed", "session_id", sess.ID())
+                }</span>
+        } else<span class="cov8" title="1"> if sess != nil </span><span class="cov8" title="1">{
+                srv.debugLog("jawsauth: stale auth refresh timer ignored",
+                        "session_id", sess.ID(),
+                        "entry_expiry", authTimerEntryExpiry(entry),
+                )
+        }</span>
 }
 
 func clearSessionOAuthFlow(sess *jaws.Session) <span class="cov8" title="1">{
@@ -317,7 +416,15 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, callLo
                         if reload </span><span class="cov8" title="1">{
                                 sess.Reload()
                         }</span>
-                        <span class="cov8" title="1">cleared = true</span>
+                        <span class="cov8" title="1">cleared = true
+                        srv.debugLog("jawsauth: cleared session auth",
+                                "session_id", sess.ID(),
+                                "request_present", hr != nil,
+                                "call_logout", callLogout,
+                                "reload", reload,
+                                "timer_entry", entry != nil,
+                                "entry_expiry", authTimerEntryExpiry(entry),
+                        )</span>
                 }
         }
         <span class="cov8" title="1">return</span>
