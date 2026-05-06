@@ -847,6 +847,72 @@ func Test_handleAuthResponseInvalidIDToken(t *testing.T) {
 	}
 }
 
+func Test_handleAuthResponseAudienceMismatch(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	const issuer = "https://issuer.example"
+	idToken := makeIDToken(t, map[string]any{
+		"iss":   issuer,
+		"aud":   "different-client",
+		"exp":   time.Now().Add(10 * time.Minute).Unix(),
+		"iat":   time.Now().Add(-time.Minute).Unix(),
+		"nonce": "nonce123",
+		"sub":   "sub-123",
+	})
+
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.URL.Path == "/token" {
+			hw.Header().Set("Content-Type", "application/json")
+			_, _ = hw.Write([]byte(`{"access_token":"token123","token_type":"Bearer","expires_in":3600,"id_token":"` + idToken + `"}`))
+			return
+		}
+		hw.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+
+	srv := &Server{
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		oauth2cfg: &oauth2.Config{
+			ClientID: "client",
+			Endpoint: oauth2.Endpoint{
+				TokenURL: provider.URL + "/token",
+			},
+			RedirectURL: "http://example.com/oauth2/callback",
+		},
+		idTokenVerifier: oidc.NewVerifier(issuer, passthroughKeySet{}, &oidc.Config{ClientID: "client"}),
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
+	sess := jw.NewSession(rec, req)
+	sess.Set(oauth2StateKey, "state123")
+	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+	sess.Set(oauth2NonceKey, "nonce123")
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatal(resp.Status)
+	}
+	if !strings.Contains(string(body), ErrOIDCInvalidIDToken.Error()) {
+		t.Fatal(string(body))
+	}
+}
+
 func Test_handleAuthResponseNonceMismatch(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {

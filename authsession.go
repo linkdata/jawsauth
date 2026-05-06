@@ -79,9 +79,7 @@ func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Sessio
 				sess.Set(oauth2IDTokenExpiryKey, expiry)
 				sess.Set(srv.SessionEmailKey, srv.extractEmail(claims))
 				sess.Set(srv.SessionEmailVerifiedKey, verified)
-				if srv.Jaws != nil {
-					srv.Jaws.Dirty(sess)
-				}
+				srv.Jaws.Dirty(sess)
 				srv.scheduleSessionAuthTimer(sess, expiry)
 				err = nil
 			}
@@ -201,9 +199,7 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 			if errors.Is(err, errAuthTimerStale) {
 				return
 			}
-			if srv.Jaws != nil {
-				_ = srv.Jaws.Log(err)
-			}
+			_ = srv.Jaws.Log(err)
 			srv.clearSessionAuth(sess, nil, true, true, entry)
 		}
 	}
@@ -228,9 +224,7 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, callLo
 			if callLogout && srv.LogoutEvent != nil {
 				srv.LogoutEvent(sess, hr)
 			}
-			if srv.Jaws != nil {
-				srv.Jaws.Dirty(sess)
-			}
+			srv.Jaws.Dirty(sess)
 			if reload {
 				sess.Reload()
 			}

@@ -88,24 +88,22 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method == http.MethodGet {
 		oauth2cfg, _, location := srv.begin(hr)
 		if oauth2cfg != nil {
-			if srv.Jaws != nil {
-				sess := srv.Jaws.GetSession(hr)
-				if sess == nil {
-					sess = srv.Jaws.NewSession(hw, hr)
-				}
-				if sess != nil {
-					authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
-					state := randomHexString()
-					sess.Set(oauth2StateKey, state)
-					nonce := randomHexString()
-					sess.Set(oauth2NonceKey, nonce)
-					authOptions = append(authOptions, oidc.Nonce(nonce))
-					verifier := oauth2.GenerateVerifier()
-					sess.Set(oauth2PKCEVerifierKey, verifier)
-					authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-					sess.Set(oauth2ReferrerKey, location)
-					location = oauth2cfg.AuthCodeURL(state, authOptions...)
-				}
+			sess := srv.Jaws.GetSession(hr)
+			if sess == nil {
+				sess = srv.Jaws.NewSession(hw, hr)
+			}
+			if sess != nil {
+				authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
+				state := randomHexString()
+				sess.Set(oauth2StateKey, state)
+				nonce := randomHexString()
+				sess.Set(oauth2NonceKey, nonce)
+				authOptions = append(authOptions, oidc.Nonce(nonce))
+				verifier := oauth2.GenerateVerifier()
+				sess.Set(oauth2PKCEVerifierKey, verifier)
+				authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+				sess.Set(oauth2ReferrerKey, location)
+				location = oauth2cfg.AuthCodeURL(state, authOptions...)
 			}
 		}
 		hw.Header().Add("Location", location)
@@ -119,10 +117,8 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
 	if hr.Method == http.MethodGet {
 		_, _, location := srv.begin(hr)
-		if srv.Jaws != nil {
-			if sess := srv.Jaws.GetSession(hr); sess != nil {
-				srv.clearSessionAuth(sess, hr, true, false, nil)
-			}
+		if sess := srv.Jaws.GetSession(hr); sess != nil {
+			srv.clearSessionAuth(sess, hr, true, false, nil)
 		}
 		hw.Header().Add("Location", location)
 		statusCode = http.StatusFound
@@ -316,9 +312,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		if sess != nil {
 			if sessValue == nil {
 				clearSessionOAuthFlow(sess)
-				if srv.Jaws != nil {
-					srv.Jaws.Dirty(sess)
-				}
+				srv.Jaws.Dirty(sess)
 			} else if srv.LoginEvent != nil {
 				srv.LoginEvent(sess, hr)
 			}

@@ -2,6 +2,7 @@ package jawsauth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -15,6 +16,11 @@ import (
 	"github.com/linkdata/jaws/lib/ui"
 	"golang.org/x/oauth2"
 )
+
+// ErrServerNilJaws is returned by New and NewDebug when the *jaws.Jaws
+// argument is nil. Server methods dereference Server.Jaws and require it
+// to be non-nil for the lifetime of the Server.
+var ErrServerNilJaws = errors.New("jawsauth: nil *jaws.Jaws")
 
 func normalizeEmail(s string) (email string) {
 	if m, e := mail.ParseAddress(s); e == nil {
@@ -65,6 +71,10 @@ type Server struct {
 }
 
 func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl string) (srv *Server, err error) {
+	if jw == nil {
+		err = ErrServerNilJaws
+		return
+	}
 	srv = &Server{
 		Jaws:                    jw,
 		SessionKey:              "oidc_claims",

@@ -3,6 +3,7 @@ package jawsauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"html/template"
@@ -343,5 +344,96 @@ func TestSetAdminsInitializesZeroValueMap(t *testing.T) {
 	}
 	if srv.IsAdmin("user@example.com") {
 		t.Fatal("unexpected admin")
+	}
+}
+
+func TestNew_NilJawsReturnsError(t *testing.T) {
+	discovery := newOIDCDiscoveryServer(t)
+	defer discovery.Close()
+
+	cfg := &Config{
+		RedirectURL:         "https://application.example.com/oauth2/callback",
+		Issuer:              discovery.URL,
+		AllowInsecureIssuer: true,
+		ClientID:            "the-client-id",
+	}
+	handleFn := func(uri string, h http.Handler) {
+		_, _ = uri, h
+	}
+
+	srv, err := New(nil, cfg, handleFn)
+	if !errors.Is(err, ErrServerNilJaws) {
+		t.Fatalf("expected ErrServerNilJaws, got %v", err)
+	}
+	if srv != nil {
+		t.Fatalf("expected nil server, got %#v", srv)
+	}
+}
+
+func TestServer_IsAdmin_TableCases(t *testing.T) {
+	type want struct {
+		email string
+		admin bool
+	}
+	for _, tc := range []struct {
+		name   string
+		admins []string
+		cases  []want
+	}{
+		{
+			name:   "empty list allows everyone",
+			admins: nil,
+			cases: []want{
+				{email: "anyone@example.com", admin: true},
+				{email: "", admin: true},
+			},
+		},
+		{
+			name:   "non-empty list only allows listed",
+			admins: []string{"admin@example.com"},
+			cases: []want{
+				{email: "admin@example.com", admin: true},
+				{email: "user@example.com", admin: false},
+				{email: "", admin: false},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &Server{}
+			srv.SetAdmins(tc.admins)
+			for _, c := range tc.cases {
+				if got := srv.IsAdmin(c.email); got != c.admin {
+					t.Errorf("IsAdmin(%q) = %v, want %v", c.email, got, c.admin)
+				}
+			}
+		})
+	}
+
+	var nilSrv *Server
+	if !nilSrv.IsAdmin("anyone@example.com") {
+		t.Fatal("nil receiver should report admin")
+	}
+}
+
+func TestServer_SetAdmins_NormalizesAndDeduplicates(t *testing.T) {
+	srv := &Server{}
+	srv.SetAdmins([]string{
+		"  Admin@Example.COM  ",
+		"admin@example.com",
+		"Display Name <Other@Example.com>",
+		"   ",
+		"",
+	})
+
+	got := srv.GetAdmins()
+	want := []string{"admin@example.com", "other@example.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetAdmins() = %#v, want %#v", got, want)
+	}
+	if !srv.IsAdmin("ADMIN@example.com") {
+		t.Fatal("case-insensitive lookup failed")
+	}
+	if !srv.IsAdmin("  other@example.com  ") {
+		t.Fatal("whitespace lookup failed")
 	}
 }
