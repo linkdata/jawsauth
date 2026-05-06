@@ -329,6 +329,43 @@ func TestNewDebugPreservesCallbackTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestCallbackPathFromURL(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "empty",
+			want: "/",
+		},
+		{
+			name: "root",
+			path: "/",
+			want: "/",
+		},
+		{
+			name: "cleaned",
+			path: "/oauth2/./callback",
+			want: "/oauth2/callback",
+		},
+		{
+			name: "trailingSlash",
+			path: "/oauth2/callback/",
+			want: "/oauth2/callback/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := callbackPathFromURL(&url.URL{Path: tt.path})
+			if got != tt.want {
+				t.Fatalf("callbackPathFromURL(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSetAdminsInitializesZeroValueMap(t *testing.T) {
 	srv := &Server{}
 	srv.SetAdmins([]string{"Admin <admin@example.com>"})
