@@ -24,6 +24,17 @@ func normalizeEmail(s string) (email string) {
 	return
 }
 
+func callbackPathFromURL(u *url.URL) (callbackPath string) {
+	rawPath := u.Path
+	callbackPath = path.Clean(rawPath)
+	if callbackPath == "" || callbackPath == "." {
+		callbackPath = "/"
+	} else if strings.HasSuffix(rawPath, "/") && callbackPath != "/" {
+		callbackPath += "/"
+	}
+	return
+}
+
 type HandleFunc func(uri string, handler http.Handler)
 
 type EventFunc func(sess *jaws.Session, hr *http.Request)
@@ -67,20 +78,17 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		authTimerAfterFunc:      realAuthTimerAfterFunc,
 	} // #nosec G101
 	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
-		jw.MakeAuth = srv.makeAuth
 		if srv.oauth2cfg, srv.userinfoUrl, srv.idTokenVerifier, err = cfg.buildContext(context.Background(), overrideUrl); err == nil {
 			srv.httpClient = cfg.HTTPClient
 			var u *url.URL
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
 				srv.ishttps = (u.Scheme == "https")
-				callbackPath := path.Clean(u.Path)
-				if callbackPath == "" || callbackPath == "." {
-					callbackPath = "/"
-				}
-				dir := path.Dir(callbackPath)
+				callbackPath := callbackPathFromURL(u)
+				dir := path.Dir(path.Clean(callbackPath))
 				srv.handlePath(callbackPath, handleFn, http.HandlerFunc(srv.HandleAuthResponse))
 				srv.handlePath(path.Join(dir, "login"), handleFn, http.HandlerFunc(srv.HandleLogin))
 				srv.handlePath(path.Join(dir, "logout"), handleFn, http.HandlerFunc(srv.HandleLogout))
+				jw.MakeAuth = srv.makeAuth
 			}
 		}
 	}

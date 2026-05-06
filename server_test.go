@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -249,6 +250,81 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	if resp.StatusCode != http.StatusOK {
 		t.Log(resp.Header)
 		t.Fatal(resp.Status)
+	}
+}
+
+func TestNewDebugFailureDoesNotReplaceMakeAuth(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	jw.MakeAuth = func(*jaws.Request) jaws.Auth {
+		return jaws.DefaultAuth{}
+	}
+	wantMakeAuth := reflect.ValueOf(jw.MakeAuth).Pointer()
+	var handled []string
+	cfg := &Config{
+		RedirectURL: "https://application.example.com/oauth2/callback",
+		ClientID:    "the-client-id",
+	}
+
+	srv, err := New(jw, cfg, func(uri string, handler http.Handler) {
+		_ = handler
+		handled = append(handled, uri)
+	})
+	if err == nil {
+		t.Fatal("expected config error")
+	}
+	if srv == nil {
+		t.Fatal("expected server value")
+	}
+	if gotMakeAuth := reflect.ValueOf(jw.MakeAuth).Pointer(); gotMakeAuth != wantMakeAuth {
+		t.Fatal("MakeAuth was replaced after failed setup")
+	}
+	if len(handled) != 0 {
+		t.Fatal(handled)
+	}
+}
+
+func TestNewDebugPreservesCallbackTrailingSlash(t *testing.T) {
+	discovery := newOIDCDiscoveryServer(t)
+	defer discovery.Close()
+
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	handled := make(map[string]http.Handler)
+	cfg := &Config{
+		RedirectURL:         "https://application.example.com/oauth2/callback/",
+		Issuer:              discovery.URL,
+		AllowInsecureIssuer: true,
+		ClientID:            "the-client-id",
+	}
+
+	srv, err := New(jw, cfg, func(uri string, handler http.Handler) {
+		handled[uri] = handler
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.Valid() {
+		t.Fatal("server was not valid")
+	}
+	for _, want := range []string{"/oauth2/callback/", "/oauth2/login", "/oauth2/logout"} {
+		if handled[want] == nil {
+			t.Fatalf("missing handled path %s: %#v", want, handled)
+		}
+	}
+	if handled["/oauth2/callback"] != nil {
+		t.Fatal("registered cleaned callback path without trailing slash")
+	}
+	if jw.MakeAuth == nil {
+		t.Fatal("MakeAuth was not installed after successful setup")
 	}
 }
 
