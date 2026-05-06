@@ -312,7 +312,10 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		}
 		if sess != nil {
 			if sessValue == nil {
-				srv.clearSessionAuth(sess, nil, false, false, nil)
+				clearSessionOAuthFlow(sess)
+				if srv.Jaws != nil {
+					srv.Jaws.Dirty(sess)
+				}
 			} else if srv.LoginEvent != nil {
 				srv.LoginEvent(sess, hr)
 			}

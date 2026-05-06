@@ -604,6 +604,69 @@ func Test_handleAuthResponseMissingPKCEVerifier(t *testing.T) {
 	}
 }
 
+func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	srv := newWrapperTestServer(jw, "https://issuer.example")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=attacker&code=ignored", nil)
+	sess := jw.NewSession(rec, req)
+	claims := map[string]any{
+		"email": "user@example.com",
+	}
+	tokenSource := oauth2.StaticTokenSource(makeOAuth2Token("access", "", ""))
+	expiry := time.Now().Add(time.Hour).Truncate(time.Second)
+	sess.Set(srv.SessionKey, claims)
+	sess.Set(srv.SessionTokenKey, tokenSource)
+	sess.Set(oauth2IDTokenExpiryKey, expiry)
+	sess.Set(srv.SessionEmailKey, "user@example.com")
+	sess.Set(srv.SessionEmailVerifiedKey, true)
+	sess.Set(oauth2StateKey, "legit")
+	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+	sess.Set(oauth2NonceKey, "nonce")
+	sess.Set(oauth2ReferrerKey, "/secure")
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusBadRequest {
+		resp.Body.Close()
+		t.Fatal(resp.Status)
+	}
+	resp.Body.Close()
+	if got := sess.Get(srv.SessionKey); !reflect.DeepEqual(got, claims) {
+		t.Fatal(got)
+	}
+	if got := sess.Get(srv.SessionTokenKey); got != tokenSource {
+		t.Fatal(got)
+	}
+	if got, _ := sess.Get(oauth2IDTokenExpiryKey).(time.Time); !got.Equal(expiry) {
+		t.Fatal(got)
+	}
+	if got, _ := sess.Get(srv.SessionEmailKey).(string); got != "user@example.com" {
+		t.Fatal(got)
+	}
+	if got, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool); !got {
+		t.Fatal(got)
+	}
+	if got := sess.Get(oauth2StateKey); got != nil {
+		t.Fatal(got)
+	}
+	if got := sess.Get(oauth2PKCEVerifierKey); got != nil {
+		t.Fatal(got)
+	}
+	if got := sess.Get(oauth2NonceKey); got != nil {
+		t.Fatal(got)
+	}
+	if got := sess.Get(oauth2ReferrerKey); got != nil {
+		t.Fatal(got)
+	}
+}
+
 func Test_extractEmailVerified(t *testing.T) {
 	testCases := []struct {
 		name   string
