@@ -28,12 +28,6 @@ type authTimerState struct {
 	expiry time.Time
 }
 
-func (srv *Server) debugLog(msg string, args ...any) {
-	if srv != nil && srv.Jaws != nil && srv.Jaws.Debug && srv.Jaws.Logger != nil {
-		srv.Jaws.Logger.Info(msg, args...)
-	}
-}
-
 func authTimerEntryExpiry(entry *authTimerState) (expiry time.Time) {
 	if entry != nil {
 		expiry = entry.expiry
@@ -63,9 +57,15 @@ func realAuthTimerAfterFunc(delay time.Duration, callback func()) authTimer {
 
 func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) {
 	authctx = ctx
-	if srv != nil && srv.httpClient != nil {
-		if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok {
-			authctx = context.WithValue(authctx, oauth2.HTTPClient, srv.httpClient)
+	if srv != nil {
+		client, ok := authctx.Value(oauth2.HTTPClient).(*http.Client)
+		if !ok {
+			client = srv.httpClient
+		}
+		if logger := srv.debugLogger(); logger != nil {
+			authctx = context.WithValue(authctx, oauth2.HTTPClient, srv.debugHTTPClient(client, logger))
+		} else if !ok && client != nil {
+			authctx = context.WithValue(authctx, oauth2.HTTPClient, client)
 		}
 	}
 	return
@@ -168,10 +168,10 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
 				if err == nil {
 					srv.debugLog("jawsauth: stored token refreshed session auth", "session_id", sessionID)
 				} else {
-					srv.debugLog("jawsauth: stored token did not refresh session auth", "session_id", sessionID, "err", err)
+					srv.debugErrorLog("jawsauth: stored token did not refresh session auth", err, "session_id", sessionID)
 				}
 				if err != nil && token != nil && token.RefreshToken != "" && !errors.Is(err, errAuthTimerStale) {
-					srv.debugLog("jawsauth: forcing refresh with refresh token", "session_id", sessionID, "err", err)
+					srv.debugErrorLog("jawsauth: forcing refresh with refresh token", err, "session_id", sessionID)
 					tokenSource = srv.oauth2cfg.TokenSource(authctx, &oauth2.Token{
 						RefreshToken: token.RefreshToken,
 					})
@@ -181,14 +181,14 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
 						if err == nil {
 							srv.debugLog("jawsauth: forced refresh updated session auth", "session_id", sessionID)
 						} else {
-							srv.debugLog("jawsauth: forced refresh did not update session auth", "session_id", sessionID, "err", err)
+							srv.debugErrorLog("jawsauth: forced refresh did not update session auth", err, "session_id", sessionID)
 						}
 					} else {
-						srv.debugLog("jawsauth: forced refresh token source failed", "session_id", sessionID, "err", err)
+						srv.debugErrorLog("jawsauth: forced refresh token source failed", err, "session_id", sessionID)
 					}
 				}
 			} else {
-				srv.debugLog("jawsauth: stored token source failed", "session_id", sessionID, "err", err)
+				srv.debugErrorLog("jawsauth: stored token source failed", err, "session_id", sessionID)
 			}
 		} else {
 			srv.debugLog("jawsauth: refresh session auth missing token source", "session_id", sessionID)
@@ -280,16 +280,40 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 		err := srv.refreshSessionAuth(context.Background(), sess, entry.expiry, entry)
 		if err != nil {
 			if errors.Is(err, errAuthTimerStale) {
-				srv.debugLog("jawsauth: auth refresh timer became stale", "session_id", sess.ID(), "err", err)
+				srv.debugErrorLog("jawsauth: auth refresh timer became stale", err, "session_id", sess.ID())
 				return
 			}
 			current, present = srv.sessionAuthStatus(sess, time.Now)
-			srv.debugLog("jawsauth: auth refresh timer failed; clearing auth",
+			if current && present {
+				retryDelay := max(time.Until(entry.expiry), 0)
+				retryScheduled := false
+				srv.mu.Lock()
+				if srv.authTimers[sess.ID()] == entry {
+					if entry.timer != nil {
+						entry.timer.Stop()
+					}
+					entry.timer = srv.authTimerAfterFunc(retryDelay, func() {
+						srv.handleSessionAuthTimer(sess, entry)
+					})
+					retryScheduled = true
+				}
+				srv.mu.Unlock()
+				if retryScheduled {
+					srv.debugErrorLog("jawsauth: auth refresh timer failed; keeping current auth", err,
+						"session_id", sess.ID(),
+						"entry_expiry", authTimerEntryExpiry(entry),
+						"session_current", current,
+						"session_present", present,
+						"retry_delay", retryDelay,
+					)
+					return
+				}
+			}
+			srv.debugErrorLog("jawsauth: auth refresh timer failed; clearing auth", err,
 				"session_id", sess.ID(),
 				"entry_expiry", authTimerEntryExpiry(entry),
 				"session_current", current,
 				"session_present", present,
-				"err", err,
 			)
 			_ = srv.Jaws.Log(err)
 			srv.clearSessionAuth(sess, nil, true, true, entry)

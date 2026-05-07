@@ -233,12 +233,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		oauth2Config, _, location := srv.begin(hr)
 		var sessValue any
 		var sessEmail string
-		authctx := hr.Context()
-		if srv.httpClient != nil {
-			if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok {
-				authctx = context.WithValue(authctx, oauth2.HTTPClient, srv.httpClient)
-			}
-		}
+		authctx := srv.oauth2Context(hr.Context())
 		sess := srv.Jaws.GetSession(hr)
 		if sess != nil {
 			sessEmail, _ = sess.Get(srv.SessionEmailKey).(string)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -122,6 +123,18 @@ func (logger *testAuthDebugLogger) hasInfo(msg string) (found bool) {
 	return
 }
 
+func (logger *testAuthDebugLogger) info(msg string) (record testAuthDebugLog, found bool) {
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	for _, record = range logger.infos {
+		if record.msg == msg {
+			found = true
+			return
+		}
+	}
+	return
+}
+
 func (logger *testAuthDebugLogger) infoCount() (n int) {
 	logger.mu.Lock()
 	n = len(logger.infos)
@@ -140,6 +153,83 @@ func makeOAuth2Token(accessToken, idToken, refreshToken string) *oauth2.Token {
 		token = token.WithExtra(map[string]any{"id_token": idToken})
 	}
 	return token
+}
+
+func testDebugAttrsMap(attrs []any) map[string]any {
+	m := make(map[string]any)
+	for i := 0; i+1 < len(attrs); i += 2 {
+		if k, ok := attrs[i].(string); ok {
+			m[k] = attrs[i+1]
+		}
+	}
+	return m
+}
+
+func testStringSliceContains(sl []string, s string) bool {
+	for _, item := range sl {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func TestErrorDebugAttrsIncludeOIDCAndOAuth2Details(t *testing.T) {
+	body := strings.Repeat("x", debugErrorBodyLimit+1)
+	err := errors.Join(
+		errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCStaleIDToken},
+		&OAuth2CallbackError{
+			Code:        "access_denied",
+			Description: "user cancelled",
+			URI:         "https://provider.example/callback-error",
+		},
+		&oauth2.RetrieveError{
+			Response: &http.Response{
+				Status:     "400 Bad Request",
+				StatusCode: http.StatusBadRequest,
+			},
+			Body:             []byte(body),
+			ErrorCode:        "invalid_grant",
+			ErrorDescription: "refresh token expired",
+			ErrorURI:         "https://provider.example/token-error",
+		},
+	)
+
+	attrs := testDebugAttrsMap(errorDebugAttrs(err))
+	classes, ok := attrs["err_classes"].([]string)
+	if !ok {
+		t.Fatal("missing error classes")
+	}
+	for _, want := range []string{
+		"oidc_invalid_id_token",
+		"oidc_stale_id_token",
+		"oauth2_callback",
+	} {
+		if !testStringSliceContains(classes, want) {
+			t.Fatal(classes)
+		}
+	}
+	if attrs["oauth2_callback_error"] != true {
+		t.Fatal(attrs["oauth2_callback_error"])
+	}
+	if attrs["oauth2_callback_error_code"] != "access_denied" {
+		t.Fatal(attrs["oauth2_callback_error_code"])
+	}
+	if attrs["oauth2_retrieve_error"] != true {
+		t.Fatal(attrs["oauth2_retrieve_error"])
+	}
+	if attrs["oauth2_retrieve_error_code"] != "invalid_grant" {
+		t.Fatal(attrs["oauth2_retrieve_error_code"])
+	}
+	if attrs["oauth2_response_status_code"] != http.StatusBadRequest {
+		t.Fatal(attrs["oauth2_response_status_code"])
+	}
+	if attrs["oauth2_response_body_truncated"] != true {
+		t.Fatal(attrs["oauth2_response_body_truncated"])
+	}
+	if got, _ := attrs["oauth2_response_body"].(string); len(got) != debugErrorBodyLimit {
+		t.Fatal(len(got))
+	}
 }
 
 func newTimerTestServer(t *testing.T, jw *jaws.Jaws, issuer string, factory *testAuthTimerFactory) *Server {
@@ -287,6 +377,9 @@ func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer jw.Close()
+	logger := &testAuthDebugLogger{}
+	jw.Debug = true
+	jw.Logger = logger
 
 	const issuer = "https://issuer.example"
 	initialExpiry := time.Now().Add(30 * time.Second).Truncate(time.Second)
@@ -406,6 +499,20 @@ func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 	if gotUserinfoAuth != "Bearer refreshed-access" {
 		t.Fatal(gotUserinfoAuth)
 	}
+	record, ok := logger.info("jawsauth: stored token did not refresh session auth")
+	if !ok {
+		t.Fatal("missing stored token refresh failure log")
+	}
+	attrs := testDebugAttrsMap(record.args)
+	classes, ok := attrs["err_classes"].([]string)
+	if !ok {
+		t.Fatal("missing error classes")
+	}
+	for _, want := range []string{"oidc_invalid_id_token", "oidc_stale_id_token"} {
+		if !testStringSliceContains(classes, want) {
+			t.Fatal(classes)
+		}
+	}
 }
 
 func TestRefreshSessionAuthUsesStoredValidToken(t *testing.T) {
@@ -484,6 +591,7 @@ func TestRefreshSessionAuthLogsForcedRefreshTokenSourceFailure(t *testing.T) {
 		mu.Lock()
 		tokenRequests++
 		mu.Unlock()
+		hw.Header().Set("Content-Type", "application/json")
 		hw.WriteHeader(http.StatusInternalServerError)
 		_, _ = hw.Write([]byte(`{"error":"temporarily_unavailable"}`))
 	}))
@@ -505,6 +613,20 @@ func TestRefreshSessionAuthLogsForcedRefreshTokenSourceFailure(t *testing.T) {
 	if !logger.hasInfo("jawsauth: forced refresh token source failed") {
 		t.Fatal("missing forced refresh failure log")
 	}
+	record, ok := logger.info("jawsauth: forced refresh token source failed")
+	if !ok {
+		t.Fatal("missing forced refresh failure log")
+	}
+	attrs := testDebugAttrsMap(record.args)
+	if attrs["oauth2_retrieve_error"] != true {
+		t.Fatal(attrs["oauth2_retrieve_error"])
+	}
+	if attrs["oauth2_response_status_code"] != http.StatusInternalServerError {
+		t.Fatal(attrs["oauth2_response_status_code"])
+	}
+	if attrs["oauth2_retrieve_error_code"] != "temporarily_unavailable" {
+		t.Fatal(attrs["oauth2_retrieve_error_code"])
+	}
 	mu.Lock()
 	gotTokenRequests := tokenRequests
 	mu.Unlock()
@@ -513,7 +635,77 @@ func TestRefreshSessionAuthLogsForcedRefreshTokenSourceFailure(t *testing.T) {
 	}
 }
 
-func TestAuthTimerRefreshFailureClearsAuth(t *testing.T) {
+func TestAuthTimerRefreshFailureKeepsCurrentAuthUntilExpiry(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	logger := &testAuthDebugLogger{}
+	jw.Debug = true
+	jw.Logger = logger
+
+	const issuer = "https://issuer.example"
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, issuer, factory)
+	var logoutCount int
+	srv.LogoutEvent = func(*jaws.Session, *http.Request) {
+		logoutCount++
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	expiry := time.Now().Add(time.Minute).Truncate(time.Second)
+	err = srv.storeSessionAuthClaims(t.Context(), sess, map[string]any{
+		"exp":            expiry.Unix(),
+		"email":          "current@example.com",
+		"email_verified": true,
+	}, tokenSourceFunc(func() (*oauth2.Token, error) {
+		return nil, errAuthSessionTestToken
+	}), expiry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstTimer := factory.timer(0)
+	firstTimer.fire()
+
+	if logoutCount != 0 {
+		t.Fatal(logoutCount)
+	}
+	claims, ok := sess.Get(srv.SessionKey).(map[string]any)
+	if !ok {
+		t.Fatal("missing claims")
+	}
+	if claims["email"] != "current@example.com" {
+		t.Fatal(claims["email"])
+	}
+	if !srv.sessionAuthTimerCurrent(sess, srv.authTimers[sess.ID()]) {
+		t.Fatal("current timer missing")
+	}
+	if !firstTimer.isStopped() {
+		t.Fatal("old timer was not stopped")
+	}
+	if factory.len() != 2 {
+		t.Fatal(factory.len())
+	}
+	if delay := factory.timer(1).delay; delay <= 0 || delay > time.Minute {
+		t.Fatal(delay)
+	}
+	if !logger.hasInfo("jawsauth: auth refresh timer failed; keeping current auth") {
+		t.Fatal("missing current auth retry log")
+	}
+
+	factory.timer(1).fire()
+	if logoutCount != 0 {
+		t.Fatal(logoutCount)
+	}
+	if factory.len() != 3 {
+		t.Fatal(factory.len())
+	}
+}
+
+func TestAuthTimerRefreshFailureClearsExpiredAuth(t *testing.T) {
 	testCases := []struct {
 		name        string
 		tokenSource oauth2.TokenSource
@@ -573,7 +765,7 @@ func TestAuthTimerRefreshFailureClearsAuth(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
-			expiry := time.Now().Add(30 * time.Second).Truncate(time.Second)
+			expiry := time.Now().Add(-time.Second).Truncate(time.Second)
 			err = srv.storeSessionAuthClaims(t.Context(), sess, map[string]any{
 				"exp":            expiry.Unix(),
 				"email":          "old@example.com",
@@ -645,8 +837,7 @@ func TestAuthTimerDebugLogsRefreshFailure(t *testing.T) {
 		"jawsauth: refresh session auth started",
 		"jawsauth: requesting token from stored token source",
 		"jawsauth: stored token source failed",
-		"jawsauth: auth refresh timer failed; clearing auth",
-		"jawsauth: cleared session auth",
+		"jawsauth: auth refresh timer failed; keeping current auth",
 	} {
 		if !logger.hasInfo(msg) {
 			t.Fatal(msg)
