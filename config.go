@@ -21,7 +21,7 @@ type Config struct {
 	AllowInsecureIssuer bool
 	// HTTPClient is used for OIDC discovery at startup.
 	HTTPClient *http.Client
-	Scopes     []string // optional additional scopes, "openid" and "email" are always ensured
+	Scopes     []string // optional additional scopes; "openid", "email", and "offline_access" are always ensured
 	ClientID   string
 	//gosec:disable G117
 	ClientSecret string
@@ -100,6 +100,7 @@ func overrideStr(a *string, b string) {
 func ensureScopes(rawScopes []string) (scopes []string) {
 	scopes = append(scopes, "openid")
 	scopes = append(scopes, "email")
+	scopes = append(scopes, "offline_access")
 	for _, set := range rawScopes {
 		for scope := range strings.FieldsSeq(set) {
 			scopes = append(scopes, scope)
