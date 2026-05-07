@@ -531,8 +531,11 @@ func ensureEmailScope(ctx context.Context, client *http.Client, baseURL, token, 
 	return nil
 }
 
-func assignScopeToClient(ctx context.Context, client *http.Client, baseURL, token, realm, clientID, scopeName string) error {
-	scopeID, err := getScopeID(ctx, client, baseURL, token, realm, scopeName)
+func assignEmailScopeToClient(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) error {
+	if err := ensureEmailScope(ctx, client, baseURL, token, realm); err != nil {
+		return err
+	}
+	scopeID, err := getScopeID(ctx, client, baseURL, token, realm, "email")
 	if err != nil {
 		return err
 	}
@@ -549,16 +552,9 @@ func assignScopeToClient(ctx context.Context, client *http.Client, baseURL, toke
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("assign %s scope status %s: %s", scopeName, resp.Status, string(body))
+		return fmt.Errorf("assign email scope status %s: %s", resp.Status, string(body))
 	}
 	return nil
-}
-
-func assignEmailScopeToClient(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) error {
-	if err := ensureEmailScope(ctx, client, baseURL, token, realm); err != nil {
-		return err
-	}
-	return assignScopeToClient(ctx, client, baseURL, token, realm, clientID, "email")
 }
 
 func enableDirectAccessGrants(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) error {
@@ -617,9 +613,6 @@ func assignEmailScopeAndEnableDirectAccess(ctx context.Context, client *http.Cli
 		return err
 	}
 	if err := assignEmailScopeToClient(ctx, client, baseURL, token, realm, clientID); err != nil {
-		return err
-	}
-	if err := assignScopeToClient(ctx, client, baseURL, token, realm, clientID, "offline_access"); err != nil {
 		return err
 	}
 	return nil

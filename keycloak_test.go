@@ -461,12 +461,18 @@ func getScopeID(ctx context.Context, baseURL, token, realm, scopeName string) (s
 	return "", fmt.Errorf("scope not found: %s", scopeName)
 }
 
-func assignScopeToClient(ctx context.Context, baseURL, token, realm, clientID, scopeName string) error {
-	scopeID, err := getScopeID(ctx, baseURL, token, realm, scopeName)
+func assignEmailScopeToClient(ctx context.Context, baseURL, token, realm, clientID string) error {
+	// Ensure the "email" scope exists first
+	if err := ensureEmailScope(ctx, baseURL, token, realm); err != nil {
+		return err
+	}
+
+	scopeID, err := getScopeID(ctx, baseURL, token, realm, "email")
 	if err != nil {
 		return fmt.Errorf("failed to get scope ID: %w", err)
 	}
 
+	// Assign email scope to the client
 	url := fmt.Sprintf("%s/admin/realms/%s/clients/%s/default-client-scopes/%s", baseURL, realm, clientID, scopeID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, nil)
@@ -483,19 +489,10 @@ func assignScopeToClient(ctx context.Context, baseURL, token, realm, clientID, s
 
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to assign %s scope to client, status: %s, body: %s", scopeName, resp.Status, string(body))
+		return fmt.Errorf("failed to assign email scope to client, status: %s, body: %s", resp.Status, string(body))
 	}
 
 	return nil
-}
-
-func assignEmailScopeToClient(ctx context.Context, baseURL, token, realm, clientID string) error {
-	// Ensure the "email" scope exists first
-	if err := ensureEmailScope(ctx, baseURL, token, realm); err != nil {
-		return err
-	}
-
-	return assignScopeToClient(ctx, baseURL, token, realm, clientID, "email")
 }
 
 func ensureEmailScope(ctx context.Context, baseURL, token, realm string) error {
@@ -607,10 +604,6 @@ func assignEmailScopeAndEnableDirectAccess(ctx context.Context, baseURL, token, 
 	// Assign the email scope
 	if err := assignEmailScopeToClient(ctx, baseURL, token, realm, clientID); err != nil {
 		return fmt.Errorf("failed to assign email scope: %w", err)
-	}
-
-	if err := assignScopeToClient(ctx, baseURL, token, realm, clientID, "offline_access"); err != nil {
-		return fmt.Errorf("failed to assign offline access scope: %w", err)
 	}
 
 	return nil

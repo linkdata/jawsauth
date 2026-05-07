@@ -233,12 +233,7 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusForbidden {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		if resp.Request != nil && resp.Request.URL != nil {
-			t.Log(resp.Request.URL.String())
-		}
 		t.Log(resp.Header)
-		t.Log(string(body))
 		t.Fatal(resp.Status)
 	}
 
