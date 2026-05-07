@@ -59,21 +59,23 @@
 				
 				<option value="file1">github.com/linkdata/jawsauth/config.go (100.0%)</option>
 				
-				<option value="file2">github.com/linkdata/jawsauth/default403handler.go (100.0%)</option>
+				<option value="file2">github.com/linkdata/jawsauth/debug.go (100.0%)</option>
 				
-				<option value="file3">github.com/linkdata/jawsauth/errconfig.go (100.0%)</option>
+				<option value="file3">github.com/linkdata/jawsauth/default403handler.go (100.0%)</option>
 				
-				<option value="file4">github.com/linkdata/jawsauth/erroauth2callback.go (100.0%)</option>
+				<option value="file4">github.com/linkdata/jawsauth/errconfig.go (100.0%)</option>
 				
-				<option value="file5">github.com/linkdata/jawsauth/erroidc.go (100.0%)</option>
+				<option value="file5">github.com/linkdata/jawsauth/erroauth2callback.go (100.0%)</option>
 				
-				<option value="file6">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
+				<option value="file6">github.com/linkdata/jawsauth/erroidc.go (100.0%)</option>
 				
-				<option value="file7">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
+				<option value="file7">github.com/linkdata/jawsauth/jawsauth.go (100.0%)</option>
 				
-				<option value="file8">github.com/linkdata/jawsauth/server.go (100.0%)</option>
+				<option value="file8">github.com/linkdata/jawsauth/oauth2.go (100.0%)</option>
 				
-				<option value="file9">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
+				<option value="file9">github.com/linkdata/jawsauth/server.go (100.0%)</option>
+				
+				<option value="file10">github.com/linkdata/jawsauth/wrapper.go (100.0%)</option>
 				
 				</select>
 			</div>
@@ -117,12 +119,6 @@ type authTimerState struct {
         expiry time.Time
 }
 
-func (srv *Server) debugLog(msg string, args ...any) <span class="cov8" title="1">{
-        if srv != nil &amp;&amp; srv.Jaws != nil &amp;&amp; srv.Jaws.Debug &amp;&amp; srv.Jaws.Logger != nil </span><span class="cov8" title="1">{
-                srv.Jaws.Logger.Info(msg, args...)
-        }</span>
-}
-
 func authTimerEntryExpiry(entry *authTimerState) (expiry time.Time) <span class="cov8" title="1">{
         if entry != nil </span><span class="cov8" title="1">{
                 expiry = entry.expiry
@@ -152,9 +148,15 @@ func realAuthTimerAfterFunc(delay time.Duration, callback func()) authTimer <spa
 
 func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) <span class="cov8" title="1">{
         authctx = ctx
-        if srv != nil &amp;&amp; srv.httpClient != nil </span><span class="cov8" title="1">{
-                if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok </span><span class="cov8" title="1">{
-                        authctx = context.WithValue(authctx, oauth2.HTTPClient, srv.httpClient)
+        if srv != nil </span><span class="cov8" title="1">{
+                client, ok := authctx.Value(oauth2.HTTPClient).(*http.Client)
+                if !ok </span><span class="cov8" title="1">{
+                        client = srv.httpClient
+                }</span>
+                <span class="cov8" title="1">if logger := srv.debugLogger(); logger != nil </span><span class="cov8" title="1">{
+                        authctx = context.WithValue(authctx, oauth2.HTTPClient, srv.debugHTTPClient(client, logger))
+                }</span> else<span class="cov8" title="1"> if !ok &amp;&amp; client != nil </span><span class="cov8" title="1">{
+                        authctx = context.WithValue(authctx, oauth2.HTTPClient, client)
                 }</span>
         }
         <span class="cov8" title="1">return</span>
@@ -257,10 +259,10 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
                                 if err == nil </span><span class="cov8" title="1">{
                                         srv.debugLog("jawsauth: stored token refreshed session auth", "session_id", sessionID)
                                 }</span> else<span class="cov8" title="1"> {
-                                        srv.debugLog("jawsauth: stored token did not refresh session auth", "session_id", sessionID, "err", err)
+                                        srv.debugErrorLog("jawsauth: stored token did not refresh session auth", err, "session_id", sessionID)
                                 }</span>
                                 <span class="cov8" title="1">if err != nil &amp;&amp; token != nil &amp;&amp; token.RefreshToken != "" &amp;&amp; !errors.Is(err, errAuthTimerStale) </span><span class="cov8" title="1">{
-                                        srv.debugLog("jawsauth: forcing refresh with refresh token", "session_id", sessionID, "err", err)
+                                        srv.debugErrorLog("jawsauth: forcing refresh with refresh token", err, "session_id", sessionID)
                                         tokenSource = srv.oauth2cfg.TokenSource(authctx, &amp;oauth2.Token{
                                                 RefreshToken: token.RefreshToken,
                                         })
@@ -270,14 +272,14 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
                                                 if err == nil </span><span class="cov8" title="1">{
                                                         srv.debugLog("jawsauth: forced refresh updated session auth", "session_id", sessionID)
                                                 }</span> else<span class="cov8" title="1"> {
-                                                        srv.debugLog("jawsauth: forced refresh did not update session auth", "session_id", sessionID, "err", err)
+                                                        srv.debugErrorLog("jawsauth: forced refresh did not update session auth", err, "session_id", sessionID)
                                                 }</span>
                                         } else<span class="cov8" title="1"> {
-                                                srv.debugLog("jawsauth: forced refresh token source failed", "session_id", sessionID, "err", err)
+                                                srv.debugErrorLog("jawsauth: forced refresh token source failed", err, "session_id", sessionID)
                                         }</span>
                                 }
                         } else<span class="cov8" title="1"> {
-                                srv.debugLog("jawsauth: stored token source failed", "session_id", sessionID, "err", err)
+                                srv.debugErrorLog("jawsauth: stored token source failed", err, "session_id", sessionID)
                         }</span>
                 } else<span class="cov8" title="1"> {
                         srv.debugLog("jawsauth: refresh session auth missing token source", "session_id", sessionID)
@@ -369,16 +371,40 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
                 err := srv.refreshSessionAuth(context.Background(), sess, entry.expiry, entry)
                 if err != nil </span><span class="cov8" title="1">{
                         if errors.Is(err, errAuthTimerStale) </span><span class="cov8" title="1">{
-                                srv.debugLog("jawsauth: auth refresh timer became stale", "session_id", sess.ID(), "err", err)
+                                srv.debugErrorLog("jawsauth: auth refresh timer became stale", err, "session_id", sess.ID())
                                 return
                         }</span>
                         <span class="cov8" title="1">current, present = srv.sessionAuthStatus(sess, time.Now)
-                        srv.debugLog("jawsauth: auth refresh timer failed; clearing auth",
+                        if current &amp;&amp; present </span><span class="cov8" title="1">{
+                                retryDelay := max(time.Until(entry.expiry), 0)
+                                retryScheduled := false
+                                srv.mu.Lock()
+                                if srv.authTimers[sess.ID()] == entry </span><span class="cov8" title="1">{
+                                        if entry.timer != nil </span><span class="cov8" title="1">{
+                                                entry.timer.Stop()
+                                        }</span>
+                                        <span class="cov8" title="1">entry.timer = srv.authTimerAfterFunc(retryDelay, func() </span><span class="cov8" title="1">{
+                                                srv.handleSessionAuthTimer(sess, entry)
+                                        }</span>)
+                                        <span class="cov8" title="1">retryScheduled = true</span>
+                                }
+                                <span class="cov8" title="1">srv.mu.Unlock()
+                                if retryScheduled </span><span class="cov8" title="1">{
+                                        srv.debugErrorLog("jawsauth: auth refresh timer failed; keeping current auth", err,
+                                                "session_id", sess.ID(),
+                                                "entry_expiry", authTimerEntryExpiry(entry),
+                                                "session_current", current,
+                                                "session_present", present,
+                                                "retry_delay", retryDelay,
+                                        )
+                                        return
+                                }</span>
+                        }
+                        <span class="cov8" title="1">srv.debugErrorLog("jawsauth: auth refresh timer failed; clearing auth", err,
                                 "session_id", sess.ID(),
                                 "entry_expiry", authTimerEntryExpiry(entry),
                                 "session_current", current,
                                 "session_present", present,
-                                "err", err,
                         )
                         _ = srv.Jaws.Log(err)
                         srv.clearSessionAuth(sess, nil, true, true, entry)</span>
@@ -592,6 +618,298 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 		
 		<pre class="file" id="file2" style="display: none">package jawsauth
 
+import (
+        "bytes"
+        "encoding/json"
+        "errors"
+        "fmt"
+        "io"
+        "net/http"
+        "net/url"
+        "strings"
+
+        "github.com/linkdata/jaws"
+        "golang.org/x/oauth2"
+)
+
+const debugErrorBodyLimit = 2048
+const debugRequestBodyLimit = 4096
+const debugRedactedValue = "[redacted]"
+
+func (srv *Server) debugLog(msg string, args ...any) <span class="cov8" title="1">{
+        if logger := srv.debugLogger(); logger != nil </span><span class="cov8" title="1">{
+                logger.Info(msg, args...)
+        }</span>
+}
+
+func (srv *Server) debugErrorLog(msg string, err error, args ...any) <span class="cov8" title="1">{
+        if logger := srv.debugLogger(); logger != nil </span><span class="cov8" title="1">{
+                logger.Info(msg, append(args, errorDebugAttrs(err)...)...)
+        }</span>
+}
+
+func (srv *Server) debugLogger() (logger jaws.Logger) <span class="cov8" title="1">{
+        if srv != nil &amp;&amp; srv.Jaws != nil &amp;&amp; srv.Jaws.Debug </span><span class="cov8" title="1">{
+                logger = srv.Jaws.Logger
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
+type debugOAuth2Transport struct {
+        logger jaws.Logger
+        next   http.RoundTripper
+}
+
+func (transport debugOAuth2Transport) RoundTrip(req *http.Request) (resp *http.Response, err error) <span class="cov8" title="1">{
+        if transport.logger != nil </span><span class="cov8" title="1">{
+                transport.logger.Info("jawsauth: oauth2 request", oauth2RequestDebugAttrs(req)...)
+        }</span>
+        <span class="cov8" title="1">resp, err = transport.next.RoundTrip(req)
+        return</span>
+}
+
+func (srv *Server) debugHTTPClient(client *http.Client, logger jaws.Logger) (debugClient *http.Client) <span class="cov8" title="1">{
+        debugClient = &amp;http.Client{Transport: http.DefaultTransport}
+        if client != nil </span><span class="cov8" title="1">{
+                clientCopy := *client
+                debugClient = &amp;clientCopy
+        }</span>
+        <span class="cov8" title="1">next := debugClient.Transport
+        if next == nil </span><span class="cov8" title="1">{
+                next = http.DefaultTransport
+        }</span>
+        <span class="cov8" title="1">debugClient.Transport = debugOAuth2Transport{logger: logger, next: next}
+        return</span>
+}
+
+func oauth2RequestDebugAttrs(req *http.Request) (attrs []any) <span class="cov8" title="1">{
+        attrs = []any{"request_nil", req == nil}
+        if req != nil </span><span class="cov8" title="1">{
+                attrs = append(attrs,
+                        "request_method", req.Method,
+                        "request_url", redactDebugURL(req.URL),
+                        "request_headers", redactDebugHeaders(req.Header),
+                )
+                if req.Body != nil </span><span class="cov8" title="1">{
+                        var body []byte
+                        var err error
+                        body, err = io.ReadAll(req.Body)
+                        req.Body = io.NopCloser(bytes.NewReader(body))
+                        attrs = append(attrs, "request_body_read_error", err)
+                        if err == nil </span><span class="cov8" title="1">{
+                                attrs = append(attrs, requestBodyDebugAttrs(req.Header.Get("Content-Type"), body)...)
+                        }</span>
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func redactDebugURL(u *url.URL) (s string) <span class="cov8" title="1">{
+        if u != nil </span><span class="cov8" title="1">{
+                clone := *u
+                clone.User = nil
+                clone.RawQuery = redactDebugQuery(clone.Query()).Encode()
+                s = clone.String()
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
+func redactDebugQuery(values url.Values) (redacted url.Values) <span class="cov8" title="1">{
+        redacted = make(url.Values, len(values))
+        for k, vs := range values </span><span class="cov8" title="1">{
+                redacted[k] = redactDebugValues(k, vs)
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
+func redactDebugHeaders(header http.Header) (redacted map[string][]string) <span class="cov8" title="1">{
+        redacted = make(map[string][]string, len(header))
+        for k, vs := range header </span><span class="cov8" title="1">{
+                redacted[k] = redactDebugValues(k, vs)
+        }</span>
+        <span class="cov8" title="1">return</span>
+}
+
+func redactDebugValues(key string, values []string) (redacted []string) <span class="cov8" title="1">{
+        redacted = make([]string, len(values))
+        for i, value := range values </span><span class="cov8" title="1">{
+                redacted[i] = value
+                if isSensitiveDebugKey(key) &amp;&amp; value != "" </span><span class="cov8" title="1">{
+                        redacted[i] = debugRedactedValue
+                }</span>
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func requestBodyDebugAttrs(contentType string, body []byte) (attrs []any) <span class="cov8" title="1">{
+        attrs = []any{"request_body_len", len(body)}
+        mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+        if len(body) != 0 </span><span class="cov8" title="1">{
+                switch </span>{
+                case mediaType == "application/x-www-form-urlencoded":<span class="cov8" title="1">
+                        values, err := url.ParseQuery(string(body))
+                        if err == nil </span><span class="cov8" title="1">{
+                                attrs = append(attrs, "request_form_data", redactDebugQuery(values))
+                        }</span> else<span class="cov8" title="1"> {
+                                attrs = append(attrs, "request_body_parse_error", err.Error())
+                                attrs = append(attrs, redactDebugBodyText(body)...)
+                        }</span>
+                case mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"):<span class="cov8" title="1">
+                        var value any
+                        err := json.Unmarshal(body, &amp;value)
+                        if err == nil </span><span class="cov8" title="1">{
+                                attrs = append(attrs, "request_json_data", redactDebugJSONValue("", value))
+                        }</span> else<span class="cov8" title="1"> {
+                                attrs = append(attrs, "request_body_parse_error", err.Error())
+                                attrs = append(attrs, redactDebugBodyText(body)...)
+                        }</span>
+                default:<span class="cov8" title="1">
+                        attrs = append(attrs, redactDebugBodyText(body)...)</span>
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func redactDebugBodyText(body []byte) (attrs []any) <span class="cov8" title="1">{
+        text := string(body)
+        if len(text) &gt; debugRequestBodyLimit </span><span class="cov8" title="1">{
+                text = text[:debugRequestBodyLimit]
+                attrs = append(attrs, "request_body_truncated", true)
+        }</span>
+        <span class="cov8" title="1">attrs = append(attrs, "request_body", text)
+        return</span>
+}
+
+func redactDebugJSONValue(key string, value any) (redacted any) <span class="cov8" title="1">{
+        redacted = value
+        if isSensitiveDebugKey(key) </span><span class="cov8" title="1">{
+                redacted = debugRedactedValue
+        }</span> else<span class="cov8" title="1"> {
+                switch v := value.(type) </span>{
+                case map[string]any:<span class="cov8" title="1">
+                        m := make(map[string]any, len(v))
+                        for k, item := range v </span><span class="cov8" title="1">{
+                                m[k] = redactDebugJSONValue(k, item)
+                        }</span>
+                        <span class="cov8" title="1">redacted = m</span>
+                case []any:<span class="cov8" title="1">
+                        sl := make([]any, len(v))
+                        for i, item := range v </span><span class="cov8" title="1">{
+                                sl[i] = redactDebugJSONValue(key, item)
+                        }</span>
+                        <span class="cov8" title="1">redacted = sl</span>
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func isSensitiveDebugKey(key string) (sensitive bool) <span class="cov8" title="1">{
+        key = strings.ToLower(key)
+        for _, marker := range []string{
+                "authorization",
+                "assertion",
+                "code",
+                "cookie",
+                "password",
+                "secret",
+                "token",
+                "verifier",
+        } </span><span class="cov8" title="1">{
+                if strings.Contains(key, marker) </span><span class="cov8" title="1">{
+                        sensitive = true
+                        return
+                }</span>
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func errorDebugAttrs(err error) (attrs []any) <span class="cov8" title="1">{
+        attrs = []any{"err", err}
+        if err != nil </span><span class="cov8" title="1">{
+                var errChain []string
+                var errChainTypes []string
+                appendErrorChainAttrs(&amp;errChain, &amp;errChainTypes, err)
+                attrs = append(attrs,
+                        "err_type", fmt.Sprintf("%T", err),
+                        "err_chain", errChain,
+                        "err_chain_types", errChainTypes,
+                )
+                if classes := errorDebugClasses(err); len(classes) != 0 </span><span class="cov8" title="1">{
+                        attrs = append(attrs, "err_classes", classes)
+                }</span>
+                <span class="cov8" title="1">var callbackErr *OAuth2CallbackError
+                if errors.As(err, &amp;callbackErr) &amp;&amp; callbackErr != nil </span><span class="cov8" title="1">{
+                        attrs = append(attrs,
+                                "oauth2_callback_error", true,
+                                "oauth2_callback_error_code", callbackErr.Code,
+                                "oauth2_callback_error_description", callbackErr.Description,
+                                "oauth2_callback_error_uri", callbackErr.URI,
+                        )
+                }</span>
+                <span class="cov8" title="1">var retrieveErr *oauth2.RetrieveError
+                if errors.As(err, &amp;retrieveErr) &amp;&amp; retrieveErr != nil </span><span class="cov8" title="1">{
+                        attrs = append(attrs,
+                                "oauth2_retrieve_error", true,
+                                "oauth2_retrieve_error_code", retrieveErr.ErrorCode,
+                                "oauth2_retrieve_error_description", retrieveErr.ErrorDescription,
+                                "oauth2_retrieve_error_uri", retrieveErr.ErrorURI,
+                        )
+                        if retrieveErr.Response != nil </span><span class="cov8" title="1">{
+                                attrs = append(attrs,
+                                        "oauth2_response_status", retrieveErr.Response.Status,
+                                        "oauth2_response_status_code", retrieveErr.Response.StatusCode,
+                                )
+                        }</span>
+                        <span class="cov8" title="1">if len(retrieveErr.Body) != 0 </span><span class="cov8" title="1">{
+                                body := string(retrieveErr.Body)
+                                if len(body) &gt; debugErrorBodyLimit </span><span class="cov8" title="1">{
+                                        body = body[:debugErrorBodyLimit]
+                                        attrs = append(attrs, "oauth2_response_body_truncated", true)
+                                }</span>
+                                <span class="cov8" title="1">attrs = append(attrs, "oauth2_response_body", body)</span>
+                        }
+                }
+        }
+        <span class="cov8" title="1">return</span>
+}
+
+func appendErrorChainAttrs(errChain, errChainTypes *[]string, err error) <span class="cov8" title="1">{
+        if err != nil </span><span class="cov8" title="1">{
+                *errChain = append(*errChain, err.Error())
+                *errChainTypes = append(*errChainTypes, fmt.Sprintf("%T", err))
+                appendErrorChainAttrs(errChain, errChainTypes, errors.Unwrap(err))
+        }</span>
+}
+
+func appendErrorDebugClass(classes []string, err, target error, name string) []string <span class="cov8" title="1">{
+        if errors.Is(err, target) </span><span class="cov8" title="1">{
+                classes = append(classes, name)
+        }</span>
+        <span class="cov8" title="1">return classes</span>
+}
+
+func errorDebugClasses(err error) (classes []string) <span class="cov8" title="1">{
+        classes = appendErrorDebugClass(classes, err, ErrOAuth2NotConfigured, "oauth2_not_configured")
+        classes = appendErrorDebugClass(classes, err, ErrOAuth2MissingSession, "oauth2_missing_session")
+        classes = appendErrorDebugClass(classes, err, ErrOAuth2MissingState, "oauth2_missing_state")
+        classes = appendErrorDebugClass(classes, err, ErrOAuth2WrongState, "oauth2_wrong_state")
+        classes = appendErrorDebugClass(classes, err, ErrOAuth2MissingPKCEVerifier, "oauth2_missing_pkce_verifier")
+        classes = appendErrorDebugClass(classes, err, ErrOAuth2Callback, "oauth2_callback")
+        classes = appendErrorDebugClass(classes, err, ErrOIDCDiscovery, "oidc_discovery")
+        classes = appendErrorDebugClass(classes, err, ErrOIDCProviderMetadata, "oidc_provider_metadata")
+        classes = appendErrorDebugClass(classes, err, ErrOIDCMissingIDToken, "oidc_missing_id_token")
+        classes = appendErrorDebugClass(classes, err, ErrOIDCInvalidIDToken, "oidc_invalid_id_token")
+        classes = appendErrorDebugClass(classes, err, ErrOIDCMissingNonce, "oidc_missing_nonce")
+        classes = appendErrorDebugClass(classes, err, ErrOIDCNonceMismatch, "oidc_nonce_mismatch")
+        classes = appendErrorDebugClass(classes, err, errOIDCStaleIDToken, "oidc_stale_id_token")
+        classes = appendErrorDebugClass(classes, err, errOIDCInvalidExpiry, "oidc_invalid_expiry")
+        classes = appendErrorDebugClass(classes, err, errAuthTimerStale, "auth_timer_stale")
+        return
+}</span>
+</pre>
+		
+		<pre class="file" id="file3" style="display: none">package jawsauth
+
 import "net/http"
 
 type default403handler struct{}
@@ -602,7 +920,7 @@ func (default403handler) ServeHTTP(hw http.ResponseWriter, hr *http.Request) <sp
 }</span>
 </pre>
 		
-		<pre class="file" id="file3" style="display: none">package jawsauth
+		<pre class="file" id="file4" style="display: none">package jawsauth
 
 import (
         "errors"
@@ -648,7 +966,7 @@ func (e errConfig) Is(target error) (matches bool) <span class="cov8" title="1">
 }</span>
 </pre>
 		
-		<pre class="file" id="file4" style="display: none">package jawsauth
+		<pre class="file" id="file5" style="display: none">package jawsauth
 
 import (
         "errors"
@@ -711,7 +1029,7 @@ func oauth2CallbackError(statusCode int, hr *http.Request) (nextStatusCode int, 
 }
 </pre>
 		
-		<pre class="file" id="file5" style="display: none">package jawsauth
+		<pre class="file" id="file6" style="display: none">package jawsauth
 
 import "errors"
 
@@ -759,7 +1077,7 @@ func wrapOIDC(kind error, perr *error) (err error) <span class="cov8" title="1">
 }
 </pre>
 		
-		<pre class="file" id="file6" style="display: none">package jawsauth
+		<pre class="file" id="file7" style="display: none">package jawsauth
 
 import "github.com/linkdata/jaws"
 
@@ -809,7 +1127,7 @@ func (a *JawsAuth) IsAdmin() (yes bool) <span class="cov8" title="1">{
 }
 </pre>
 		
-		<pre class="file" id="file7" style="display: none">package jawsauth
+		<pre class="file" id="file8" style="display: none">package jawsauth
 
 import (
         "context"
@@ -1044,13 +1362,8 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                 oauth2Config, _, location := srv.begin(hr)
                 var sessValue any
                 var sessEmail string
-                authctx := hr.Context()
-                if srv.httpClient != nil </span><span class="cov8" title="1">{
-                        if _, ok := authctx.Value(oauth2.HTTPClient).(*http.Client); !ok </span><span class="cov8" title="1">{
-                                authctx = context.WithValue(authctx, oauth2.HTTPClient, srv.httpClient)
-                        }</span>
-                }
-                <span class="cov8" title="1">sess := srv.Jaws.GetSession(hr)
+                authctx := srv.oauth2Context(hr.Context())
+                sess := srv.Jaws.GetSession(hr)
                 if sess != nil </span><span class="cov8" title="1">{
                         sessEmail, _ = sess.Get(srv.SessionEmailKey).(string)
                 }</span>
@@ -1138,7 +1451,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 }
 </pre>
 		
-		<pre class="file" id="file8" style="display: none">package jawsauth
+		<pre class="file" id="file9" style="display: none">package jawsauth
 
 import (
         "context"
@@ -1374,7 +1687,7 @@ func (srv *Server) Handler(name string, dot any) http.Handler <span class="cov8"
 }</span>
 </pre>
 		
-		<pre class="file" id="file9" style="display: none">package jawsauth
+		<pre class="file" id="file10" style="display: none">package jawsauth
 
 import (
         "net/http"
