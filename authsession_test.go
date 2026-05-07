@@ -1,7 +1,6 @@
 package jawsauth
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -409,6 +408,111 @@ func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 	}
 }
 
+func TestRefreshSessionAuthUsesStoredValidToken(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	logger := &testAuthDebugLogger{}
+	jw.Debug = true
+	jw.Logger = logger
+
+	const issuer = "https://issuer.example"
+	expiry := time.Now().Add(time.Hour).Truncate(time.Second)
+	rawIDToken := makeIDToken(t, map[string]any{
+		"iss":            issuer,
+		"aud":            "client",
+		"exp":            expiry.Unix(),
+		"iat":            time.Now().Add(-time.Minute).Unix(),
+		"sub":            "sub-123",
+		"email":          "stored@example.com",
+		"email_verified": true,
+	})
+
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, issuer, factory)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	sess.Set(srv.SessionTokenKey, oauth2.StaticTokenSource(makeOAuth2Token("stored-access", rawIDToken, "")))
+
+	err = srv.refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !logger.hasInfo("jawsauth: stored token refreshed session auth") {
+		t.Fatal("missing stored token refresh log")
+	}
+	claims, ok := sess.Get(srv.SessionKey).(map[string]any)
+	if !ok {
+		t.Fatal("missing claims")
+	}
+	if claims["email"] != "stored@example.com" {
+		t.Fatal(claims["email"])
+	}
+	if email, _ := sess.Get(srv.SessionEmailKey).(string); email != "stored@example.com" {
+		t.Fatal(email)
+	}
+	if verified, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool); !verified {
+		t.Fatal(verified)
+	}
+	if factory.len() != 1 {
+		t.Fatal(factory.len())
+	}
+}
+
+func TestRefreshSessionAuthLogsForcedRefreshTokenSourceFailure(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	logger := &testAuthDebugLogger{}
+	jw.Debug = true
+	jw.Logger = logger
+
+	var mu sync.Mutex
+	var tokenRequests int
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.URL.Path != "/token" {
+			hw.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		tokenRequests++
+		mu.Unlock()
+		hw.WriteHeader(http.StatusInternalServerError)
+		_, _ = hw.Write([]byte(`{"error":"temporarily_unavailable"}`))
+	}))
+	defer provider.Close()
+
+	const issuer = "https://issuer.example"
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, issuer, factory)
+	srv.oauth2cfg.Endpoint.TokenURL = provider.URL + "/token"
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	sess.Set(srv.SessionTokenKey, oauth2.StaticTokenSource(makeOAuth2Token("cached-access", "", "refresh123")))
+
+	err = srv.refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
+	if err == nil {
+		t.Fatal("expected refresh error")
+	}
+
+	if !logger.hasInfo("jawsauth: forced refresh token source failed") {
+		t.Fatal("missing forced refresh failure log")
+	}
+	mu.Lock()
+	gotTokenRequests := tokenRequests
+	mu.Unlock()
+	if gotTokenRequests != 1 {
+		t.Fatal(gotTokenRequests)
+	}
+}
+
 func TestAuthTimerRefreshFailureClearsAuth(t *testing.T) {
 	testCases := []struct {
 		name        string
@@ -741,22 +845,22 @@ func TestRefreshSessionAuthErrors(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 
-	err = (*Server)(nil).refreshSessionAuth(context.Background(), sess, time.Time{}, nil)
+	err = (*Server)(nil).refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
 	if !errors.Is(err, ErrOAuth2NotConfigured) {
 		t.Fatal(err)
 	}
-	err = srv.refreshSessionAuth(context.Background(), nil, time.Time{}, nil)
+	err = srv.refreshSessionAuth(t.Context(), nil, time.Time{}, nil)
 	if !errors.Is(err, ErrOAuth2NotConfigured) {
 		t.Fatal(err)
 	}
-	err = srv.refreshSessionAuth(context.Background(), sess, time.Time{}, nil)
+	err = srv.refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
 	if !errors.Is(err, ErrOIDCMissingIDToken) {
 		t.Fatal(err)
 	}
 	sess.Set(srv.SessionTokenKey, tokenSourceFunc(func() (*oauth2.Token, error) {
 		return nil, errAuthSessionTestToken
 	}))
-	err = srv.refreshSessionAuth(context.Background(), sess, time.Time{}, nil)
+	err = srv.refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
 	if !errors.Is(err, errAuthSessionTestToken) {
 		t.Fatal(err)
 	}
