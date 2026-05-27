@@ -770,7 +770,8 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
         })
 
         <span class="cov8" title="1">httpServer := &amp;http.Server{
-                Handler: mux,
+                Handler:           mux,
+                ReadHeaderTimeout: 5 * time.Second,
         }
 
         go jw.Serve()
@@ -882,8 +883,11 @@ func listenerPort(addr net.Addr) string <span class="cov8" title="1">{
 func waitForHTTPSReady(ctx context.Context, pingURL string) error <span class="cov8" title="1">{
         client := &amp;http.Client{
                 Timeout: 5 * time.Second,
-                Transport: &amp;http.Transport{ //nolint:gosec
-                        TLSClientConfig: &amp;tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true},
+                Transport: &amp;http.Transport{
+                        TLSClientConfig: &amp;tls.Config{
+                                MinVersion:         tls.VersionTLS12,
+                                InsecureSkipVerify: true, // #nosec G402 -- demo readiness probe uses a generated self-signed certificate.
+                        },
                 },
         }
 
@@ -956,7 +960,7 @@ func writeTLSCertDir(host string) (certDir string, err error) <span class="cov8"
         }</span>
 
         <span class="cov8" title="1">certPath := filepath.Join(certDir, webserv.FullchainPem)
-        if err = os.WriteFile(certPath, certPEM, 0o644); err != nil </span><span class="cov0" title="0">{
+        if err = os.WriteFile(certPath, certPEM, 0o600); err != nil </span><span class="cov0" title="0">{
                 return "", fmt.Errorf("write demo cert: %w", err)
         }</span>
         <span class="cov8" title="1">keyPath := filepath.Join(certDir, webserv.PrivkeyPem)
@@ -1109,7 +1113,7 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 
         <span class="cov8" title="1">certPath := filepath.Join(certTempDir, "server.crt")
         keyPath := filepath.Join(certTempDir, "server.key")
-        if err = os.WriteFile(certPath, certPEM, 0o644); err != nil </span><span class="cov0" title="0">{
+        if err = os.WriteFile(certPath, certPEM, 0o600); err != nil </span><span class="cov0" title="0">{
                 cleanupTempDir()
                 return nil, fmt.Errorf("write keycloak cert: %w", err)
         }</span>
@@ -1174,9 +1178,9 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
         }
 
         <span class="cov8" title="1">transport := http.DefaultTransport.(*http.Transport).Clone()
-        transport.TLSClientConfig = &amp;tls.Config{ //nolint:gosec
+        transport.TLSClientConfig = &amp;tls.Config{
                 MinVersion:         tls.VersionTLS12,
-                InsecureSkipVerify: true,
+                InsecureSkipVerify: true, // #nosec G402 -- demo Keycloak uses a generated self-signed certificate.
         }
 
         return &amp;keycloakServer{
