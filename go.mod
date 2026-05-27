@@ -5,9 +5,9 @@ go 1.25.0
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/linkdata/deadlock v0.5.5
-	github.com/linkdata/jaws v0.403.1
-	github.com/linkdata/secureheaders v1.0.0
-	github.com/linkdata/webserv v1.0.2
+	github.com/linkdata/jaws v0.409.3
+	github.com/linkdata/secureheaders v1.1.1
+	github.com/linkdata/webserv v1.1.2
 	github.com/testcontainers/testcontainers-go v0.42.0
 	golang.org/x/oauth2 v0.36.0
 )

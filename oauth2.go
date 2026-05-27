@@ -142,7 +142,7 @@ var SetHeaders = DefaultSetHeaders
 
 // DefaultSetHeaders writes response headers for OAuth endpoint responses.
 func DefaultSetHeaders(hw http.ResponseWriter, ishttps bool) {
-	secureheaders.SetHeaders(secureheaders.DefaultHeaders, hw, ishttps)
+	secureheaders.SetHeaders(secureheaders.DefaultHeaders(), hw, ishttps)
 	hw.Header().Set("Cache-Control", "no-store")
 }
 
