@@ -305,7 +305,8 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 	})
 
 	httpServer := &http.Server{
-		Handler: mux,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	go jw.Serve()
@@ -417,8 +418,11 @@ func listenerPort(addr net.Addr) string {
 func waitForHTTPSReady(ctx context.Context, pingURL string) error {
 	client := &http.Client{
 		Timeout: 5 * time.Second,
-		Transport: &http.Transport{ //nolint:gosec
-			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: true, // #nosec G402 -- demo readiness probe uses a generated self-signed certificate.
+			},
 		},
 	}
 
@@ -491,7 +495,7 @@ func writeTLSCertDir(host string) (certDir string, err error) {
 	}
 
 	certPath := filepath.Join(certDir, webserv.FullchainPem)
-	if err = os.WriteFile(certPath, certPEM, 0o644); err != nil {
+	if err = os.WriteFile(certPath, certPEM, 0o600); err != nil {
 		return "", fmt.Errorf("write demo cert: %w", err)
 	}
 	keyPath := filepath.Join(certDir, webserv.PrivkeyPem)

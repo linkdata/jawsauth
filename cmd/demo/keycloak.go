@@ -69,7 +69,7 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 
 	certPath := filepath.Join(certTempDir, "server.crt")
 	keyPath := filepath.Join(certTempDir, "server.key")
-	if err = os.WriteFile(certPath, certPEM, 0o644); err != nil {
+	if err = os.WriteFile(certPath, certPEM, 0o600); err != nil {
 		cleanupTempDir()
 		return nil, fmt.Errorf("write keycloak cert: %w", err)
 	}
@@ -134,9 +134,9 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{ //nolint:gosec
+	transport.TLSClientConfig = &tls.Config{
 		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, // #nosec G402 -- demo Keycloak uses a generated self-signed certificate.
 	}
 
 	return &keycloakServer{
