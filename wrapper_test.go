@@ -21,7 +21,8 @@ func (h testStatusHandler) ServeHTTP(hw http.ResponseWriter, _ *http.Request) {
 	hw.WriteHeader(h.statusCode)
 }
 
-// Run with -race; this used to report a data race between Set403Handler and ServeHTTP.
+// TestWrapperServeHTTPSet403HandlerConcurrent verifies that Set403Handler and
+// ServeHTTP can run concurrently under the race detector.
 func TestWrapperServeHTTPSet403HandlerConcurrent(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {

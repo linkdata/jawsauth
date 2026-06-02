@@ -123,10 +123,9 @@ func Test_beginReferrerHandling(t *testing.T) {
 	}
 }
 
-// Test_beginPathBoundary verifies that a handled path is only stripped on an
-// exact match, not whenever it happens to be a string suffix of the referrer.
-// Regression for non-deterministic over-stripping when registered paths share
-// a suffix with unrelated user pages.
+// Test_beginPathBoundary verifies that handled paths only rewrite exact
+// registered endpoints. Referrers that merely share a suffix remain valid
+// redirect targets.
 func Test_beginPathBoundary(t *testing.T) {
 	srv := &Server{HandledPaths: map[string]struct{}{"/login": {}, "/admin/login": {}}}
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
@@ -466,10 +465,8 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 }
 
 // Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel verifies that
-// the TokenSource stored in the session does not capture the request context.
-// Regression: previously the TokenSource was created with the request context,
-// so the first scheduled refresh after the request finished would fail with
-// "context canceled" and force an unexpected logout.
+// the TokenSource stored in the session uses a request-independent context.
+// Scheduled refreshes can run after the callback request finishes.
 func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {

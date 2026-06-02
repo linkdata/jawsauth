@@ -417,8 +417,12 @@ func waitForKeycloak(ctx context.Context, container testcontainers.Container) er
 
 	for range 20 { // Retry for ~60 seconds (20 attempts, 3 seconds each)
 		resp, err := http.Get(url)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			return nil
+		if err == nil {
+			statusCode := resp.StatusCode
+			_ = resp.Body.Close()
+			if statusCode == http.StatusOK {
+				return nil
+			}
 		}
 		time.Sleep(3 * time.Second)
 	}
