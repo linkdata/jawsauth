@@ -102,7 +102,7 @@ func Test_beginSanitizesReferrer(t *testing.T) {
 	srv := &Server{HandledPaths: make(map[string]struct{})}
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	hr.Header.Set("Referer", "https://evil.com/wrong")
-	_, _, location := srv.begin(hr)
+	_, location := srv.begin(hr)
 	if location != "/" {
 		t.Fatal(location)
 	}
@@ -112,12 +112,12 @@ func Test_beginReferrerHandling(t *testing.T) {
 	srv := &Server{HandledPaths: map[string]struct{}{"/oauth2/login": {}}}
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	hr.Header.Set("Referer", "https://example.com/oauth2/login")
-	_, _, location := srv.begin(hr)
+	_, location := srv.begin(hr)
 	if location != "/" {
 		t.Fatal(location)
 	}
 	hr.Header.Set("Referer", "https://example.com/app/home")
-	_, _, location = srv.begin(hr)
+	_, location = srv.begin(hr)
 	if location != "/app/home" {
 		t.Fatal(location)
 	}
@@ -132,7 +132,7 @@ func Test_beginPathBoundary(t *testing.T) {
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	hr.Header.Set("Referer", "https://example.com/admin/login")
 	for range 50 {
-		_, _, location := srv.begin(hr)
+		_, location := srv.begin(hr)
 		if location != "/" {
 			t.Fatal(location)
 		}
@@ -140,7 +140,7 @@ func Test_beginPathBoundary(t *testing.T) {
 
 	srv = &Server{HandledPaths: map[string]struct{}{"/login": {}}}
 	hr.Header.Set("Referer", "https://example.com/admin/login")
-	_, _, location := srv.begin(hr)
+	_, location := srv.begin(hr)
 	if location != "/admin/login" {
 		t.Fatal(location)
 	}
@@ -633,11 +633,17 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 	srv.HandleAuthResponse(rec, req)
 
 	resp := rec.Result()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != http.StatusBadRequest {
-		resp.Body.Close()
 		t.Fatal(resp.Status)
 	}
-	resp.Body.Close()
+	if !strings.Contains(string(body), ErrOAuth2WrongState.Error()) {
+		t.Fatal(string(body))
+	}
 	if got := sess.Get(srv.SessionKey); !reflect.DeepEqual(got, claims) {
 		t.Fatal(got)
 	}
@@ -1138,6 +1144,11 @@ func TestServerExtractEmail(t *testing.T) {
 			want:     "altuser@example.com",
 		},
 		{
+			name:     "publicEmailFallback",
+			userinfo: map[string]any{"email": 123, "mail": nil, "public_email": "Pub@Example.com"},
+			want:     "pub@example.com",
+		},
+		{
 			name:       "missingEmailInformation",
 			userinfo:   map[string]any{"email": 123, "mail": nil},
 			expectNil:  true,
@@ -1226,4 +1237,186 @@ func (h *recordingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *recordingHandler) WithGroup(string) slog.Handler {
 	return h
+}
+
+func Test_handleAuthResponseMissingState(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := &Server{
+		Jaws:         jw,
+		HandledPaths: map[string]struct{}{},
+		oauth2cfg: &oauth2.Config{
+			ClientID:    "client",
+			Endpoint:    oauth2.Endpoint{TokenURL: "https://provider.example/token"},
+			RedirectURL: "https://example.com/oauth2/callback",
+		},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=anything&code=x", nil)
+	jw.NewSession(rec, req)
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatal(resp.Status)
+	}
+	if !strings.Contains(string(body), ErrOAuth2MissingState.Error()) {
+		t.Fatal(string(body))
+	}
+}
+
+func Test_handleAuthResponseMissingNonce(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	const issuer = "https://issuer.example"
+	idToken := makeIDToken(t, map[string]any{
+		"iss":   issuer,
+		"aud":   "client",
+		"exp":   time.Now().Add(10 * time.Minute).Unix(),
+		"iat":   time.Now().Add(-time.Minute).Unix(),
+		"sub":   "sub-123",
+		"email": "user@example.com",
+	})
+
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.URL.Path == "/token" {
+			hw.Header().Set("Content-Type", "application/json")
+			_, _ = hw.Write([]byte(`{"access_token":"token123","token_type":"Bearer","expires_in":3600,"id_token":"` + idToken + `"}`))
+			return
+		}
+		hw.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+
+	srv := &Server{
+		Jaws:                    jw,
+		SessionKey:              "oauth2userinfo",
+		SessionTokenKey:         "oauth2token",
+		SessionEmailKey:         "email",
+		SessionEmailVerifiedKey: "email_verified",
+		oauth2cfg: &oauth2.Config{
+			ClientID: "client",
+			Endpoint: oauth2.Endpoint{
+				TokenURL: provider.URL + "/token",
+			},
+			RedirectURL: "http://example.com/oauth2/callback",
+		},
+		idTokenVerifier: oidc.NewVerifier(issuer, passthroughKeySet{}, &oidc.Config{ClientID: "client"}),
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
+	sess := jw.NewSession(rec, req)
+	sess.Set(oauth2StateKey, "state123")
+	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+	// deliberately leave oauth2NonceKey unset to exercise the missing-nonce branch
+
+	srv.HandleAuthResponse(rec, req)
+
+	resp := rec.Result()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatal(resp.Status)
+	}
+	if !strings.Contains(string(body), ErrOIDCMissingNonce.Error()) {
+		t.Fatal(string(body))
+	}
+}
+
+func Test_handlersRejectNonGet(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	newServer := func() *Server {
+		return &Server{
+			Jaws:         jw,
+			HandledPaths: map[string]struct{}{},
+			oauth2cfg: &oauth2.Config{
+				ClientID:    "client",
+				Endpoint:    oauth2.Endpoint{AuthURL: "https://provider.example/auth", TokenURL: "https://provider.example/token"},
+				RedirectURL: "https://example.com/oauth2/callback",
+			},
+		}
+	}
+
+	handlers := []struct {
+		name    string
+		handler func(*Server) http.HandlerFunc
+	}{
+		{"HandleLogin", func(s *Server) http.HandlerFunc { return s.HandleLogin }},
+		{"HandleLogout", func(s *Server) http.HandlerFunc { return s.HandleLogout }},
+		{"HandleAuthResponse", func(s *Server) http.HandlerFunc { return s.HandleAuthResponse }},
+	}
+
+	for _, h := range handlers {
+		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodHead} {
+			t.Run(h.name+"_"+method, func(t *testing.T) {
+				srv := newServer()
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(method, "http://example.com/oauth2/callback", nil)
+				sess := jw.NewSession(rec, req)
+				sess.Set(oauth2StateKey, "state123")
+				sess.Set(oauth2PKCEVerifierKey, "verifier123")
+				sess.Set(oauth2NonceKey, "nonce123")
+
+				h.handler(srv)(rec, req)
+
+				resp := rec.Result()
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusMethodNotAllowed {
+					t.Fatal(resp.Status)
+				}
+				if loc := resp.Header.Get("Location"); loc != "" {
+					t.Fatalf("unexpected Location header: %q", loc)
+				}
+				if got, _ := sess.Get(oauth2StateKey).(string); got != "state123" {
+					t.Fatal(got)
+				}
+				if got, _ := sess.Get(oauth2PKCEVerifierKey).(string); got != "verifier123" {
+					t.Fatal(got)
+				}
+				if got, _ := sess.Get(oauth2NonceKey).(string); got != "nonce123" {
+					t.Fatal(got)
+				}
+			})
+		}
+	}
+
+	srv := newServer()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/oauth2/callback", nil)
+	jw.NewSession(rec, req)
+	srv.HandleAuthResponse(rec, req)
+	resp := rec.Result()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatal(resp.Status)
+	}
+	if !strings.Contains(string(body), ErrOAuth2Callback.Error()) {
+		t.Fatal(string(body))
+	}
 }
