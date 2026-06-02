@@ -277,14 +277,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 					}
 				}
 			}
-			if authServer.LogoutEvent != nil {
-				authServer.LogoutEvent(sess, hr)
-			}
-			sess.Set(authServer.SessionKey, nil)
-			sess.Set(authServer.SessionTokenKey, nil)
-			sess.Set(authServer.SessionEmailKey, nil)
-			sess.Set(authServer.SessionEmailVerifiedKey, nil)
-			jw.Dirty(sess)
+			authServer.Logout(sess, hr)
 		}
 
 		target := appURL + "/logged-out"
