@@ -1,5 +1,7 @@
 package jawsauth
 
+//gosec:disable G117
+
 import (
 	"context"
 	"errors"
@@ -64,9 +66,8 @@ type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err
 // Create one with New or NewDebug. Its methods are safe for concurrent use; the
 // exported configuration fields and callbacks should be set before serving requests.
 type Server struct {
-	Jaws *jaws.Jaws
-	//gosec:disable G117
-	SessionKey              string                  // default is "oidc_claims", value will be of type map[string]any // #nosec G117
+	Jaws                    *jaws.Jaws
+	SessionKey              string                  // default is "oidc_claims", value will be of type map[string]any
 	SessionTokenKey         string                  // default is "oauth2_tokensource", value will be of type oauth2.TokenSource
 	SessionEmailKey         string                  // default is "email", value will be of type string
 	SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
