@@ -25,6 +25,9 @@ jobs:
       - name: Generate
         run: go generate ./...
 
+      - name: Test
+        run: go test -race ./...
+
       - name: Run Gosec Security Scanner
         uses: securego/gosec@v2.23.0
         with:
@@ -53,7 +56,7 @@ jobs:
         run: go build -v ./...
 
       - name: Test
-        run: go test -tags debug -bench=. -coverprofile=coverage.out ./...
+        run: go test -tags debug -bench=. -coverprofile=coverage.out .
 
       - name: Calculate code coverage
         id: coverage
