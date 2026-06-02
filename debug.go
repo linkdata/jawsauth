@@ -277,6 +277,7 @@ func errorDebugClasses(err error) (classes []string) {
 	classes = appendErrorDebugClass(classes, err, ErrOAuth2WrongState, "oauth2_wrong_state")
 	classes = appendErrorDebugClass(classes, err, ErrOAuth2MissingPKCEVerifier, "oauth2_missing_pkce_verifier")
 	classes = appendErrorDebugClass(classes, err, ErrOAuth2Callback, "oauth2_callback")
+	classes = appendErrorDebugClass(classes, err, ErrUserInfoStatus, "userinfo_status")
 	classes = appendErrorDebugClass(classes, err, ErrOIDCDiscovery, "oidc_discovery")
 	classes = appendErrorDebugClass(classes, err, ErrOIDCProviderMetadata, "oidc_provider_metadata")
 	classes = appendErrorDebugClass(classes, err, ErrOIDCMissingIDToken, "oidc_missing_id_token")
