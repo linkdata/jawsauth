@@ -33,6 +33,7 @@ jobs:
         with:
           name: coverage
           path: coverage.out
+          overwrite: true
 
       - name: Run Gosec Security Scanner
         uses: securego/gosec@v2.23.0
