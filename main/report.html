@@ -57,7 +57,7 @@
 				
 				<option value="file0">github.com/linkdata/jawsauth/authsession.go (100.0%)</option>
 				
-				<option value="file1">github.com/linkdata/jawsauth/cmd/demo/demo.go (73.8%)</option>
+				<option value="file1">github.com/linkdata/jawsauth/cmd/demo/demo.go (73.6%)</option>
 				
 				<option value="file2">github.com/linkdata/jawsauth/cmd/demo/keycloak.go (66.8%)</option>
 				
@@ -432,6 +432,18 @@ func clearSessionOAuthFlow(sess *jaws.Session) <span class="cov8" title="1">{
         sess.Set(oauth2ReferrerKey, nil)
 }</span>
 
+// Logout clears all authentication state for the session and returns true if anything
+// was cleared.
+//
+// It stops the auth-refresh timer, clears the OIDC claims, token source, email, expiry
+// and any in-flight OAuth flow keys, calls LogoutEvent (if set), and marks the session
+// dirty. It performs no HTTP redirect, so the caller can build its own post-logout
+// response (for example an RP-initiated end-session redirect). It is safe to call with
+// a nil receiver or nil session.
+func (srv *Server) Logout(sess *jaws.Session, hr *http.Request) (cleared bool) <span class="cov8" title="1">{
+        return srv.clearSessionAuth(sess, hr, true, false, nil)
+}</span>
+
 func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, callLogout, reload bool, entry *authTimerState) (cleared bool) <span class="cov8" title="1">{
         if srv != nil &amp;&amp; sess != nil </span><span class="cov8" title="1">{
                 if srv.stopSessionAuthTimer(sess, entry) </span><span class="cov8" title="1">{
@@ -742,14 +754,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
                                         }</span>
                                 }
                         }
-                        <span class="cov8" title="1">if authServer.LogoutEvent != nil </span><span class="cov0" title="0">{
-                                authServer.LogoutEvent(sess, hr)
-                        }</span>
-                        <span class="cov8" title="1">sess.Set(authServer.SessionKey, nil)
-                        sess.Set(authServer.SessionTokenKey, nil)
-                        sess.Set(authServer.SessionEmailKey, nil)
-                        sess.Set(authServer.SessionEmailVerifiedKey, nil)
-                        jw.Dirty(sess)</span>
+                        <span class="cov8" title="1">authServer.Logout(sess, hr)</span>
                 }
 
                 <span class="cov8" title="1">target := appURL + "/logged-out"
@@ -1743,6 +1748,11 @@ import (
         "golang.org/x/oauth2"
 )
 
+// Config holds the OIDC/OAuth2 settings used by New and NewDebug to construct a Server.
+//
+// RedirectURL, Issuer and ClientID are required; AuthURL, TokenURL and UserInfoURL
+// override values otherwise obtained via OIDC discovery, and the remaining fields
+// are optional.
 type Config struct {
         RedirectURL string // required. e.g. "https://application.example.com/oauth2/callback"
         Issuer      string // required. e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
@@ -1751,7 +1761,9 @@ type Config struct {
         UserInfoURL string // optional override for discovered userinfo_endpoint
         // AllowInsecureIssuer permits "http://" Issuer URLs and should only be used for tests/dev.
         AllowInsecureIssuer bool
-        // HTTPClient is used for OIDC discovery at startup.
+        // HTTPClient is used for OIDC discovery at startup and, unless a per-request
+        // oauth2.HTTPClient is supplied via the request context, as the default client
+        // for token exchange/refresh and UserInfo requests.
         HTTPClient *http.Client
         Scopes     []string // optional additional scopes, "openid" and "email" are always ensured
         ClientID   string
@@ -2168,6 +2180,7 @@ func errorDebugClasses(err error) (classes []string) <span class="cov8" title="1
         classes = appendErrorDebugClass(classes, err, ErrOAuth2WrongState, "oauth2_wrong_state")
         classes = appendErrorDebugClass(classes, err, ErrOAuth2MissingPKCEVerifier, "oauth2_missing_pkce_verifier")
         classes = appendErrorDebugClass(classes, err, ErrOAuth2Callback, "oauth2_callback")
+        classes = appendErrorDebugClass(classes, err, ErrUserInfoStatus, "userinfo_status")
         classes = appendErrorDebugClass(classes, err, ErrOIDCDiscovery, "oidc_discovery")
         classes = appendErrorDebugClass(classes, err, ErrOIDCProviderMetadata, "oidc_provider_metadata")
         classes = appendErrorDebugClass(classes, err, ErrOIDCMissingIDToken, "oidc_missing_id_token")
@@ -2472,9 +2485,8 @@ func sanitizeRedirectTarget(requestHost, location string) (sanitized string) <sp
         <span class="cov8" title="1">return</span>
 }
 
-func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfourl, location string) <span class="cov8" title="1">{
+func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location string) <span class="cov8" title="1">{
         oauth2cfg = srv.oauth2cfg
-        userinfourl = srv.userinfoUrl
         if location = strings.TrimSpace(hr.Referer()); location == "" </span><span class="cov8" title="1">{
                 location = hr.RequestURI
         }</span>
@@ -2485,10 +2497,15 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
         <span class="cov8" title="1">return</span>
 }
 
+// HandleLogin begins the OIDC login flow.
+//
+// For GET requests it generates and stores the state, nonce and PKCE verifier in the
+// session, then responds with a 302 redirect to the provider's authorization URL.
+// Non-GET requests receive 405.
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span class="cov8" title="1">{
         statusCode := http.StatusMethodNotAllowed
         if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
-                oauth2cfg, _, location := srv.begin(hr)
+                oauth2cfg, location := srv.begin(hr)
                 if oauth2cfg != nil </span><span class="cov8" title="1">{
                         sess := srv.Jaws.GetSession(hr)
                         if sess == nil </span><span class="cov8" title="1">{
@@ -2508,21 +2525,25 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) <span c
                                 location = oauth2cfg.AuthCodeURL(state, authOptions...)
                         }</span>
                 }
-                <span class="cov8" title="1">hw.Header().Add("Location", location)
+                <span class="cov8" title="1">hw.Header().Set("Location", location)
                 statusCode = http.StatusFound</span>
         }
         <span class="cov8" title="1">SetHeaders(hw, srv.ishttps)
         hw.WriteHeader(statusCode)</span>
 }
 
+// HandleLogout clears the session's stored authentication and redirects.
+//
+// For GET requests it clears the auth (firing LogoutEvent if set) and responds with a
+// 302 redirect back to the sanitized referrer (or "/"). Non-GET requests receive 405.
 func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) <span class="cov8" title="1">{
         statusCode := http.StatusMethodNotAllowed
         if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
-                _, _, location := srv.begin(hr)
+                _, location := srv.begin(hr)
                 if sess := srv.Jaws.GetSession(hr); sess != nil </span><span class="cov8" title="1">{
                         srv.clearSessionAuth(sess, hr, true, false, nil)
                 }</span>
-                <span class="cov8" title="1">hw.Header().Add("Location", location)
+                <span class="cov8" title="1">hw.Header().Set("Location", location)
                 statusCode = http.StatusFound</span>
         }
         <span class="cov8" title="1">SetHeaders(hw, srv.ishttps)
@@ -2539,7 +2560,10 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) <span class=
         <span class="cov8" title="1">_, _ = w.Write(body)</span>
 }
 
-// SetHeaders is called to write HTTP headers for all OAuth endpoint responses
+// SetHeaders writes the HTTP response headers for all OAuth endpoint responses.
+//
+// It defaults to DefaultSetHeaders and may be reassigned at startup to customize
+// headers; it must not be reassigned concurrently with serving requests.
 var SetHeaders = DefaultSetHeaders
 
 // DefaultSetHeaders writes response headers for OAuth endpoint responses.
@@ -2554,13 +2578,23 @@ func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error
         writeBody(hw, statusCode, err, body)
 }</span>
 
+// ErrOAuth2NotConfigured means OAuth2/OIDC is not configured on the Server.
 var ErrOAuth2NotConfigured = errors.New("oauth2 not configured")
+
+// ErrOAuth2MissingSession means no jaws session was available to carry the OAuth2 flow state.
 var ErrOAuth2MissingSession = errors.New("oauth2 missing session")
+
+// ErrOAuth2MissingState means the callback session did not contain the expected state value.
 var ErrOAuth2MissingState = errors.New("oauth2 missing state")
+
+// ErrOAuth2WrongState means the callback state value did not match the stored session state.
 var ErrOAuth2WrongState = errors.New("oauth2 wrong state")
 
 // ErrOAuth2MissingPKCEVerifier means the callback session did not contain the required PKCE verifier.
 var ErrOAuth2MissingPKCEVerifier = errors.New("oauth2 missing pkce verifier")
+
+// ErrUserInfoStatus means the UserInfo endpoint returned a non-200 HTTP status.
+var ErrUserInfoStatus = errors.New("userinfo status")
 
 func randomHexString() string <span class="cov8" title="1">{
         b := [32]byte{}
@@ -2619,7 +2653,7 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
                                 if resp.StatusCode == http.StatusOK </span><span class="cov8" title="1">{
                                         err = json.Unmarshal(body, &amp;userinfo)
                                 }</span> else<span class="cov8" title="1"> {
-                                        err = fmt.Errorf("userinfo status %s", resp.Status)
+                                        err = fmt.Errorf("%w %s", ErrUserInfoStatus, resp.Status)
                                 }</span>
                         }
                 }
@@ -2627,12 +2661,18 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
         <span class="cov8" title="1">return</span>
 }
 
+// HandleAuthResponse handles the OIDC redirect/callback endpoint.
+//
+// For GET requests it validates the state, exchanges the authorization code using the
+// stored PKCE verifier, verifies the id_token and its nonce, stores the verified claims
+// in the session, and invokes LoginEvent on success or LoginFailed on failure. Non-GET
+// requests receive 405.
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) <span class="cov8" title="1">{
         statusCode := http.StatusMethodNotAllowed
         err := ErrOAuth2Callback
 
         if hr.Method == http.MethodGet </span><span class="cov8" title="1">{
-                oauth2Config, _, location := srv.begin(hr)
+                oauth2Config, location := srv.begin(hr)
                 var sessValue any
                 var sessEmail string
                 authctx := srv.oauth2Context(hr.Context())
@@ -2690,7 +2730,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
                                                                                                                                         location = sanitizeRedirectTarget(hr.Host, s)
                                                                                                                                 }</span>
                                                                                                                                 <span class="cov8" title="1">sess.Set(oauth2ReferrerKey, nil)
-                                                                                                                                hw.Header().Add("Location", location)
+                                                                                                                                hw.Header().Set("Location", location)
                                                                                                                                 statusCode = http.StatusFound</span>
                                                                                                                         }
                                                                                                                 }
@@ -2767,11 +2807,28 @@ func callbackPathFromURL(u *url.URL) (callbackPath string) <span class="cov8" ti
         <span class="cov8" title="1">return</span>
 }
 
+// HandleFunc registers handler to serve requests for the given URI path.
+//
+// It matches the shape of http.ServeMux.Handle and is supplied to New and NewDebug
+// so the login, logout and callback endpoints can be wired into the caller's router.
 type HandleFunc func(uri string, handler http.Handler)
 
+// EventFunc is called for login and logout lifecycle events.
+//
+// For a LogoutEvent triggered by an auth-refresh timer rather than an HTTP request,
+// hr may be nil.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
+
+// FailedFunc is called when a login attempt fails.
+//
+// It returns true if it wrote the HTTP response itself, in which case jawsauth writes
+// nothing further.
 type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
+// Server provides OIDC-verified authentication for JaWS sessions.
+//
+// Create one with New or NewDebug. Its methods are safe for concurrent use; the
+// exported configuration fields and callbacks should be set before serving requests.
 type Server struct {
         Jaws *jaws.Jaws
         //gosec:disable G117
@@ -2796,6 +2853,16 @@ type Server struct {
         authTimerAfterFunc      authTimerAfterFunc
 }
 
+// NewDebug behaves like New but can override the scheme and host of cfg.RedirectURL.
+//
+// overrideUrl supplies the replacement scheme and host (an empty overrideUrl disables
+// the override), which is useful when serving behind a different public address during
+// development.
+//
+// A nil jw returns ErrServerNilJaws and a nil Server. Otherwise a non-nil Server is
+// always returned. OIDC is configured, and the login, logout and callback handlers
+// registered via handleFn, only when cfg, handleFn and cfg.RedirectURL are all provided;
+// any error from OIDC discovery is returned alongside the not-yet-Valid Server.
 func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl string) (srv *Server, err error) <span class="cov8" title="1">{
         if jw == nil </span><span class="cov8" title="1">{
                 err = ErrServerNilJaws
@@ -2831,6 +2898,11 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
         <span class="cov8" title="1">return</span>
 }
 
+// New creates a Server providing OIDC-verified authentication for JaWS sessions.
+//
+// It configures the Server from cfg and registers the login, logout and OAuth2
+// callback endpoints via handleFn. A nil jw returns ErrServerNilJaws. Use Valid to
+// test whether OIDC authentication was successfully configured.
 func New(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc) (srv *Server, err error) <span class="cov8" title="1">{
         return NewDebug(jw, cfg, handleFn, "")
 }</span>
@@ -2846,7 +2918,7 @@ func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) <sp
         }</span>
 }
 
-// IsAdmin returns true if email belongs to an admin or if the list of admins is empty or the server is not valid.
+// IsAdmin returns true if email belongs to an admin, if the list of admins is empty, or if srv is nil.
 func (srv *Server) IsAdmin(email string) (yes bool) <span class="cov8" title="1">{
         yes = true
         if srv != nil </span><span class="cov8" title="1">{
@@ -2889,6 +2961,10 @@ func (srv *Server) GetAdmins() (emails []string) <span class="cov8" title="1">{
         <span class="cov8" title="1">return</span>
 }
 
+// Set403Handler sets the handler used to serve 403 Forbidden responses to
+// authenticated non-admin users.
+//
+// A nil h restores the default handler. It is safe for concurrent use.
 func (srv *Server) Set403Handler(h http.Handler) <span class="cov8" title="1">{
         if h == nil </span><span class="cov8" title="1">{
                 h = default403handler{}
@@ -2915,10 +2991,13 @@ func (srv *Server) Valid() bool <span class="cov8" title="1">{
         return srv != nil &amp;&amp; srv.oauth2cfg != nil &amp;&amp; srv.idTokenVerifier != nil
 }</span>
 
-// Wrap returns a http.Handler that requires an authenticated user before invoking h.
-// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
-// optional fallback values from UserInfo.
-// If the Server is not Valid, returns h.
+// wrap returns a http.Handler that requires an authenticated user before invoking h.
+//
+// When admin is true the user must additionally be an administrator (see SetAdmins),
+// otherwise the 403 handler is served. Unauthenticated requests are redirected into the
+// OIDC login flow (HandleLogin), which verifies the id_token and stores the claims in
+// srv.SessionKey (with optional UserInfo fallback) before the user returns. If the
+// Server is not Valid, returns h.
 func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) <span class="cov8" title="1">{
         rh = h
         if srv.Valid() </span><span class="cov8" title="1">{
@@ -2927,34 +3006,43 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) <span clas
         <span class="cov8" title="1">return</span>
 }
 
-// WrapAdmin returns a http.Handler that requires an authenticated user
-// having an email set using SetAdmins() before invoking h.
-// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
-// optional fallback values from UserInfo.
-// If the Server is not Valid, returns h.
+// WrapAdmin returns a http.Handler that requires an authenticated administrator
+// before invoking h.
+//
+// Unauthenticated requests are redirected into the OIDC login flow (HandleLogin);
+// authenticated users whose email is not an admin (see SetAdmins and IsAdmin) are
+// served the 403 handler instead of h. If the Server is not Valid, returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) <span class="cov8" title="1">{
         return srv.wrap(h, true)
 }</span>
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
-// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
-// optional fallback values from UserInfo.
-// If the Server is not Valid, returns h.
+//
+// Unauthenticated requests are redirected into the OIDC login flow (HandleLogin), which
+// verifies the id_token and stores the claims in srv.SessionKey (with optional UserInfo
+// fallback) before the user returns. If the Server is not Valid, returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) <span class="cov8" title="1">{
         return srv.wrap(h, false)
 }</span>
 
-// HandlerAdmin returns a http.Handler using a jaws.Template that requires an authenticated user
-// having an email set using SetAdmins() before invoking h.
-// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
-// optional fallback values from UserInfo.
+// HandlerAdmin returns a http.Handler that renders the named jaws.Template with dot
+// and requires an authenticated administrator.
+//
+// Unauthenticated requests are redirected into the OIDC login flow (HandleLogin);
+// authenticated non-admins (see SetAdmins and IsAdmin) are served the 403 handler.
+// If the Server is not Valid, the template handler is returned without the
+// authentication requirement.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler <span class="cov8" title="1">{
         return srv.wrap(ui.Handler(srv.Jaws, name, dot), true)
 }</span>
 
-// Handler returns a http.Handler using a jaws.Template that requires an authenticated user.
-// Sets the jaws Session value srv.SessionKey to verified id_token claims, with
-// optional fallback values from UserInfo.
+// Handler returns a http.Handler that renders the named jaws.Template with dot
+// and requires an authenticated user.
+//
+// Unauthenticated requests are redirected into the OIDC login flow (HandleLogin),
+// which verifies the id_token and stores the claims in srv.SessionKey (with optional
+// UserInfo fallback) before the user returns. If the Server is not Valid, the template
+// handler is returned without the authentication requirement.
 func (srv *Server) Handler(name string, dot any) http.Handler <span class="cov8" title="1">{
         return srv.wrap(ui.Handler(srv.Jaws, name, dot), false)
 }</span>
