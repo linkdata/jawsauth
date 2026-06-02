@@ -26,7 +26,13 @@ jobs:
         run: go generate ./...
 
       - name: Test
-        run: go test -race ./...
+        run: go test -tags debug -bench=. -coverprofile=coverage.out ./...
+
+      - name: Upload code coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
 
       - name: Run Gosec Security Scanner
         uses: securego/gosec@v2.23.0
@@ -38,6 +44,7 @@ jobs:
         continue-on-error: true
 
   build:
+    needs: audit
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -55,13 +62,15 @@ jobs:
       - name: Build
         run: go build -v ./...
 
-      - name: Test
-        run: go test -tags debug -bench=. -coverprofile=coverage.out .
+      - name: Download code coverage
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage
 
       - name: Calculate code coverage
         id: coverage
         run: |
-          echo "COVERAGE=$(go tool cover -func=coverage.out | tail -n 1 | tr -s '\t' | cut -f 3)" >> $GITHUB_OUTPUT
+          echo "COVERAGE=$(go tool cover -func=coverage.out | tail -n 1 | tr -s '\t' | cut -f 3)" >> "$GITHUB_OUTPUT"
           go tool cover -html=coverage.out -o=coveragereport.html.out
 
       - name: Publish code coverage badge (and optional report)
