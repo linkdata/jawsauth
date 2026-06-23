@@ -266,13 +266,13 @@ func TestOAuth2ContextUsesServerHTTPClient(t *testing.T) {
 	client := &http.Client{}
 	srv := &Server{httpClient: client}
 
-	ctx := srv.oauth2Context(context.Background())
+	ctx := srv.oauth2Context(t.Context())
 	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got != client {
 		t.Fatal(got)
 	}
 
 	otherClient := &http.Client{}
-	base := context.WithValue(context.Background(), oauth2.HTTPClient, otherClient)
+	base := context.WithValue(t.Context(), oauth2.HTTPClient, otherClient)
 	ctx = srv.oauth2Context(base)
 	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got != otherClient {
 		t.Fatal(got)

@@ -15,7 +15,7 @@ import (
 )
 
 func TestKeycloakFlow(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Start Keycloak container
 	keycloakContainer, err := startKeycloakContainer(t, ctx)

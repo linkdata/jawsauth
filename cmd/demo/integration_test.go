@@ -39,7 +39,7 @@ func TestIntegrationLoginWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(t.Context()), 20*time.Second)
 		defer shutdownCancel()
 		if closeErr := demo.close(shutdownCtx); closeErr != nil {
 			t.Errorf("shutdown demo: %v", closeErr)

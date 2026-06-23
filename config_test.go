@@ -1,7 +1,6 @@
 package jawsauth
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -186,7 +185,7 @@ func TestConfig_buildContextUserInfoSource(t *testing.T) {
 		ClientSecret:        "the-client-secret",
 	}
 
-	_, userinfo, _, err := cfg.buildContext(context.Background(), "")
+	_, userinfo, _, err := cfg.buildContext(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +194,7 @@ func TestConfig_buildContextUserInfoSource(t *testing.T) {
 	}
 
 	cfg.UserInfoURL = "https://override.example.com/userinfo"
-	_, userinfo, _, err = cfg.buildContext(context.Background(), "")
+	_, userinfo, _, err = cfg.buildContext(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
