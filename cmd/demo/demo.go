@@ -190,10 +190,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 
 	appURL := "https://" + net.JoinHostPort(publicHost, listenerPort(listener.Addr()))
 
-	password, err := randomPassword(18)
-	if err != nil {
-		return nil, fmt.Errorf("generate demo password: %w", err)
-	}
+	password := randomPassword(18)
 
 	keycloak, err := startKeycloakServer(ctx, opts.KeycloakImage, password)
 	if err != nil {
@@ -267,42 +264,7 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 		hw.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = hw.Write([]byte(`<!doctype html><html lang="en"><body><h1>Signed out</h1><p><a href="/">Sign in again</a></p></body></html>`))
 	})
-	mux.HandleFunc(http.MethodGet+" /logout", func(hw http.ResponseWriter, hr *http.Request) {
-		var idTokenHint string
-		if sess := jw.GetSession(hr); sess != nil {
-			if tokenSource, ok := sess.Get(authServer.SessionTokenKey).(oauth2.TokenSource); ok && tokenSource != nil {
-				if token, e := tokenSource.Token(); e == nil && token != nil {
-					if value, ok := token.Extra("id_token").(string); ok {
-						idTokenHint = value
-					}
-				}
-			}
-			if authServer.LogoutEvent != nil {
-				authServer.LogoutEvent(sess, hr)
-			}
-			sess.Set(authServer.SessionKey, nil)
-			sess.Set(authServer.SessionTokenKey, nil)
-			sess.Set(authServer.SessionEmailKey, nil)
-			sess.Set(authServer.SessionEmailVerifiedKey, nil)
-			jw.Dirty(sess)
-		}
-
-		target := appURL + "/logged-out"
-		if oidc.EndSessionURL != "" {
-			if u, e := url.Parse(oidc.EndSessionURL); e == nil {
-				q := u.Query()
-				q.Set("client_id", opts.ClientID)
-				q.Set("post_logout_redirect_uri", target)
-				if idTokenHint != "" {
-					q.Set("id_token_hint", idTokenHint)
-				}
-				u.RawQuery = q.Encode()
-				http.Redirect(hw, hr, u.String(), http.StatusFound)
-				return
-			}
-		}
-		http.Redirect(hw, hr, "/logged-out", http.StatusFound)
-	})
+	mux.HandleFunc(http.MethodGet+" /logout", demoLogoutHandler(jw, authServer, appURL, opts.ClientID, oidc.EndSessionURL))
 
 	httpServer := &http.Server{
 		Handler:           mux,
@@ -337,6 +299,38 @@ func startDemo(ctx context.Context, opts demoOptions) (demo *demoServer, err err
 		keycloak:     keycloak,
 		certDir:      certDir,
 	}, nil
+}
+
+func demoLogoutHandler(jw *jaws.Jaws, authServer *jawsauth.Server, appURL, clientID, endSessionURL string) http.HandlerFunc {
+	return func(hw http.ResponseWriter, hr *http.Request) {
+		var idTokenHint string
+		if sess := jw.GetSession(hr); sess != nil {
+			if tokenSource, ok := sess.Get(authServer.SessionTokenKey).(oauth2.TokenSource); ok && tokenSource != nil {
+				if token, e := tokenSource.Token(); e == nil && token != nil {
+					if value, ok := token.Extra("id_token").(string); ok {
+						idTokenHint = value
+					}
+				}
+			}
+			authServer.Logout(sess, hr)
+		}
+
+		target := appURL + "/logged-out"
+		if endSessionURL != "" {
+			if u, e := url.Parse(endSessionURL); e == nil {
+				q := u.Query()
+				q.Set("client_id", clientID)
+				q.Set("post_logout_redirect_uri", target)
+				if idTokenHint != "" {
+					q.Set("id_token_hint", idTokenHint)
+				}
+				u.RawQuery = q.Encode()
+				http.Redirect(hw, hr, u.String(), http.StatusFound)
+				return
+			}
+		}
+		http.Redirect(hw, hr, "/logged-out", http.StatusFound)
+	}
 }
 
 func demoLoginFailed(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (handled bool) {
@@ -454,21 +448,16 @@ func waitForHTTPSReady(ctx context.Context, pingURL string) error {
 		case <-ctx.Done():
 			return fmt.Errorf("wait for https ready: %w", ctx.Err())
 		case <-deadline.C:
-			if lastErr != nil {
-				return fmt.Errorf("https server not ready: %s (last status=%d, last error=%v)", pingURL, lastStatus, lastErr)
-			}
-			return fmt.Errorf("https server not ready: %s", pingURL)
+			return fmt.Errorf("https server not ready: %s (last status=%d, last error=%v)", pingURL, lastStatus, lastErr)
 		case <-ticker.C:
 		}
 	}
 }
 
-func randomPassword(bytesLen int) (string, error) {
+func randomPassword(bytesLen int) string {
 	buf := make([]byte, bytesLen)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
+	_, _ = rand.Read(buf)
+	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
 func writePasswordFile(path, password string) error {

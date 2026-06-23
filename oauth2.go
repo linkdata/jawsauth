@@ -70,9 +70,8 @@ func sanitizeRedirectTarget(requestHost, location string) (sanitized string) {
 	return
 }
 
-func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfourl, location string) {
+func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location string) {
 	oauth2cfg = srv.oauth2cfg
-	userinfourl = srv.userinfoUrl
 	if location = strings.TrimSpace(hr.Referer()); location == "" {
 		location = hr.RequestURI
 	}
@@ -83,10 +82,15 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, userinfour
 	return
 }
 
+// HandleLogin begins the OIDC login flow.
+//
+// For GET requests it generates and stores the state, nonce and PKCE verifier in the
+// session, then responds with a 302 redirect to the provider's authorization URL.
+// Non-GET requests receive 405.
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
 	if hr.Method == http.MethodGet {
-		oauth2cfg, _, location := srv.begin(hr)
+		oauth2cfg, location := srv.begin(hr)
 		if oauth2cfg != nil {
 			sess := srv.Jaws.GetSession(hr)
 			if sess == nil {
@@ -106,21 +110,25 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 				location = oauth2cfg.AuthCodeURL(state, authOptions...)
 			}
 		}
-		hw.Header().Add("Location", location)
+		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
 	}
 	SetHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
 }
 
+// HandleLogout clears the session's stored authentication and redirects.
+//
+// For GET requests it clears the auth (firing LogoutEvent if set) and responds with a
+// 302 redirect back to the sanitized referrer (or "/"). Non-GET requests receive 405.
 func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
 	if hr.Method == http.MethodGet {
-		_, _, location := srv.begin(hr)
+		_, location := srv.begin(hr)
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
 			srv.clearSessionAuth(sess, hr, true, false, nil)
 		}
-		hw.Header().Add("Location", location)
+		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
 	}
 	SetHeaders(hw, srv.ishttps)
@@ -137,7 +145,10 @@ func writeBody(w io.Writer, statusCode int, err error, body []byte) {
 	_, _ = w.Write(body)
 }
 
-// SetHeaders is called to write HTTP headers for all OAuth endpoint responses
+// SetHeaders writes the HTTP response headers for all OAuth endpoint responses.
+//
+// It defaults to DefaultSetHeaders and may be reassigned at startup to customize
+// headers; it must not be reassigned concurrently with serving requests.
 var SetHeaders = DefaultSetHeaders
 
 // DefaultSetHeaders writes response headers for OAuth endpoint responses.
@@ -152,13 +163,23 @@ func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error
 	writeBody(hw, statusCode, err, body)
 }
 
+// ErrOAuth2NotConfigured means OAuth2/OIDC is not configured on the Server.
 var ErrOAuth2NotConfigured = errors.New("oauth2 not configured")
+
+// ErrOAuth2MissingSession means no jaws session was available to carry the OAuth2 flow state.
 var ErrOAuth2MissingSession = errors.New("oauth2 missing session")
+
+// ErrOAuth2MissingState means the callback session did not contain the expected state value.
 var ErrOAuth2MissingState = errors.New("oauth2 missing state")
+
+// ErrOAuth2WrongState means the callback state value did not match the stored session state.
 var ErrOAuth2WrongState = errors.New("oauth2 wrong state")
 
 // ErrOAuth2MissingPKCEVerifier means the callback session did not contain the required PKCE verifier.
 var ErrOAuth2MissingPKCEVerifier = errors.New("oauth2 missing pkce verifier")
+
+// ErrUserInfoStatus means the UserInfo endpoint returned a non-200 HTTP status.
+var ErrUserInfoStatus = errors.New("userinfo status")
 
 func randomHexString() string {
 	b := [32]byte{}
@@ -217,7 +238,7 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 				if resp.StatusCode == http.StatusOK {
 					err = json.Unmarshal(body, &userinfo)
 				} else {
-					err = fmt.Errorf("userinfo status %s", resp.Status)
+					err = fmt.Errorf("%w %s", ErrUserInfoStatus, resp.Status)
 				}
 			}
 		}
@@ -225,12 +246,18 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 	return
 }
 
+// HandleAuthResponse handles the OIDC redirect/callback endpoint.
+//
+// For GET requests it validates the state, exchanges the authorization code using the
+// stored PKCE verifier, verifies the id_token and its nonce, stores the verified claims
+// in the session, and invokes LoginEvent on success or LoginFailed on failure. Non-GET
+// requests receive 405.
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
 	err := ErrOAuth2Callback
 
 	if hr.Method == http.MethodGet {
-		oauth2Config, _, location := srv.begin(hr)
+		oauth2Config, location := srv.begin(hr)
 		var sessValue any
 		var sessEmail string
 		authctx := srv.oauth2Context(hr.Context())
@@ -288,7 +315,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 																	location = sanitizeRedirectTarget(hr.Host, s)
 																}
 																sess.Set(oauth2ReferrerKey, nil)
-																hw.Header().Add("Location", location)
+																hw.Header().Set("Location", location)
 																statusCode = http.StatusFound
 															}
 														}

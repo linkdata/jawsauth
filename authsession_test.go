@@ -1056,3 +1056,57 @@ func TestRefreshSessionAuthErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestServerLogout(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+	var logoutCount int
+	var logoutRequest *http.Request
+	srv.LogoutEvent = func(_ *jaws.Session, hr *http.Request) {
+		logoutCount++
+		logoutRequest = hr
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/logout", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	err = srv.storeSessionAuthClaims(t.Context(), sess, map[string]any{
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"email": "user@example.com",
+	}, oauth2.StaticTokenSource(makeOAuth2Token("access", "", "")), time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if factory.len() != 1 {
+		t.Fatal(factory.len())
+	}
+
+	if !srv.Logout(sess, req) {
+		t.Fatal("Logout reported nothing cleared")
+	}
+
+	assertWrapperAuthCleared(t, srv, sess)
+	if logoutCount != 1 {
+		t.Fatal(logoutCount)
+	}
+	if logoutRequest != req {
+		t.Fatal(logoutRequest)
+	}
+	if srv.authTimers[sess.ID()] != nil {
+		t.Fatal("timer was not removed")
+	}
+	if !factory.timer(0).isStopped() {
+		t.Fatal("timer was not stopped")
+	}
+
+	if (*Server)(nil).Logout(sess, req) {
+		t.Fatal("nil server should report nothing cleared")
+	}
+	if srv.Logout(nil, req) {
+		t.Fatal("nil session should report nothing cleared")
+	}
+}

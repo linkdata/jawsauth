@@ -48,20 +48,30 @@ type keycloakOIDC struct {
 	ClientSecret  string
 }
 
+// Package-local seams keep Keycloak startup error paths testable without Docker.
+var (
+	keycloakMkdirTemp   = os.MkdirTemp
+	keycloakWriteFile   = os.WriteFile
+	keycloakRemoveAll   = os.RemoveAll
+	keycloakGeneratePEM = generateSelfSignedCertificatePEM
+	keycloakContainer   = testcontainers.GenericContainer
+	keycloakDefaultHost = defaultInterfaceAddress
+)
+
 func startKeycloakServer(ctx context.Context, image, adminPassword string) (*keycloakServer, error) {
 	if strings.TrimSpace(adminPassword) == "" {
 		return nil, errors.New("empty keycloak admin password")
 	}
 
-	certTempDir, err := os.MkdirTemp("", "jawsauth-keycloak-cert-*")
+	certTempDir, err := keycloakMkdirTemp("", "jawsauth-keycloak-cert-*")
 	if err != nil {
 		return nil, fmt.Errorf("create keycloak cert temp dir: %w", err)
 	}
 	cleanupTempDir := func() {
-		_ = os.RemoveAll(certTempDir)
+		_ = keycloakRemoveAll(certTempDir)
 	}
 
-	certPEM, keyPEM, err := generateSelfSignedCertificatePEM("localhost")
+	certPEM, keyPEM, err := keycloakGeneratePEM("localhost")
 	if err != nil {
 		cleanupTempDir()
 		return nil, err
@@ -69,11 +79,11 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 
 	certPath := filepath.Join(certTempDir, "server.crt")
 	keyPath := filepath.Join(certTempDir, "server.key")
-	if err = os.WriteFile(certPath, certPEM, 0o600); err != nil {
+	if err = keycloakWriteFile(certPath, certPEM, 0o600); err != nil {
 		cleanupTempDir()
 		return nil, fmt.Errorf("write keycloak cert: %w", err)
 	}
-	if err = os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err = keycloakWriteFile(keyPath, keyPEM, 0o600); err != nil {
 		cleanupTempDir()
 		return nil, fmt.Errorf("write keycloak key: %w", err)
 	}
@@ -102,7 +112,7 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 			WithStartupTimeout(2 * time.Minute),
 	}
 
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+	container, err := keycloakContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
 		Started:          true,
 	})
@@ -128,7 +138,7 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 	publicHost := host
 	switch strings.TrimSpace(strings.ToLower(publicHost)) {
 	case "", "localhost", "127.0.0.1", "::1", "0.0.0.0", "::":
-		if s, e := defaultInterfaceAddress(); e == nil {
+		if s, e := keycloakDefaultHost(); e == nil {
 			publicHost = s
 		}
 	}
@@ -157,7 +167,7 @@ func (ks *keycloakServer) Close(ctx context.Context) error {
 		errs = append(errs, ks.container.Terminate(ctx))
 	}
 	if ks.certTempDir != "" {
-		errs = append(errs, os.RemoveAll(ks.certTempDir))
+		errs = append(errs, keycloakRemoveAll(ks.certTempDir))
 	}
 	return errors.Join(errs...)
 }
@@ -177,11 +187,7 @@ func (ks *keycloakServer) SetupRealm(ctx context.Context, setup keycloakRealmSet
 		return oidc, fmt.Errorf("create client: %w", err)
 	}
 
-	clientSecret, err := randomPassword(18)
-	if err != nil {
-		return oidc, fmt.Errorf("generate client secret: %w", err)
-	}
-
+	clientSecret := randomPassword(18)
 	clientSecret, err = setClientSecret(ctx, ks.httpClient, ks.baseURL, adminToken, setup.Realm, clientUUID, clientSecret)
 	if err != nil {
 		return oidc, fmt.Errorf("set client secret: %w", err)
@@ -284,10 +290,7 @@ func getAdminToken(ctx context.Context, client *http.Client, baseURL, username, 
 func createRealm(ctx context.Context, client *http.Client, baseURL, token, realm string) error {
 	url := fmt.Sprintf("%s/admin/realms", baseURL)
 	payload := map[string]any{"realm": realm, "enabled": true}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
+	data, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
 	if err != nil {
 		return err
@@ -327,10 +330,7 @@ func createClient(ctx context.Context, client *http.Client, baseURL, token, real
 			"post.logout.redirect.uris": origin + "/*",
 		},
 	}
-	data, err := json.Marshal(clientData)
-	if err != nil {
-		return "", err
-	}
+	data, _ := json.Marshal(clientData)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
 	if err != nil {
@@ -361,10 +361,7 @@ func createClient(ctx context.Context, client *http.Client, baseURL, token, real
 func setClientSecret(ctx context.Context, client *http.Client, baseURL, token, realm, clientUUID, secret string) (string, error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/clients/%s/client-secret", baseURL, realm, clientUUID)
 	payload := map[string]any{"value": secret}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
+	data, _ := json.Marshal(payload)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
 	if err != nil {
@@ -406,10 +403,7 @@ func createUser(ctx context.Context, client *http.Client, baseURL, token, realm,
 		"emailVerified": true,
 		"enabled":       true,
 	}
-	data, err := json.Marshal(userData)
-	if err != nil {
-		return "", err
-	}
+	data, _ := json.Marshal(userData)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
 	if err != nil {
@@ -443,10 +437,7 @@ func setUserPassword(ctx context.Context, client *http.Client, baseURL, token, r
 		"value":     password,
 		"temporary": false,
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
+	data, _ := json.Marshal(payload)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewBuffer(data))
 	if err != nil {
@@ -508,10 +499,7 @@ func ensureEmailScope(ctx context.Context, client *http.Client, baseURL, token, 
 		"description": "Access user email",
 		"protocol":    "openid-connect",
 	}
-	scopeJSON, err := json.Marshal(scopeData)
-	if err != nil {
-		return err
-	}
+	scopeJSON, _ := json.Marshal(scopeData)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(scopeJSON))
 	if err != nil {
 		return err
@@ -583,15 +571,9 @@ func enableDirectAccessGrants(ctx context.Context, client *http.Client, baseURL,
 	}
 	clientConfig["directAccessGrantsEnabled"] = true
 
-	data, err := json.Marshal(clientConfig)
-	if err != nil {
-		return err
-	}
+	data, _ := json.Marshal(clientConfig)
 
-	req, err = http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewBuffer(data))
-	if err != nil {
-		return err
-	}
+	req, _ = http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewBuffer(data))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 

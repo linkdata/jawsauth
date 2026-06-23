@@ -1,5 +1,7 @@
 package jawsauth
 
+//gosec:disable G117
+
 import (
 	"context"
 	"net/http"
@@ -11,6 +13,11 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// Config holds the OIDC/OAuth2 settings used by New and NewDebug to construct a Server.
+//
+// RedirectURL, Issuer and ClientID are required; AuthURL, TokenURL and UserInfoURL
+// override values otherwise obtained via OIDC discovery, and the remaining fields
+// are optional.
 type Config struct {
 	RedirectURL string // required. e.g. "https://application.example.com/oauth2/callback"
 	Issuer      string // required. e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
@@ -19,11 +26,12 @@ type Config struct {
 	UserInfoURL string // optional override for discovered userinfo_endpoint
 	// AllowInsecureIssuer permits "http://" Issuer URLs and should only be used for tests/dev.
 	AllowInsecureIssuer bool
-	// HTTPClient is used for OIDC discovery at startup.
-	HTTPClient *http.Client
-	Scopes     []string // optional additional scopes, "openid" and "email" are always ensured
-	ClientID   string
-	//gosec:disable G117
+	// HTTPClient is used for OIDC discovery at startup and, unless a per-request
+	// oauth2.HTTPClient is supplied via the request context, as the default client
+	// for token exchange/refresh and UserInfo requests.
+	HTTPClient   *http.Client
+	Scopes       []string // optional additional scopes, "openid" and "email" are always ensured
+	ClientID     string
 	ClientSecret string
 }
 
@@ -66,6 +74,12 @@ func validateUrl(k, u, defaultURL string, optional bool) (value string, err erro
 	return
 }
 
+// Validate checks whether cfg contains usable OIDC/OAuth2 settings.
+//
+// RedirectURL, Issuer and ClientID must be present. URL fields must be absolute
+// and include a host; AuthURL, TokenURL and UserInfoURL are optional and
+// validated only when set. Issuer must use https unless AllowInsecureIssuer is
+// true. Returned validation failures match [ErrConfig].
 func (cfg *Config) Validate() (err error) {
 	if _, err = validateUrl("RedirectURL", cfg.RedirectURL, "", false); err == nil {
 		if _, err = validateUrl("Issuer", cfg.Issuer, "", false); err == nil {

@@ -27,6 +27,7 @@ func getOpenIDConfig(baseURL, realm string) (openidcfg map[string]any, err error
 	openIdConfigURL := fmt.Sprintf("%s/realms/%s/.well-known/openid-configuration", baseURL, realm)
 	var hr *http.Response
 	if hr, err = http.Get(openIdConfigURL); err == nil {
+		defer hr.Body.Close()
 		var b []byte
 		if b, err = io.ReadAll(hr.Body); err == nil {
 			err = json.Unmarshal(b, &openidcfg)
@@ -48,10 +49,10 @@ func (tj *testJar) Cookies(u *url.URL) []*http.Cookie {
 }
 
 func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret string) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 
-	http.DefaultClient.Jar = &testJar{}
+	client := &http.Client{Jar: &testJar{}}
 
 	openidcfg, err := getOpenIDConfig(baseURL, realm)
 	if err != nil {
@@ -109,12 +110,13 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	asrv.Wrap(http.NotFoundHandler())
 	asrv.WrapAdmin(http.NotFoundHandler())
 
-	initialresp, err := http.Get(hsrv.URL + "/needauth")
+	initialresp, err := client.Get(hsrv.URL + "/needauth")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if initialresp.StatusCode != http.StatusOK {
+		_ = initialresp.Body.Close()
 		t.Fatal(initialresp.Status)
 	}
 
@@ -123,6 +125,7 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	}
 
 	b, err := io.ReadAll(initialresp.Body)
+	_ = initialresp.Body.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,15 +148,13 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	}
 
 	postreq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	for _, cookie := range initialresp.Cookies() {
-		postreq.AddCookie(cookie)
-	}
-	resp, err := http.DefaultClient.Do(postreq)
+	resp, err := client.Do(postreq)
 
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
 		t.Fatal(resp.Status)
 	}
 
@@ -162,6 +163,7 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	}
 
 	b, err = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,10 +190,11 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(resphtml)
 	}
 
-	resp, err = http.Get(hsrv.URL + "/needauth")
+	resp, err = client.Get(hsrv.URL + "/needauth")
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Log(resp.Header)
 		t.Fatal(resp.Status)
@@ -201,10 +204,11 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Error(logincount)
 	}
 
-	resp, err = http.DefaultClient.Get(hsrv.URL + "/oauth2/logout")
+	resp, err = client.Get(hsrv.URL + "/oauth2/logout")
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Log(resp.Header)
 		t.Fatal(resp.Status)
@@ -228,10 +232,11 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Error("was not admin")
 	}
 
-	resp, err = http.Get(hsrv.URL + "/needadmin")
+	resp, err = client.Get(hsrv.URL + "/needadmin")
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Log(resp.Header)
 		t.Fatal(resp.Status)
@@ -244,10 +249,11 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Error(admins)
 	}
 
-	resp, err = http.Get(hsrv.URL + "/needadmin")
+	resp, err = client.Get(hsrv.URL + "/needadmin")
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Log(resp.Header)
 		t.Fatal(resp.Status)

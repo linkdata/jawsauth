@@ -10,3 +10,6 @@ OIDC-verified authentication for [JaWS](https://github.com/linkdata/jaws) sessio
 - Requires an OIDC-compliant provider.
 - Uses OIDC discovery from the configured issuer.
 - Verifies `id_token` and stores identity claims in session data.
+- Adds PKCE (S256) and OIDC nonce verification to the authorization-code flow.
+- Automatically refreshes the `id_token` in the background before it expires.
+- Supports admin-only handlers: `Wrap`/`Handler` for any authenticated user, `WrapAdmin`/`HandlerAdmin` gated by `SetAdmins`.
