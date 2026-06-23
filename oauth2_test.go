@@ -1158,8 +1158,7 @@ func TestServerExtractEmail(t *testing.T) {
 			handler := &recordingHandler{}
 			jw.Logger = slog.New(handler)
 			srv := &Server{Jaws: jw}
-			var got any
-			got = srv.extractEmail(tc.userinfo)
+			got := srv.extractEmail(tc.userinfo)
 			if tc.expectNil {
 				if got != nil {
 					t.Fatalf("expected nil email value, got %v", got)
