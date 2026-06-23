@@ -3,12 +3,12 @@ module github.com/linkdata/jawsauth
 go 1.25.0
 
 require (
-	github.com/coreos/go-oidc/v3 v3.18.0
+	github.com/coreos/go-oidc/v3 v3.19.0
 	github.com/linkdata/deadlock v0.5.5
-	github.com/linkdata/jaws v0.409.4
+	github.com/linkdata/jaws v0.600.0
 	github.com/linkdata/secureheaders v1.1.1
-	github.com/linkdata/webserv v1.1.2
-	github.com/testcontainers/testcontainers-go v0.42.0
+	github.com/linkdata/webserv v1.4.1
+	github.com/testcontainers/testcontainers-go v0.43.0
 	golang.org/x/oauth2 v0.36.0
 )
 
@@ -20,7 +20,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
@@ -39,7 +39,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/linkdata/jq v0.1.1 // indirect
-	github.com/linkdata/staticserve v1.1.5 // indirect
+	github.com/linkdata/staticserve v1.1.8 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260330125221-c963978e514e // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
@@ -56,7 +56,7 @@ require (
 	github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/shirou/gopsutil/v4 v4.26.4 // indirect
+	github.com/shirou/gopsutil/v4 v4.26.5 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect

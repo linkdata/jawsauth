@@ -262,7 +262,7 @@ func TestNewDebugFailureDoesNotReplaceMakeAuth(t *testing.T) {
 	defer jw.Close()
 
 	jw.MakeAuth = func(*jaws.Request) jaws.Auth {
-		return jaws.DefaultAuth{}
+		return &jaws.DefaultAuth{}
 	}
 	wantMakeAuth := reflect.ValueOf(jw.MakeAuth).Pointer()
 	var handled []string
