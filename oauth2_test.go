@@ -167,11 +167,11 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	srv.HandleLogin(rec, req)
 	resp := rec.Result()
 	if resp.StatusCode != http.StatusFound {
-		resp.Body.Close()
+		closeResponseBody(t, resp)
 		t.Fatal(resp.Status)
 	}
 	loc := resp.Header.Get("Location")
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if !strings.HasPrefix(loc, "https://provider.example/auth?") {
 		t.Fatal(loc)
 	}
@@ -236,11 +236,11 @@ func Test_handleLoginCreatesSessionAndRotatesState(t *testing.T) {
 
 	resp := rec.Result()
 	if resp.StatusCode != http.StatusFound {
-		resp.Body.Close()
+		closeResponseBody(t, resp)
 		t.Fatal(resp.Status)
 	}
 	loc := resp.Header.Get("Location")
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if !strings.HasPrefix(loc, "https://provider.example/auth?") {
 		t.Fatal(loc)
 	}
@@ -295,10 +295,10 @@ func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
 
 	resp := rec.Result()
 	if resp.StatusCode != http.StatusFound {
-		resp.Body.Close()
+		closeResponseBody(t, resp)
 		t.Fatal(resp.Status)
 	}
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if value := sess.Get(oauth2StateKey); value != nil {
 		t.Fatal(value)
 	}
@@ -413,14 +413,14 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 
 	resp := rec.Result()
 	if resp.StatusCode != http.StatusFound {
-		resp.Body.Close()
+		closeResponseBody(t, resp)
 		t.Fatal(resp.Status)
 	}
 	if gotLocation := resp.Header.Get("Location"); gotLocation != "/secure" {
-		resp.Body.Close()
+		closeResponseBody(t, resp)
 		t.Fatal(gotLocation)
 	}
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	mu.Lock()
 	receivedCode := gotCode
@@ -586,7 +586,7 @@ func Test_handleAuthResponseMissingPKCEVerifier(t *testing.T) {
 
 	resp := rec.Result()
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +631,7 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 
 	resp := rec.Result()
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +772,7 @@ func Test_handleAuthResponseMissingIDToken(t *testing.T) {
 
 	resp := rec.Result()
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -838,7 +838,7 @@ func Test_handleAuthResponseInvalidIDToken(t *testing.T) {
 
 	resp := rec.Result()
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -904,7 +904,7 @@ func Test_handleAuthResponseAudienceMismatch(t *testing.T) {
 
 	resp := rec.Result()
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -970,7 +970,7 @@ func Test_handleAuthResponseNonceMismatch(t *testing.T) {
 
 	resp := rec.Result()
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1003,11 +1003,11 @@ func Test_handleAuthResponseWithoutSession(t *testing.T) {
 	srv.HandleAuthResponse(rec, req)
 	resp := rec.Result()
 	if resp.StatusCode != http.StatusBadRequest {
-		resp.Body.Close()
+		closeResponseBody(t, resp)
 		t.Fatal(resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1051,11 +1051,11 @@ func Test_handleAuthResponseLoginFailedFallsBack(t *testing.T) {
 	}
 	resp := rec.Result()
 	if resp.StatusCode != http.StatusInternalServerError {
-		resp.Body.Close()
+		closeResponseBody(t, resp)
 		t.Fatal(resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1093,11 +1093,11 @@ func Test_handleAuthResponseLoginFailedHandlesResponse(t *testing.T) {
 	srv.HandleAuthResponse(rec, req)
 	resp := rec.Result()
 	if resp.StatusCode != http.StatusTeapot {
-		resp.Body.Close()
+		closeResponseBody(t, resp)
 		t.Fatal(resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1258,7 +1258,7 @@ func Test_handleAuthResponseMissingState(t *testing.T) {
 
 	resp := rec.Result()
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1324,7 +1324,7 @@ func Test_handleAuthResponseMissingNonce(t *testing.T) {
 
 	resp := rec.Result()
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1378,7 +1378,7 @@ func Test_handlersRejectNonGet(t *testing.T) {
 				h.handler(srv)(rec, req)
 
 				resp := rec.Result()
-				resp.Body.Close()
+				closeResponseBody(t, resp)
 				if resp.StatusCode != http.StatusMethodNotAllowed {
 					t.Fatal(resp.Status)
 				}
@@ -1405,7 +1405,7 @@ func Test_handlersRejectNonGet(t *testing.T) {
 	srv.HandleAuthResponse(rec, req)
 	resp := rec.Result()
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,7 +27,11 @@ func getOpenIDConfig(baseURL, realm string) (openidcfg map[string]any, err error
 	openIdConfigURL := fmt.Sprintf("%s/realms/%s/.well-known/openid-configuration", baseURL, realm)
 	var hr *http.Response
 	if hr, err = http.Get(openIdConfigURL); err == nil {
-		defer hr.Body.Close()
+		defer func() {
+			if closeErr := hr.Body.Close(); err == nil && closeErr != nil {
+				err = closeErr
+			}
+		}()
 		var b []byte
 		if b, err = io.ReadAll(hr.Body); err == nil {
 			err = json.Unmarshal(b, &openidcfg)
@@ -71,7 +75,9 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 
 	const indexTemplate = `<html>{{with .Auth}}{{.Email}} {{.IsAdmin}} {{.Data}}{{end}}</html>`
 
-	jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse(indexTemplate)))
+	if err := jw.AddTemplateLookuper(template.Must(template.New("index.html").Parse(indexTemplate))); err != nil {
+		t.Fatal(err)
+	}
 	jw.Logger = slog.Default()               // optionally set the logger to use
 	jw.Debug = deadlock.Debug                // optionally set the debug flag
 	go jw.Serve()                            // start the JaWS processing loop

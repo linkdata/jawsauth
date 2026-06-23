@@ -69,7 +69,7 @@ func TestDemoLoginFailedDefaultsAndPlainHTTP(t *testing.T) {
 		t.Fatal("handler returned false")
 	}
 	resp := rr.Result()
-	defer resp.Body.Close()
+	defer closeResponseBody(t, resp)
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatal(resp.StatusCode)
 	}
@@ -285,7 +285,7 @@ func TestDemoLogoutHandlerRedirects(t *testing.T) {
 			handler(rr, req)
 
 			resp := rr.Result()
-			defer resp.Body.Close()
+			defer closeResponseBody(t, resp)
 			if resp.StatusCode != http.StatusFound {
 				t.Fatal(resp.Status)
 			}

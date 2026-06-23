@@ -232,7 +232,11 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 		client := oauth2.NewClient(ctx, tokenSource)
 		var resp *http.Response
 		if resp, err = client.Get(userinfoURL); /*#nosec G704*/ err == nil {
-			defer resp.Body.Close()
+			defer func() {
+				if closeErr := resp.Body.Close(); err == nil && closeErr != nil {
+					err = closeErr
+				}
+			}()
 			var body []byte
 			if body, err = io.ReadAll(io.LimitReader(resp.Body, 32768)); err == nil {
 				if resp.StatusCode == http.StatusOK {

@@ -138,7 +138,11 @@ func TestDebugOAuth2TransportLogsRequestAndPreservesBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 
 	if gotBody != "client_secret=secret&grant_type=refresh_token" {
 		t.Fatal(gotBody)

@@ -142,12 +142,15 @@ func Test_handleAuthResponseOAuthErrorCallback(t *testing.T) {
 		t.Fatal(oauthErr.Code)
 	}
 	resp := rec.Result()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if resp.StatusCode != http.StatusForbidden {
-		resp.Body.Close()
 		t.Fatal(resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +208,11 @@ func Test_handleAuthResponseOAuthErrorCallbackReceivesSessionEmail(t *testing.T)
 	srv.HandleAuthResponse(rec, req)
 
 	resp := rec.Result()
-	resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatal(resp.Status)
 	}

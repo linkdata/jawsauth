@@ -230,6 +230,12 @@ type openIDConfig struct {
 	EndSessionEndpoint    string `json:"end_session_endpoint"`
 }
 
+func closeHTTPBody(body io.Closer, errp *error) {
+	if closeErr := body.Close(); *errp == nil && closeErr != nil {
+		*errp = closeErr
+	}
+}
+
 func getOpenIDConfig(ctx context.Context, client *http.Client, baseURL, realm string) (cfg openIDConfig, err error) {
 	url := fmt.Sprintf("%s/realms/%s/.well-known/openid-configuration", baseURL, realm)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -240,7 +246,7 @@ func getOpenIDConfig(ctx context.Context, client *http.Client, baseURL, realm st
 	if err != nil {
 		return cfg, err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return cfg, fmt.Errorf("openid config status %s: %s", resp.Status, string(body))
@@ -254,7 +260,7 @@ func getOpenIDConfig(ctx context.Context, client *http.Client, baseURL, realm st
 	return cfg, nil
 }
 
-func getAdminToken(ctx context.Context, client *http.Client, baseURL, username, password string) (string, error) {
+func getAdminToken(ctx context.Context, client *http.Client, baseURL, username, password string) (token string, err error) {
 	url := fmt.Sprintf("%s/realms/master/protocol/openid-connect/token", baseURL)
 	data := "client_id=admin-cli&grant_type=password&username=" + username + "&password=" + password
 
@@ -268,7 +274,7 @@ func getAdminToken(ctx context.Context, client *http.Client, baseURL, username, 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -284,10 +290,11 @@ func getAdminToken(ctx context.Context, client *http.Client, baseURL, username, 
 	if result.AccessToken == "" {
 		return "", errors.New("missing admin access token")
 	}
-	return result.AccessToken, nil
+	token = result.AccessToken
+	return
 }
 
-func createRealm(ctx context.Context, client *http.Client, baseURL, token, realm string) error {
+func createRealm(ctx context.Context, client *http.Client, baseURL, token, realm string) (err error) {
 	url := fmt.Sprintf("%s/admin/realms", baseURL)
 	payload := map[string]any{"realm": realm, "enabled": true}
 	data, _ := json.Marshal(payload)
@@ -301,7 +308,7 @@ func createRealm(ctx context.Context, client *http.Client, baseURL, token, realm
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("create realm status %s: %s", resp.Status, string(body))
@@ -309,7 +316,7 @@ func createRealm(ctx context.Context, client *http.Client, baseURL, token, realm
 	return nil
 }
 
-func createClient(ctx context.Context, client *http.Client, baseURL, token, realm, clientID, redirectURI string) (string, error) {
+func createClient(ctx context.Context, client *http.Client, baseURL, token, realm, clientID, redirectURI string) (id string, err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/clients", baseURL, realm)
 
 	origin, err := appOriginFromRedirectURI(redirectURI)
@@ -343,7 +350,7 @@ func createClient(ctx context.Context, client *http.Client, baseURL, token, real
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
@@ -355,10 +362,11 @@ func createClient(ctx context.Context, client *http.Client, baseURL, token, real
 	if idx < 0 || idx+1 >= len(location) {
 		return "", errors.New("missing client location header")
 	}
-	return location[idx+1:], nil
+	id = location[idx+1:]
+	return
 }
 
-func setClientSecret(ctx context.Context, client *http.Client, baseURL, token, realm, clientUUID, secret string) (string, error) {
+func setClientSecret(ctx context.Context, client *http.Client, baseURL, token, realm, clientUUID, secret string) (value string, err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/clients/%s/client-secret", baseURL, realm, clientUUID)
 	payload := map[string]any{"value": secret}
 	data, _ := json.Marshal(payload)
@@ -374,7 +382,7 @@ func setClientSecret(ctx context.Context, client *http.Client, baseURL, token, r
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -390,10 +398,11 @@ func setClientSecret(ctx context.Context, client *http.Client, baseURL, token, r
 	if result.Value == "" {
 		return "", errors.New("missing client secret value")
 	}
-	return result.Value, nil
+	value = result.Value
+	return
 }
 
-func createUser(ctx context.Context, client *http.Client, baseURL, token, realm, username, email, firstName, lastName string) (string, error) {
+func createUser(ctx context.Context, client *http.Client, baseURL, token, realm, username, email, firstName, lastName string) (id string, err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/users", baseURL, realm)
 	userData := map[string]any{
 		"username":      username,
@@ -415,7 +424,7 @@ func createUser(ctx context.Context, client *http.Client, baseURL, token, realm,
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
@@ -427,10 +436,11 @@ func createUser(ctx context.Context, client *http.Client, baseURL, token, realm,
 	if idx < 0 || idx+1 >= len(location) {
 		return "", errors.New("missing user location header")
 	}
-	return location[idx+1:], nil
+	id = location[idx+1:]
+	return
 }
 
-func setUserPassword(ctx context.Context, client *http.Client, baseURL, token, realm, userID, password string) error {
+func setUserPassword(ctx context.Context, client *http.Client, baseURL, token, realm, userID, password string) (err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/users/%s/reset-password", baseURL, realm, userID)
 	payload := map[string]any{
 		"type":      "password",
@@ -449,7 +459,7 @@ func setUserPassword(ctx context.Context, client *http.Client, baseURL, token, r
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
@@ -458,7 +468,7 @@ func setUserPassword(ctx context.Context, client *http.Client, baseURL, token, r
 	return nil
 }
 
-func getScopeID(ctx context.Context, client *http.Client, baseURL, token, realm, scopeName string) (string, error) {
+func getScopeID(ctx context.Context, client *http.Client, baseURL, token, realm, scopeName string) (id string, err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/client-scopes", baseURL, realm)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -471,7 +481,7 @@ func getScopeID(ctx context.Context, client *http.Client, baseURL, token, realm,
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -492,7 +502,7 @@ func getScopeID(ctx context.Context, client *http.Client, baseURL, token, realm,
 	return "", fmt.Errorf("scope not found: %s", scopeName)
 }
 
-func ensureEmailScope(ctx context.Context, client *http.Client, baseURL, token, realm string) error {
+func ensureEmailScope(ctx context.Context, client *http.Client, baseURL, token, realm string) (err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/client-scopes", baseURL, realm)
 	scopeData := map[string]any{
 		"name":        "email",
@@ -510,7 +520,7 @@ func ensureEmailScope(ctx context.Context, client *http.Client, baseURL, token, 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusConflict {
 		body, _ := io.ReadAll(resp.Body)
@@ -519,7 +529,7 @@ func ensureEmailScope(ctx context.Context, client *http.Client, baseURL, token, 
 	return nil
 }
 
-func assignEmailScopeToClient(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) error {
+func assignEmailScopeToClient(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) (err error) {
 	if err := ensureEmailScope(ctx, client, baseURL, token, realm); err != nil {
 		return err
 	}
@@ -537,7 +547,7 @@ func assignEmailScopeToClient(ctx context.Context, client *http.Client, baseURL,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("assign email scope status %s: %s", resp.Status, string(body))
@@ -545,7 +555,7 @@ func assignEmailScopeToClient(ctx context.Context, client *http.Client, baseURL,
 	return nil
 }
 
-func enableDirectAccessGrants(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) error {
+func enableDirectAccessGrants(ctx context.Context, client *http.Client, baseURL, token, realm, clientID string) (err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/clients/%s", baseURL, realm, clientID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -558,7 +568,7 @@ func enableDirectAccessGrants(ctx context.Context, client *http.Client, baseURL,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -581,7 +591,7 @@ func enableDirectAccessGrants(ctx context.Context, client *http.Client, baseURL,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeHTTPBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)

@@ -24,7 +24,9 @@ func TestKeycloakFlow(t *testing.T) {
 			if t.Failed() {
 				printLogs(ctx, keycloakContainer)
 			}
-			keycloakContainer.Terminate(ctx)
+			if err := keycloakContainer.Terminate(ctx); err != nil {
+				t.Errorf("terminate keycloak container: %v", err)
+			}
 		}
 	}()
 
@@ -129,7 +131,7 @@ func printLogs(ctx context.Context, container testcontainers.Container) {
 	}
 }
 
-func getAdminToken(ctx context.Context, baseURL, username, password string) (string, error) {
+func getAdminToken(ctx context.Context, baseURL, username, password string) (token string, err error) {
 	url := fmt.Sprintf("%s/realms/master/protocol/openid-connect/token", baseURL) // Correct endpoint
 	data := "client_id=admin-cli&grant_type=password&username=" + username + "&password=" + password
 
@@ -143,7 +145,7 @@ func getAdminToken(ctx context.Context, baseURL, username, password string) (str
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -158,7 +160,7 @@ func getAdminToken(ctx context.Context, baseURL, username, password string) (str
 	return result["access_token"].(string), nil
 }
 
-func createRealm(ctx context.Context, baseURL, token, realm string) error {
+func createRealm(ctx context.Context, baseURL, token, realm string) (err error) {
 	url := fmt.Sprintf("%s/admin/realms", baseURL)
 	realmData := map[string]any{
 		"realm":   realm,
@@ -181,7 +183,7 @@ func createRealm(ctx context.Context, baseURL, token, realm string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
@@ -191,7 +193,7 @@ func createRealm(ctx context.Context, baseURL, token, realm string) error {
 	return nil
 }
 
-func createClient(ctx context.Context, baseURL, token, realm, clientName string) (string, error) {
+func createClient(ctx context.Context, baseURL, token, realm, clientName string) (clientID string, err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/clients", baseURL, realm)
 	clientData := map[string]any{
 		"clientId":     clientName,
@@ -216,7 +218,7 @@ func createClient(ctx context.Context, baseURL, token, realm, clientName string)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
@@ -224,12 +226,12 @@ func createClient(ctx context.Context, baseURL, token, realm, clientName string)
 	}
 
 	location := resp.Header.Get("Location")
-	clientID := location[strings.LastIndex(location, "/")+1:]
+	clientID = location[strings.LastIndex(location, "/")+1:]
 
 	return clientID, nil
 }
 
-func setClientSecret(ctx context.Context, baseURL, token, realm, clientID, secret string) (string, error) {
+func setClientSecret(ctx context.Context, baseURL, token, realm, clientID, secret string) (value string, err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/clients/%s/client-secret", baseURL, realm, clientID)
 
 	secretData := map[string]any{
@@ -252,7 +254,7 @@ func setClientSecret(ctx context.Context, baseURL, token, realm, clientID, secre
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -267,7 +269,7 @@ func setClientSecret(ctx context.Context, baseURL, token, realm, clientID, secre
 	return result["value"].(string), nil
 }
 
-func createUser(ctx context.Context, baseURL, token, realm, username, email, firstName, lastName string) (string, error) {
+func createUser(ctx context.Context, baseURL, token, realm, username, email, firstName, lastName string) (userID string, err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/users", baseURL, realm)
 	userData := map[string]any{
 		"username":  username,
@@ -293,7 +295,7 @@ func createUser(ctx context.Context, baseURL, token, realm, username, email, fir
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
@@ -301,12 +303,12 @@ func createUser(ctx context.Context, baseURL, token, realm, username, email, fir
 	}
 
 	location := resp.Header.Get("Location")
-	userID := location[strings.LastIndex(location, "/")+1:]
+	userID = location[strings.LastIndex(location, "/")+1:]
 
 	return userID, nil
 }
 
-func setUserPassword(ctx context.Context, baseURL, token, realm, userID, password string) error {
+func setUserPassword(ctx context.Context, baseURL, token, realm, userID, password string) (err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/users/%s/reset-password", baseURL, realm, userID)
 	passwordData := map[string]any{
 		"type":      "password",
@@ -330,7 +332,7 @@ func setUserPassword(ctx context.Context, baseURL, token, realm, userID, passwor
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
@@ -340,7 +342,7 @@ func setUserPassword(ctx context.Context, baseURL, token, realm, userID, passwor
 	return nil
 }
 
-func getUserAccessToken(ctx context.Context, baseURL, realm, clientID, clientSecret, username, password string) (string, error) {
+func getUserAccessToken(ctx context.Context, baseURL, realm, clientID, clientSecret, username, password string) (token string, err error) {
 	url := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", baseURL, realm)
 	data := fmt.Sprintf("client_id=%s&client_secret=%s&username=%s&password=%s&grant_type=password&scope=openid email", clientID, clientSecret, username, password)
 
@@ -354,7 +356,7 @@ func getUserAccessToken(ctx context.Context, baseURL, realm, clientID, clientSec
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -369,7 +371,7 @@ func getUserAccessToken(ctx context.Context, baseURL, realm, clientID, clientSec
 	return result["access_token"].(string), nil
 }
 
-func getUserInfoEmail(ctx context.Context, baseURL, realm, accessToken string) (string, error) {
+func getUserInfoEmail(ctx context.Context, baseURL, realm, accessToken string) (value string, err error) {
 	url := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/userinfo", baseURL, realm)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -382,7 +384,7 @@ func getUserInfoEmail(ctx context.Context, baseURL, realm, accessToken string) (
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -430,7 +432,7 @@ func waitForKeycloak(ctx context.Context, container testcontainers.Container) er
 	return fmt.Errorf("Keycloak did not become ready in time at %s", url)
 }
 
-func getScopeID(ctx context.Context, baseURL, token, realm, scopeName string) (string, error) {
+func getScopeID(ctx context.Context, baseURL, token, realm, scopeName string) (scopeID string, err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/client-scopes", baseURL, realm)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -444,7 +446,7 @@ func getScopeID(ctx context.Context, baseURL, token, realm, scopeName string) (s
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -465,7 +467,7 @@ func getScopeID(ctx context.Context, baseURL, token, realm, scopeName string) (s
 	return "", fmt.Errorf("scope not found: %s", scopeName)
 }
 
-func assignEmailScopeToClient(ctx context.Context, baseURL, token, realm, clientID string) error {
+func assignEmailScopeToClient(ctx context.Context, baseURL, token, realm, clientID string) (err error) {
 	// Ensure the "email" scope exists first
 	if err := ensureEmailScope(ctx, baseURL, token, realm); err != nil {
 		return err
@@ -489,7 +491,7 @@ func assignEmailScopeToClient(ctx context.Context, baseURL, token, realm, client
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
@@ -499,7 +501,7 @@ func assignEmailScopeToClient(ctx context.Context, baseURL, token, realm, client
 	return nil
 }
 
-func ensureEmailScope(ctx context.Context, baseURL, token, realm string) error {
+func ensureEmailScope(ctx context.Context, baseURL, token, realm string) (err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/client-scopes", baseURL, realm)
 	scopeData := map[string]any{
 		"name":        "email",
@@ -532,7 +534,7 @@ func ensureEmailScope(ctx context.Context, baseURL, token, realm string) error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch email scope existence, Error assigning default scopes")
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusConflict {
 		body, _ := io.ReadAll(resp.Body)
@@ -542,7 +544,7 @@ func ensureEmailScope(ctx context.Context, baseURL, token, realm string) error {
 	return nil
 }
 
-func enableDirectAccessGrants(ctx context.Context, baseURL, token, realm, clientID string) error {
+func enableDirectAccessGrants(ctx context.Context, baseURL, token, realm, clientID string) (err error) {
 	url := fmt.Sprintf("%s/admin/realms/%s/clients/%s", baseURL, realm, clientID)
 
 	// Fetch the current client configuration
@@ -557,7 +559,7 @@ func enableDirectAccessGrants(ctx context.Context, baseURL, token, realm, client
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -589,7 +591,7 @@ func enableDirectAccessGrants(ctx context.Context, baseURL, token, realm, client
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(resp.Body, &err)
 
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)

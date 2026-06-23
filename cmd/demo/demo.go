@@ -387,12 +387,16 @@ func resolvePublicHost(publicHost string, addr net.Addr) (host string, err error
 	return host, nil
 }
 
-func defaultInterfaceAddress() (string, error) {
+func defaultInterfaceAddress() (addr string, err error) {
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	defer func() {
+		if closeErr := conn.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 
 	udpAddr, ok := conn.LocalAddr().(*net.UDPAddr)
 	if !ok || udpAddr.IP == nil {
@@ -401,7 +405,8 @@ func defaultInterfaceAddress() (string, error) {
 	if udpAddr.IP.IsUnspecified() {
 		return "", errors.New("default interface address is unspecified")
 	}
-	return udpAddr.IP.String(), nil
+	addr = udpAddr.IP.String()
+	return
 }
 
 func listenerPort(addr net.Addr) string {
