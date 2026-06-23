@@ -10,72 +10,95 @@ on:
     branches: [main]
 
 jobs:
-  audit:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      coverage: ${{ steps.coverage.outputs.coverage }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: stable
 
       - name: Generate
         run: go generate ./...
 
-      - name: Test
-        run: go test -tags debug -bench=. -coverprofile=coverage.out ./...
+      - name: Go vet
+        run: go vet ./...
 
-      - name: Upload code coverage
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage
-          path: coverage.out
-          retention-days: 1
+      - name: Check gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@ff63afafc529279f454e02f1d060210bd4263951 # v0.7.0
+          staticcheck ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@v2.23.0
+        uses: securego/gosec@4a3bd8af174872c778439083ded7adbf3747e770 # v2.26.1
         with:
           args: ./...
 
-      - name: Go report card
-        uses: creekorful/goreportcard-action@v1.0
-        continue-on-error: true
-
-  build:
-    needs: audit
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: stable
-
-      - name: Generate
-        run: go generate ./...
-
-      - name: Build
-        run: go build -v ./...
-
-      - name: Download code coverage
-        uses: actions/download-artifact@v8
-        with:
-          name: coverage
+      - name: Test
+        env:
+          # Fail rather than skip the node-driven JS behavior tests; the runner
+          # has node installed, so a missing node here is a CI misconfiguration.
+          JAWS_REQUIRE_NODE: "1"
+        run: go test -race -coverprofile=coverage.out ./...
 
       - name: Calculate code coverage
         id: coverage
         run: |
-          echo "COVERAGE=$(go tool cover -func=coverage.out | tail -n 1 | tr -s '\t' | cut -f 3)" >> "$GITHUB_OUTPUT"
+          echo "coverage=$(go tool cover -func=coverage.out | tail -n 1 | tr -s '\t' | cut -f 3)" >> "$GITHUB_OUTPUT"
           go tool cover -html=coverage.out -o=coveragereport.html.out
 
-      - name: Publish code coverage badge (and optional report)
-        uses: linkdata/gitcoverage@v8
+      - name: Upload code coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          coverage: ${{ steps.coverage.outputs.coverage }}
+          name: coverage
+          path: coveragereport.html.out
+          retention-days: 1
+
+      - name: Go report card
+        uses: creekorful/goreportcard-action@1f35ced8cdac2cba28c9a2f2288a16aacfd507f9 # v1.0
+        continue-on-error: true
+
+      - name: Build
+        run: go build -v ./...
+
+  coverage:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Download code coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: coverage
+
+      - name: Publish code coverage badge (and optional report)
+        uses: linkdata/gitcoverage@03383ad3a6ff45e117a50d29d21c3a95c2d5d12a # v11
+        with:
+          coverage: ${{ needs.build.outputs.coverage }}
           report:   "coveragereport.html.out"
+          token:    ${{ github.token }}
