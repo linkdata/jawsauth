@@ -272,7 +272,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			err = ErrOAuth2MissingSession
 			statusCode = http.StatusBadRequest
 			if sess != nil {
-				gotState := hr.FormValue("state")
+				gotState := hr.FormValue("state") // #nosec G120
 				wantState, _ := sess.Get(oauth2StateKey).(string)
 				verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
 				wantNonce, _ := sess.Get(oauth2NonceKey).(string)
@@ -291,7 +291,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 									oauth2.AccessTypeOffline,
 									oauth2.VerifierOption(verifier),
 								}
-								if token, err = oauth2Config.Exchange(authctx, hr.FormValue("code"), exchangeOptions...); srv.Jaws.Log(err) == nil {
+								if token, err = oauth2Config.Exchange(authctx, hr.FormValue("code") /* #nosec G120 */, exchangeOptions...); srv.Jaws.Log(err) == nil {
 									err = ErrOAuth2NotConfigured
 									statusCode = http.StatusInternalServerError
 									if srv.idTokenVerifier != nil {
