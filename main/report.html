@@ -1551,7 +1551,7 @@ func getScopeID(ctx context.Context, client *http.Client, baseURL, token, realm,
         if err := json.NewDecoder(resp.Body).Decode(&amp;scopes); err != nil </span><span class="cov1" title="1">{
                 return "", err
         }</span>
-        <span class="cov5" title="10">for _, scope := range scopes </span><span class="cov6" title="17">{
+        <span class="cov5" title="10">for _, scope := range scopes </span><span class="cov7" title="24">{
                 if scope["name"] == scopeName </span><span class="cov4" title="8">{
                         if id, ok := scope["id"].(string); ok &amp;&amp; id != "" </span><span class="cov4" title="8">{
                                 return id, nil
