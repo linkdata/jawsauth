@@ -1,4 +1,4 @@
-package jawsauth
+package integration_test
 
 import (
 	"bytes"

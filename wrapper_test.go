@@ -243,22 +243,28 @@ func TestWrapperServeHTTPRedirectsWhenAuthDataMissing(t *testing.T) {
 	defer jw.Close()
 
 	srv := newWrapperTestServer(jw, "https://issuer.example")
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
-	jw.NewSession(httptest.NewRecorder(), req)
-
-	w := wrapper{
-		server:  srv,
-		handler: testStatusHandler{statusCode: http.StatusOK},
+	tests := []struct {
+		name    string
+		handler http.Handler
+	}{
+		{name: "Wrap", handler: srv.Wrap(testStatusHandler{statusCode: http.StatusOK})},
+		{name: "WrapAdmin", handler: srv.WrapAdmin(testStatusHandler{statusCode: http.StatusOK})},
+		{name: "Handler", handler: srv.Handler("unused", nil)},
+		{name: "HandlerAdmin", handler: srv.HandlerAdmin("unused", nil)},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
+			rec := httptest.NewRecorder()
+			tt.handler.ServeHTTP(rec, req)
 
-	rec := httptest.NewRecorder()
-	w.ServeHTTP(rec, req)
-
-	if code := rec.Result().StatusCode; code != http.StatusFound {
-		t.Fatal(code)
-	}
-	if loc := rec.Result().Header.Get("Location"); loc == "" {
-		t.Fatal("missing login redirect")
+			if code := rec.Result().StatusCode; code != http.StatusFound {
+				t.Fatal(code)
+			}
+			if loc := rec.Result().Header.Get("Location"); loc == "" {
+				t.Fatal("missing login redirect")
+			}
+		})
 	}
 }
 
