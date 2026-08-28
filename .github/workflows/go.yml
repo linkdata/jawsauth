@@ -87,20 +87,17 @@ jobs:
           # Fail rather than skip the node-driven JS behavior tests; the runner
           # has node installed, so a missing node here is a CI misconfiguration.
           JAWS_REQUIRE_NODE: "1"
-        run: go test -race -coverpkg=./... -coverprofile=coverage-root.out ./...
+        run: go test -race -coverpkg=github.com/linkdata/jawsauth -coverprofile=coverage.out ./...
 
       - name: Test (cmd)
         working-directory: cmd
-        run: go test -race -coverpkg=github.com/linkdata/jawsauth,./... -coverprofile=coverage-cmd.out ./...
+        run: go test -race ./...
 
       - name: Calculate code coverage
         id: coverage
-        working-directory: cmd
         run: |
-          cp ../coverage-root.out coverage.out
-          tail -n +2 coverage-cmd.out >> coverage.out
           echo "coverage=$(go tool cover -func=coverage.out | tail -n 1 | tr -s '\t' | cut -f 3)" >> "$GITHUB_OUTPUT"
-          go tool cover -html=coverage.out -o=../coveragereport.html.out
+          go tool cover -html=coverage.out -o=coveragereport.html.out
 
       - name: Upload code coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
