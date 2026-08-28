@@ -17,19 +17,30 @@ jobs:
     outputs:
       coverage: ${{ steps.coverage.outputs.coverage }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
+          cache-dependency-path: |
+            go.sum
+            cmd/go.sum
 
       - name: Generate
         run: go generate ./...
 
+      - name: Generate (cmd)
+        working-directory: cmd
+        run: go generate ./...
+
       - name: Go vet
+        run: go vet ./...
+
+      - name: Go vet (cmd)
+        working-directory: cmd
         run: go vet ./...
 
       - name: Check gofmt
@@ -43,32 +54,56 @@ jobs:
 
       - name: Staticcheck
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@f0c0ad650bb78a9e1e44bf49b2416d3bb0b95ef1 # v0.8.0
+          go install honnef.co/go/tools/cmd/staticcheck@1285a6a5ec1e0ebb658f49e82b6c566a878cc3cb # v0.8.1
           staticcheck ./...
 
+      - name: Staticcheck (cmd)
+        working-directory: cmd
+        run: staticcheck ./...
+
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+
+      - name: golangci-lint (cmd)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+          working-directory: cmd
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@4a3bd8af174872c778439083ded7adbf3747e770 # v2.26.1
-        with:
-          args: ./...
+        run: gosec ./...
+
+      - name: Run Gosec Security Scanner (cmd)
+        working-directory: cmd
+        run: gosec ./...
 
       - name: Test
         env:
           # Fail rather than skip the node-driven JS behavior tests; the runner
           # has node installed, so a missing node here is a CI misconfiguration.
           JAWS_REQUIRE_NODE: "1"
-        run: go test -race -coverprofile=coverage.out ./...
+        run: go test -race -coverpkg=./... -coverprofile=coverage-root.out ./...
+
+      - name: Test (cmd)
+        working-directory: cmd
+        run: go test -race -coverpkg=github.com/linkdata/jawsauth,./... -coverprofile=coverage-cmd.out ./...
 
       - name: Calculate code coverage
         id: coverage
+        working-directory: cmd
         run: |
+          cp ../coverage-root.out coverage.out
+          tail -n +2 coverage-cmd.out >> coverage.out
           echo "coverage=$(go tool cover -func=coverage.out | tail -n 1 | tr -s '\t' | cut -f 3)" >> "$GITHUB_OUTPUT"
-          go tool cover -html=coverage.out -o=coveragereport.html.out
+          go tool cover -html=coverage.out -o=../coveragereport.html.out
 
       - name: Upload code coverage
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage
           path: coveragereport.html.out
@@ -77,18 +112,22 @@ jobs:
       - name: Build
         run: go build -v ./...
 
+      - name: Build (cmd)
+        working-directory: cmd
+        run: go build -v ./...
+
   coverage:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Download code coverage
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: coverage
 

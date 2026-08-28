@@ -1,16 +1,9 @@
 package jawsauth
 
 import (
-	"io"
 	"net/http"
 	"testing"
 )
-
-func closeTestBody(body io.Closer, errp *error) {
-	if closeErr := body.Close(); *errp == nil && closeErr != nil {
-		*errp = closeErr
-	}
-}
 
 func closeResponseBody(t *testing.T, resp *http.Response) {
 	t.Helper()
