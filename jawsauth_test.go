@@ -8,7 +8,7 @@ import (
 	"github.com/linkdata/jaws"
 )
 
-func TestJawsAuthEmailVerified(t *testing.T) {
+func TestJawsAuthSessionValues(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {
 		t.Fatal(err)
@@ -16,11 +16,15 @@ func TestJawsAuthEmailVerified(t *testing.T) {
 	defer jw.Close()
 
 	srv := &Server{
+		SessionKey:              "claims",
+		SessionEmailKey:         "email",
 		SessionEmailVerifiedKey: "email_verified",
 	}
 	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
 	rec := httptest.NewRecorder()
 	sess := jw.NewSession(rec, req)
+	sess.Set(srv.SessionKey, map[string]any{"sub": "subject"})
+	sess.Set(srv.SessionEmailKey, "user@example.com")
 	sess.Set(srv.SessionEmailVerifiedKey, true)
 
 	auth := &JawsAuth{
@@ -29,6 +33,12 @@ func TestJawsAuthEmailVerified(t *testing.T) {
 	}
 	if !auth.EmailVerified() {
 		t.Fatal("expected EmailVerified() to be true")
+	}
+	if data := auth.Data(); data["sub"] != "subject" {
+		t.Fatal(data)
+	}
+	if email := auth.Email(); email != "user@example.com" {
+		t.Fatal(email)
 	}
 }
 

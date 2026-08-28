@@ -3,6 +3,7 @@ package jawsauth
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -83,6 +84,20 @@ func TestNewDebugPreservesCallbackTrailingSlash(t *testing.T) {
 	}
 	if jw.MakeAuth == nil {
 		t.Fatal("MakeAuth was not installed after successful setup")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://application.example.com/", nil)
+	rec := httptest.NewRecorder()
+	sess := jw.NewSession(rec, req)
+	auth, ok := jw.MakeAuth(jw.NewRequest(rec, req)).(*JawsAuth)
+	if !ok {
+		t.Fatal("MakeAuth did not return *JawsAuth")
+	}
+	if auth.server != srv {
+		t.Fatal("MakeAuth returned auth for another server")
+	}
+	if auth.sess != sess {
+		t.Fatal("MakeAuth returned auth for another session")
 	}
 }
 
@@ -229,5 +244,20 @@ func TestServer_SetAdmins_NormalizesAndDeduplicates(t *testing.T) {
 	}
 	if !srv.IsAdmin("  other@example.com  ") {
 		t.Fatal("whitespace lookup failed")
+	}
+}
+
+func TestServerSet403HandlerNilRestoresDefault(t *testing.T) {
+	srv := &Server{handle403: testStatusHandler{statusCode: http.StatusTeapot}}
+	srv.Set403Handler(nil)
+
+	rec := httptest.NewRecorder()
+	srv.get403Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://example.com/", nil))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatal(rec.Code)
+	}
+	if got := rec.Body.String(); got != `<html><body><h1>403 Forbidden</h1></body></html>` {
+		t.Fatal(got)
 	}
 }

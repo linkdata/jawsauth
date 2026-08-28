@@ -27,6 +27,21 @@ type passthroughKeySet struct {
 	forceError error
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+type closeErrorBody struct {
+	io.Reader
+	err error
+}
+
+func (body closeErrorBody) Close() error {
+	return body.err
+}
+
 func (ks passthroughKeySet) VerifySignature(_ context.Context, jwt string) ([]byte, error) {
 	if ks.forceError != nil {
 		return nil, ks.forceError
@@ -377,6 +392,8 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	}))
 	defer provider.Close()
 
+	var eventSession *jaws.Session
+	var eventRequest *http.Request
 	srv := &Server{
 		Jaws:                    jw,
 		SessionKey:              "oauth2userinfo",
@@ -395,6 +412,10 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 		},
 		idTokenVerifier: oidc.NewVerifier(issuer, passthroughKeySet{}, &oidc.Config{ClientID: "client"}),
 		userinfoUrl:     provider.URL + "/userinfo",
+		LoginEvent: func(sess *jaws.Session, req *http.Request) {
+			eventSession = sess
+			eventRequest = req
+		},
 	}
 
 	const wantState = "state123"
@@ -461,6 +482,12 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	}
 	if tokenSource, ok := sess.Get(srv.SessionTokenKey).(oauth2.TokenSource); !ok || tokenSource == nil {
 		t.Fatal("missing token source")
+	}
+	if eventSession != sess {
+		t.Fatal("LoginEvent received another session")
+	}
+	if eventRequest != req {
+		t.Fatal("LoginEvent received another request")
 	}
 }
 
@@ -724,6 +751,31 @@ func TestServer_fetchUserInfoStatusError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "userinfo status 401 Unauthorized") {
 		t.Fatal(err)
+	}
+}
+
+func TestServer_fetchUserInfoCloseError(t *testing.T) {
+	wantErr := errors.New("close response body")
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: closeErrorBody{
+				Reader: strings.NewReader(`{"email":"user@example.com"}`),
+				err:    wantErr,
+			},
+			Request: req,
+		}, nil
+	})}
+	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, client)
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "token"})
+
+	userinfo, err := (&Server{}).fetchUserInfo(ctx, "https://provider.example/userinfo", tokenSource)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if userinfo["email"] != "user@example.com" {
+		t.Fatal(userinfo)
 	}
 }
 
