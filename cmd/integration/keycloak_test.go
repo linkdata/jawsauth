@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/linkdata/jawsauth/cmd/internal/testdocker"
+	"github.com/moby/moby/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 )
 
@@ -18,7 +20,7 @@ func TestKeycloakFlow(t *testing.T) {
 	ctx := t.Context()
 
 	// Start Keycloak container
-	keycloakContainer, err := startKeycloakContainer(t, ctx)
+	keycloakContainer, containerPort, err := startKeycloakContainer(t, ctx)
 	defer func() {
 		if keycloakContainer != nil {
 			if t.Failed() {
@@ -39,7 +41,7 @@ func TestKeycloakFlow(t *testing.T) {
 		t.Fatalf("Failed to get container host: %v", err)
 	}
 
-	port, err := keycloakContainer.MappedPort(ctx, "8080/tcp")
+	port, err := keycloakContainer.MappedPort(ctx, containerPort)
 	if err != nil {
 		t.Fatalf("Failed to get container port: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestKeycloakFlow(t *testing.T) {
 	serverHandlerTest(t, baseURL, realm, "testclient", clientSecret)
 }
 
-func startKeycloakContainer(t *testing.T, ctx context.Context) (testcontainers.Container, error) {
+func startKeycloakContainer(t *testing.T, ctx context.Context) (testcontainers.Container, string, error) {
 	t.Helper()
 	defer func() {
 		if x := recover(); x != nil {
@@ -103,7 +105,7 @@ func startKeycloakContainer(t *testing.T, ctx context.Context) (testcontainers.C
 		}
 	}()
 	req := testcontainers.ContainerRequest{
-		Image:        "quay.io/keycloak/keycloak:latest",
+		Image:        testdocker.KeycloakImage,
 		ExposedPorts: []string{"8080/tcp"},
 		Env: map[string]string{
 			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
@@ -111,16 +113,42 @@ func startKeycloakContainer(t *testing.T, ctx context.Context) (testcontainers.C
 		},
 		Cmd: []string{"start-dev"},
 	}
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to start container: %w", err)
+	hostNetwork := testdocker.HostNetworkAvailable(ctx, req.Image)
+	t.Logf("Docker host network available: %t", hostNetwork)
+	attempts := 1
+	if hostNetwork {
+		attempts = 3
+		req.HostConfigModifier = func(hc *container.HostConfig) { hc.NetworkMode = "host" }
 	}
-
-	return container, waitForKeycloak(ctx, container)
+	containerPort := "8080/tcp"
+	var lastErr error
+	for range attempts {
+		if hostNetwork {
+			port, err := testdocker.FreePort()
+			if err != nil {
+				return nil, "", err
+			}
+			containerPort = port + "/tcp"
+			req.Cmd = []string{"start-dev", "--http-host=127.0.0.1", "--http-port=" + port}
+		}
+		started, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+			ContainerRequest: req,
+			Started:          true,
+		})
+		if err == nil {
+			err = waitForKeycloak(ctx, started, containerPort)
+		}
+		if err == nil {
+			return started, containerPort, nil
+		}
+		if hostNetwork && testdocker.PortInUse(ctx, started) {
+			lastErr = err
+			_ = started.Terminate(context.WithoutCancel(ctx))
+			continue
+		}
+		return started, containerPort, fmt.Errorf("failed to start container: %w", err)
+	}
+	return nil, "", fmt.Errorf("keycloak port was occupied on all %d attempts: %w", attempts, lastErr)
 }
 
 func printLogs(ctx context.Context, container testcontainers.Container) {
@@ -404,13 +432,13 @@ func getUserInfoEmail(ctx context.Context, baseURL, realm, accessToken string) (
 	return email, nil
 }
 
-func waitForKeycloak(ctx context.Context, container testcontainers.Container) error {
+func waitForKeycloak(ctx context.Context, container testcontainers.Container, containerPort string) error {
 	host, err := container.Host(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get container host: %w", err)
 	}
 
-	mappedPort, err := container.MappedPort(ctx, "8080/tcp")
+	mappedPort, err := container.MappedPort(ctx, containerPort)
 	if err != nil {
 		return fmt.Errorf("failed to get mapped port: %w", err)
 	}
@@ -418,6 +446,13 @@ func waitForKeycloak(ctx context.Context, container testcontainers.Container) er
 	url := fmt.Sprintf("http://%s:%s/", host, mappedPort.Port())
 
 	for range 20 { // Retry for ~60 seconds (20 attempts, 3 seconds each)
+		state, err := container.State(ctx)
+		if err != nil {
+			return err
+		}
+		if !state.Running {
+			return fmt.Errorf("keycloak container exited with code %d", state.ExitCode)
+		}
 		resp, err := http.Get(url)
 		if err == nil {
 			statusCode := resp.StatusCode

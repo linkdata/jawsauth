@@ -55,6 +55,7 @@ type fakeContainer struct {
 	hostErr      error
 	portErr      error
 	terminateErr error
+	terminated   *bool
 }
 
 func (container fakeContainer) Host(context.Context) (string, error) {
@@ -69,6 +70,9 @@ func (container fakeContainer) MappedPort(context.Context, string) (network.Port
 }
 
 func (container fakeContainer) Terminate(context.Context, ...testcontainers.TerminateOption) error {
+	if container.terminated != nil {
+		*container.terminated = true
+	}
 	return container.terminateErr
 }
 
@@ -145,6 +149,20 @@ func TestStartKeycloakServerErrorsAndSuccess(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("container start failure cleans up", func(t *testing.T) {
+		resetKeycloakDeps(t)
+		var terminated bool
+		keycloakContainer = func(context.Context, testcontainers.GenericContainerRequest) (testcontainers.Container, error) {
+			return fakeContainer{terminated: &terminated}, errors.New("start failure")
+		}
+		if _, err := startKeycloakServer(t.Context(), "image", "admin-pass"); err == nil {
+			t.Fatal("expected container startup failure")
+		}
+		if !terminated {
+			t.Fatal("failed container was not terminated")
+		}
+	})
 
 	t.Run("success", func(t *testing.T) {
 		resetKeycloakDeps(t)

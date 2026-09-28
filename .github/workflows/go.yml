@@ -8,9 +8,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,6 +95,12 @@ jobs:
         working-directory: cmd
         run: go test -race ./...
 
+      - name: Test (cmd, bridge networking)
+        working-directory: cmd
+        env:
+          JAWSAUTH_TEST_FORCE_BRIDGE: "1"
+        run: go test -race ./...
+
       - name: Calculate code coverage
         id: coverage
         run: |
@@ -112,6 +120,30 @@ jobs:
       - name: Build (cmd)
         working-directory: cmd
         run: go build -v ./...
+
+  cmd:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: cmd/go.sum
+
+      - name: Test (cmd)
+        working-directory: cmd
+        run: go test -race -v ./...
+
+      - name: Test (cmd, bridge networking)
+        working-directory: cmd
+        env:
+          JAWSAUTH_TEST_FORCE_BRIDGE: "1"
+        run: go test -race -v ./...
 
   coverage:
     needs: build

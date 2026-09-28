@@ -15,23 +15,62 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/linkdata/jawsauth/cmd/internal/testdocker"
+	"github.com/moby/moby/api/types/container"
+	"github.com/testcontainers/testcontainers-go"
 )
 
 func TestIntegrationLoginWorks(t *testing.T) {
-	t.Parallel()
-
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
+	opts := demoOptions{
+		ListenAddr:    "127.0.0.1:0",
+		PasswordFile:  filepath.Join(t.TempDir(), "password.txt"),
+		Realm:         "jawsauth-demo-it",
+		ClientID:      "jawsauth-demo-it-client",
+		Username:      "demouser",
+		UserEmail:     "demouser@example.com",
+		KeycloakImage: testdocker.KeycloakImage,
+	}
+	oldDefaultHost := keycloakDefaultHost
+	keycloakDefaultHost = func() (string, error) { return "127.0.0.1", nil }
+	t.Cleanup(func() { keycloakDefaultHost = oldDefaultHost })
+	hostNetwork := testdocker.HostNetworkAvailable(ctx, opts.KeycloakImage)
+	t.Logf("Docker host network available: %t", hostNetwork)
+	portInUse := errors.New("keycloak port already in use")
+	attempts := 1
+	if hostNetwork {
+		attempts = 3
+		oldHTTPSPort := keycloakHTTPSPort
+		t.Cleanup(func() { keycloakHTTPSPort = oldHTTPSPort })
+		oldContainer := keycloakContainer
+		keycloakContainer = func(ctx context.Context, req testcontainers.GenericContainerRequest) (testcontainers.Container, error) {
+			req.Cmd = append(req.Cmd, "--http-host=127.0.0.1")
+			req.HostConfigModifier = func(hc *container.HostConfig) { hc.NetworkMode = "host" }
+			started, err := oldContainer(ctx, req)
+			if err != nil && testdocker.PortInUse(ctx, started) {
+				err = errors.Join(err, portInUse)
+			}
+			return started, err
+		}
+		t.Cleanup(func() { keycloakContainer = oldContainer })
+	}
 
-	passwordFile := filepath.Join(t.TempDir(), "password.txt")
-	demo, err := startDemo(ctx, demoOptions{
-		ListenAddr:   "127.0.0.1:0",
-		PasswordFile: passwordFile,
-		Realm:        "jawsauth-demo-it",
-		ClientID:     "jawsauth-demo-it-client",
-		Username:     "demouser",
-		UserEmail:    "demouser@example.com",
-	})
+	var demo *demoServer
+	var err error
+	for range attempts {
+		if hostNetwork {
+			keycloakHTTPSPort, err = testdocker.FreePort()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		demo, err = startDemo(ctx, opts)
+		if !errors.Is(err, portInUse) {
+			break
+		}
+	}
 	if err != nil {
 		if isDockerUnavailableError(err) {
 			t.Skipf("docker unavailable: %v", err)
@@ -46,7 +85,7 @@ func TestIntegrationLoginWorks(t *testing.T) {
 		}
 	})
 
-	passwordBytes, err := os.ReadFile(passwordFile)
+	passwordBytes, err := os.ReadFile(opts.PasswordFile)
 	if err != nil {
 		t.Fatal(err)
 	}
