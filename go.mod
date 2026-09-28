@@ -1,10 +1,10 @@
 module github.com/linkdata/jawsauth
 
-go 1.25.0
+go 1.27.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.20.0
-	github.com/linkdata/jaws v0.800.0
+	github.com/linkdata/jaws v0.805.0
 	github.com/linkdata/secureheaders v1.5.0
 	golang.org/x/oauth2 v0.36.0
 )
