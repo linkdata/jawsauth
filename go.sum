@@ -6,8 +6,8 @@ github.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz
 github.com/go-jose/go-jose/v4 v4.1.4/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=
 github.com/linkdata/deadlock v0.5.5 h1:d6O+rzEqasSfamGDA8u7bjtaq7hOX8Ha4Zn36Wxrkvo=
 github.com/linkdata/deadlock v0.5.5/go.mod h1:tXb28stzAD3trzEEK0UJWC+rZKuobCoPktPYzebb1u0=
-github.com/linkdata/jaws v0.800.0 h1:8zmy9tiuZGy7nxrMaCc2lTuJ2iPAUEbcFtoPSY2pPZ4=
-github.com/linkdata/jaws v0.800.0/go.mod h1:+XimptZf6unq6ugOcn5z+4B8P2o89KBs4VVZV7pJuX0=
+github.com/linkdata/jaws v0.805.0 h1:aeMSBFbqaVVQYPTfD8chW+9cZKFu0Bm3hPhJitDllWM=
+github.com/linkdata/jaws v0.805.0/go.mod h1:WAjBu+Fgwzf8ydzQJDP6x+WL/5/w5O3bYyFrjtvazAc=
 github.com/linkdata/jq v0.6.0 h1:yxAeWsknIWmt7Wbr5CIEkj2i1WwC2DnJDZlOrPxJkr0=
 github.com/linkdata/jq v0.6.0/go.mod h1:b76MMuWybyXrVEKSHJkv+r5IEattnghPf1bNRJ5PNlE=
 github.com/linkdata/secureheaders v1.5.0 h1:4kI290hrVUYqluxF8pQfRYpbZuorSd9+8GlMgrLcrK4=
@@ -17,7 +17,5 @@ github.com/linkdata/staticserve v1.1.8/go.mod h1:uOUrHkbNEkVXWvuw7gk0ydm39r9Y1Re
 github.com/petermattis/goid v0.0.0-20250813065127-a731cc31b4fe/go.mod h1:pxMtw7cyUw6B2bRH0ZBANSPg+AoSud1I1iyJHI69jH4=
 github.com/petermattis/goid v0.0.0-20260820044319-269ab09b5261 h1:lcWAnrqr2nNfDiArwFNHCE4787Mw2tCdVSOXCru0/0E=
 github.com/petermattis/goid v0.0.0-20260820044319-269ab09b5261/go.mod h1:pxMtw7cyUw6B2bRH0ZBANSPg+AoSud1I1iyJHI69jH4=
-golang.org/x/net v0.58.0 h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=
-golang.org/x/net v0.58.0/go.mod h1:YwCddHnFlT7eLQqVprV19OnhLGtc5xOKgE0RyqgfWAU=
 golang.org/x/oauth2 v0.36.0 h1:peZ/1z27fi9hUOFCAZaHyrpWG5lwe0RJEEEeH0ThlIs=
 golang.org/x/oauth2 v0.36.0/go.mod h1:YDBUJMTkDnJS+A4BP4eZBjCqtokkg1hODuPjwiGPO7Q=
