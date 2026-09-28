@@ -93,6 +93,12 @@ jobs:
         working-directory: cmd
         run: go test -race ./...
 
+      - name: Test (cmd, bridge networking)
+        working-directory: cmd
+        env:
+          JAWSAUTH_TEST_FORCE_BRIDGE: "1"
+        run: go test -race ./...
+
       - name: Calculate code coverage
         id: coverage
         run: |

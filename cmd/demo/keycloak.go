@@ -56,6 +56,7 @@ var (
 	keycloakGeneratePEM = generateSelfSignedCertificatePEM
 	keycloakContainer   = testcontainers.GenericContainer
 	keycloakDefaultHost = defaultInterfaceAddress
+	keycloakHTTPSPort   = "8443"
 )
 
 func startKeycloakServer(ctx context.Context, image, adminPassword string) (*keycloakServer, error) {
@@ -90,23 +91,23 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 
 	req := testcontainers.ContainerRequest{
 		Image:        image,
-		ExposedPorts: []string{"8443/tcp"},
+		ExposedPorts: []string{keycloakHTTPSPort + "/tcp"},
 		Env: map[string]string{
 			"KC_BOOTSTRAP_ADMIN_USERNAME":   defaultKeycloakAdminUser,
 			"KC_BOOTSTRAP_ADMIN_PASSWORD":   adminPassword,
 			"KC_HTTP_ENABLED":               "false",
-			"KC_HTTPS_PORT":                 "8443",
+			"KC_HTTPS_PORT":                 keycloakHTTPSPort,
 			"KC_HTTPS_CERTIFICATE_FILE":     "/opt/keycloak/conf/server.crt",
 			"KC_HTTPS_CERTIFICATE_KEY_FILE": "/opt/keycloak/conf/server.key",
 			"KC_HOSTNAME_STRICT":            "false",
 		},
-		Cmd: []string{"start-dev", "--https-port=8443", "--http-enabled=false"},
+		Cmd: []string{"start-dev", "--https-port=" + keycloakHTTPSPort, "--http-enabled=false"},
 		Files: []testcontainers.ContainerFile{
 			{HostFilePath: certPath, ContainerFilePath: "/opt/keycloak/conf/server.crt", FileMode: 0o644},
 			{HostFilePath: keyPath, ContainerFilePath: "/opt/keycloak/conf/server.key", FileMode: 0o644},
 		},
 		WaitingFor: wait.ForHTTP("/").
-			WithPort("8443/tcp").
+			WithPort(keycloakHTTPSPort + "/tcp").
 			WithTLS(true).
 			WithAllowInsecure(true).
 			WithStartupTimeout(2 * time.Minute),
@@ -117,6 +118,11 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 		Started:          true,
 	})
 	if err != nil {
+		if container != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			_ = container.Terminate(cleanupCtx, testcontainers.StopTimeout(0))
+			cancel()
+		}
 		cleanupTempDir()
 		return nil, fmt.Errorf("start keycloak container: %w", err)
 	}
@@ -128,7 +134,7 @@ func startKeycloakServer(ctx context.Context, image, adminPassword string) (*key
 		return nil, fmt.Errorf("resolve keycloak host: %w", err)
 	}
 
-	port, err := container.MappedPort(ctx, "8443/tcp")
+	port, err := container.MappedPort(ctx, keycloakHTTPSPort+"/tcp")
 	if err != nil {
 		_ = container.Terminate(ctx)
 		cleanupTempDir()
