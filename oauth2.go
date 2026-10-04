@@ -27,6 +27,9 @@ const oauth2PKCEVerifierKey = "oauth2pkceverifier"
 const oauth2NonceKey = "oauth2nonce"
 const oauth2IDTokenExpiryKey = "oauth2idtokenexpiry" // #nosec G101
 
+// maxRedirectTargetLen bounds return targets retained in pre-auth sessions.
+const maxRedirectTargetLen = 2048
+
 func normalizeHost(hostport string) (normalized string) {
 	normalized = strings.TrimSpace(hostport)
 	if normalized != "" {
@@ -56,15 +59,8 @@ func sanitizeRedirectTarget(requestHost, location string) (sanitized string) {
 		}
 	}
 	sanitized = strings.TrimSpace(sanitized)
-	if sanitized != "" {
-		if !strings.HasPrefix(sanitized, "/") {
-			sanitized = "/" + sanitized
-		}
-		for strings.HasPrefix(sanitized, "//") {
-			sanitized = "/" + strings.TrimLeft(sanitized, "/")
-		}
-	}
-	if sanitized == "" {
+	sanitized = "/" + strings.TrimLeft(sanitized, "/\\")
+	if len(sanitized) > maxRedirectTargetLen {
 		sanitized = "/"
 	}
 	return
@@ -86,6 +82,7 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location s
 //
 // For GET requests it generates and stores the state, nonce and PKCE verifier in the
 // session, then responds with a 302 redirect to the provider's authorization URL.
+// If no session can be created, it returns 503 with Retry-After instead.
 // Non-GET requests receive 405.
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
@@ -96,19 +93,22 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 			if sess == nil {
 				sess = srv.Jaws.NewSession(hw, hr)
 			}
-			if sess != nil {
-				authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
-				state := randomHexString()
-				sess.Set(oauth2StateKey, state)
-				nonce := randomHexString()
-				sess.Set(oauth2NonceKey, nonce)
-				authOptions = append(authOptions, oidc.Nonce(nonce))
-				verifier := oauth2.GenerateVerifier()
-				sess.Set(oauth2PKCEVerifierKey, verifier)
-				authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-				sess.Set(oauth2ReferrerKey, location)
-				location = oauth2cfg.AuthCodeURL(state, authOptions...)
+			if sess == nil {
+				hw.Header().Set("Retry-After", "60")
+				srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
+				return
 			}
+			authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
+			state := randomHexString()
+			sess.Set(oauth2StateKey, state)
+			nonce := randomHexString()
+			sess.Set(oauth2NonceKey, nonce)
+			authOptions = append(authOptions, oidc.Nonce(nonce))
+			verifier := oauth2.GenerateVerifier()
+			sess.Set(oauth2PKCEVerifierKey, verifier)
+			authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+			sess.Set(oauth2ReferrerKey, location)
+			location = oauth2cfg.AuthCodeURL(state, authOptions...)
 		}
 		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
