@@ -4,9 +4,11 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"unicode"
 )
 
-// ErrOAuth2Callback matches OAuth2 callback errors returned by the identity provider.
+// ErrOAuth2Callback matches OAuth2 error-redirect parameters relayed by the browser.
+// These values are untrusted: any client can supply them, regardless of the provider.
 var ErrOAuth2Callback = errors.New("oauth2 callback error")
 
 // OAuth2CallbackError describes an OAuth2 callback error response.
@@ -42,13 +44,22 @@ func (err *OAuth2CallbackError) Is(target error) bool {
 	return target == ErrOAuth2Callback
 }
 
+func callbackParam(hr *http.Request, key string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) {
+			return ' '
+		}
+		return r
+	}, hr.FormValue(key)))
+}
+
 func oauth2CallbackError(statusCode int, hr *http.Request) (nextStatusCode int, err error) {
 	nextStatusCode = statusCode
-	if s := strings.TrimSpace(hr.FormValue("error")); s != "" {
+	if s := callbackParam(hr, "error"); s != "" {
 		callbackErr := &OAuth2CallbackError{
 			Code:        s,
-			Description: strings.TrimSpace(hr.FormValue("error_description")),
-			URI:         strings.TrimSpace(hr.FormValue("error_uri")),
+			Description: callbackParam(hr, "error_description"),
+			URI:         callbackParam(hr, "error_uri"),
 		}
 		nextStatusCode = http.StatusBadRequest
 		switch callbackErr.Code {

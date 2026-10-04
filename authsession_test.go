@@ -2,8 +2,10 @@ package jawsauth
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1108,5 +1110,37 @@ func TestServerLogout(t *testing.T) {
 	}
 	if srv.Logout(nil, req) {
 		t.Fatal("nil session should report nothing cleared")
+	}
+}
+
+func TestAuthDebugSessionReference(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	var output strings.Builder
+	jw.Debug = true
+	jw.Logger = slog.New(slog.NewTextHandler(&output, nil))
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	expiry := time.Now().Add(time.Hour)
+	if err = srv.storeSessionAuthClaims(t.Context(), sess, map[string]any{"email": "user@example.com"}, tokenSourceFunc(func() (*oauth2.Token, error) {
+		return nil, errAuthSessionTestToken
+	}), expiry, nil); err != nil {
+		t.Fatal(err)
+	}
+	factory.timer(0).fire()
+	srv.Logout(sess, req)
+	logs := output.String()
+	for _, forbidden := range []string{"session_id=", strconv.FormatUint(sess.ID(), 10), sess.CookieValue()} {
+		if strings.Contains(logs, forbidden) {
+			t.Fatal("session identifier appeared in debug output")
+		}
+	}
+	if !strings.Contains(logs, "session_ref="+debugSessionRef(sess)) || debugSessionRef(nil) != "" {
+		t.Fatal("missing stable session reference")
 	}
 }
