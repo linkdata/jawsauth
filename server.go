@@ -28,7 +28,12 @@ func normalizeEmail(s string) (email string) {
 	if m, e := mail.ParseAddress(s); e == nil {
 		s = m.Address
 	}
-	email = strings.ToLower(strings.TrimSpace(s))
+	email = strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, strings.TrimSpace(s))
 	return
 }
 
@@ -77,16 +82,22 @@ type Server struct {
 	LogoutEvent             EventFunc               // if not nil, called before logout; hr may be nil for timer-driven logout
 	LoginFailed             FailedFunc              // if not nil, called on failed login
 	Options                 []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
-	oauth2cfg               *oauth2.Config
-	idTokenVerifier         *oidc.IDTokenVerifier
-	userinfoUrl             string
-	httpClient              *http.Client
-	ishttps                 bool
-	mu                      sync.Mutex          // protects following
-	admins                  map[string]struct{} // if not empty, emails of admins
-	handle403               http.Handler        // handler for 403 Forbidden
-	authTimers              map[uint64]*authTimerState
-	authTimerAfterFunc      authTimerAfterFunc
+
+	// RequireVerifiedAdminEmail requires email_verified for a non-empty admin list.
+	// It defaults to false for providers such as Microsoft Entra ID that omit it.
+	// Set before serving requests. It does not restrict ordinary authenticated users.
+	RequireVerifiedAdminEmail bool
+
+	oauth2cfg          *oauth2.Config
+	idTokenVerifier    *oidc.IDTokenVerifier
+	userinfoUrl        string
+	httpClient         *http.Client
+	ishttps            bool
+	mu                 sync.Mutex          // protects following
+	admins             map[string]struct{} // if not empty, emails of admins
+	handle403          http.Handler        // handler for 403 Forbidden
+	authTimers         map[uint64]*authTimerState
+	authTimerAfterFunc authTimerAfterFunc
 }
 
 // NewDebug behaves like New but can override the scheme and host of cfg.RedirectURL.
@@ -155,6 +166,8 @@ func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) {
 }
 
 // IsAdmin returns true if email belongs to an admin, if the list of admins is empty, or if srv is nil.
+// This address-only lookup cannot verify email ownership. WrapAdmin, HandlerAdmin
+// and JawsAuth.IsAdmin also enforce RequireVerifiedAdminEmail on session claims.
 func (srv *Server) IsAdmin(email string) (yes bool) {
 	yes = true
 	if srv != nil {
@@ -165,6 +178,24 @@ func (srv *Server) IsAdmin(email string) (yes bool) {
 		srv.mu.Unlock()
 	}
 	return
+}
+
+func (srv *Server) sessionIsAdmin(sess *jaws.Session) bool {
+	if srv == nil {
+		return true
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.admins) == 0 {
+		return true
+	}
+	if sess == nil {
+		return false
+	}
+	email, _ := sess.Get(srv.SessionEmailKey).(string)
+	verified, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool)
+	_, listed := srv.admins[normalizeEmail(email)]
+	return listed && (!srv.RequireVerifiedAdminEmail || verified)
 }
 
 // SetAdmins sets the emails of administrators. If empty, everyone is considered an administrator.

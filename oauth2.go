@@ -187,9 +187,28 @@ func randomHexString() string {
 	return hex.EncodeToString(b[:])
 }
 
-func mergeMissingClaims(dst, src map[string]any) {
-	if dst != nil {
-		for k, v := range src {
+// mergeUserInfoClaims accepts fallback claims only for the verified subject.
+// Email verification stays paired with the email from the same response.
+func mergeUserInfoClaims(dst, src map[string]any) {
+	subject, _ := dst["sub"].(string)
+	if other, _ := src["sub"].(string); subject == "" || other != subject {
+		return
+	}
+	_, hasEmail := dst["email"]
+	if !hasEmail {
+		if email, ok := src["email"]; ok {
+			dst["email"] = email
+			dst["email_verified"] = src["email_verified"]
+		}
+	} else if _, hasVerified := dst["email_verified"]; !hasVerified {
+		email, _ := dst["email"].(string)
+		other, _ := src["email"].(string)
+		if email != "" && other != "" && normalizeEmail(email) == normalizeEmail(other) {
+			dst["email_verified"] = src["email_verified"]
+		}
+	}
+	for k, v := range src {
+		if k != "email_verified" {
 			if _, ok := dst[k]; !ok {
 				dst[k] = v
 			}
@@ -197,12 +216,12 @@ func mergeMissingClaims(dst, src map[string]any) {
 	}
 }
 
-func (srv *Server) extractEmail(claims map[string]any) (sessEmailValue any) {
+func (srv *Server) extractEmail(claims map[string]any) (sessEmailValue any, verified bool) {
 	for _, k := range []string{"email", "mail", "public_email"} {
 		if s, ok := claims[k].(string); ok {
 			if s = strings.TrimSpace(s); s != "" {
 				if m, err := mail.ParseAddress(s); err == nil {
-					return strings.ToLower(strings.TrimSpace(m.Address))
+					return normalizeEmail(m.Address), k == "email" && extractEmailVerified(claims)
 				}
 			}
 		}

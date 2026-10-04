@@ -42,7 +42,7 @@ func (a *JawsAuth) IsAdmin() (yes bool) {
 	if a == nil || a.server == nil {
 		yes = true
 	} else {
-		yes = a.server.IsAdmin(a.Email())
+		yes = a.server.sessionIsAdmin(a.sess)
 	}
 	return
 }

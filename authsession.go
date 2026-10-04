@@ -105,7 +105,7 @@ func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Sessio
 			err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
 			if !expiry.IsZero() {
 				if fallback, e := srv.fetchUserInfo(ctx, srv.userinfoUrl, tokenSource); srv.Jaws.Log(e) == nil {
-					mergeMissingClaims(claims, fallback)
+					mergeUserInfoClaims(claims, fallback)
 				}
 				if entry != nil {
 					if !srv.sessionAuthTimerCurrent(sess, entry) {
@@ -113,12 +113,12 @@ func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Sessio
 						return
 					}
 				}
-				verified := extractEmailVerified(claims)
+				email, verified := srv.extractEmail(claims)
 				claims["email_verified"] = verified
 				sess.Set(srv.SessionKey, claims)
 				sess.Set(srv.SessionTokenKey, tokenSource)
 				sess.Set(oauth2IDTokenExpiryKey, expiry)
-				sess.Set(srv.SessionEmailKey, srv.extractEmail(claims))
+				sess.Set(srv.SessionEmailKey, email)
 				sess.Set(srv.SessionEmailVerifiedKey, verified)
 				srv.Jaws.Dirty(sess)
 				srv.scheduleSessionAuthTimer(sess, expiry)
