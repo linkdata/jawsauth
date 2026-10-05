@@ -61,8 +61,7 @@ type HandleFunc func(uri string, handler http.Handler)
 
 // EventFunc is called for login and logout lifecycle events.
 //
-// For a LogoutEvent triggered by an auth-refresh timer rather than an HTTP request,
-// hr may be nil.
+// For [Server.LogoutEvent], hr may be nil.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
 // FailedFunc is called when a login attempt fails.
@@ -84,7 +83,7 @@ type Server struct {
 	SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
 	HandledPaths            map[string]struct{}     // URI paths we have registered handlers for
 	LoginEvent              EventFunc               // if not nil, called after a successful login
-	LogoutEvent             EventFunc               // if not nil, called before logout; hr may be nil for timer-driven logout
+	LogoutEvent             EventFunc               // if not nil, called after auth is cleared; hr may be nil
 	LoginFailed             FailedFunc              // if not nil, called on failed login
 	Options                 []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
 
@@ -195,7 +194,12 @@ func (srv *Server) sessionIsAdmin(sess *jaws.Session) bool {
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	if len(srv.admins) == 0 {
+	return srv.sessionIsAdminLocked(sess, srv.admins)
+}
+
+// Caller holds srv.mu.
+func (srv *Server) sessionIsAdminLocked(sess *jaws.Session, admins map[string]struct{}) bool {
+	if len(admins) == 0 {
 		return true
 	}
 	if sess == nil {
@@ -204,7 +208,7 @@ func (srv *Server) sessionIsAdmin(sess *jaws.Session) bool {
 	email, _ := sess.Get(srv.SessionEmailKey).(string)
 	verified, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool)
 	// Session emails are already parsed; parsing again can change quoted local parts.
-	_, listed := srv.admins[foldEmailCase(email)]
+	_, listed := admins[foldEmailCase(email)]
 	return listed && (!srv.RequireVerifiedAdminEmail || verified)
 }
 
@@ -213,20 +217,33 @@ func (srv *Server) sessionIsAdmin(sess *jaws.Session) bool {
 // Addresses are parsed with [mail.ParseAddress] and ASCII letters are lowercased.
 // Non-ASCII characters are matched exactly. If empty, everyone is considered an
 // administrator. Session checks also apply [Server.RequireVerifiedAdminEmail].
+//
+// Sessions losing admin access have all their live JaWS requests cancelled;
+// they remain authenticated and can reopen non-admin pages.
 func (srv *Server) SetAdmins(emails []string) {
-	if srv != nil {
-		srv.mu.Lock()
-		defer srv.mu.Unlock()
-		if srv.admins == nil {
-			srv.admins = make(map[string]struct{})
-		}
-		clear(srv.admins)
-		for _, s := range emails {
-			if s = normalizeEmail(s); s != "" {
-				srv.admins[s] = struct{}{}
-			}
+	if srv == nil {
+		return
+	}
+	admins := make(map[string]struct{})
+	for _, email := range emails {
+		if email = normalizeEmail(email); email != "" {
+			admins[email] = struct{}{}
 		}
 	}
+	var sessions []*jaws.Session
+	if srv.Jaws != nil {
+		sessions = srv.Jaws.Sessions()
+	}
+	var requests []*jaws.Request
+	srv.mu.Lock()
+	for _, sess := range sessions {
+		if sess.Get(srv.SessionKey) != nil && srv.sessionIsAdminLocked(sess, srv.admins) && !srv.sessionIsAdminLocked(sess, admins) {
+			requests = append(requests, sess.Requests()...)
+		}
+	}
+	srv.admins = admins
+	srv.mu.Unlock()
+	cancelAuthRequests(requests)
 }
 
 // GetAdmins returns a sorted list of the administrator emails. If empty, everyone is considered an administrator.

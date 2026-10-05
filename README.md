@@ -35,3 +35,24 @@ An empty admin list allows every authenticated user through the HTTP admin gates
 UserInfo fallback requires a matching non-empty `sub`; its verification flag is
 used only when that response supplies the email or confirms the exact same email
 claim, including case and whitespace.
+
+Successful login rotates the JaWS session and discards pre-login application data.
+UserInfo is fetched before rotation so its latency does not consume the new
+session's idle lifetime.
+Rotation requires a free slot under both session limits until the new cookie is
+published. In particular, `MaxSessionsPerIP = 1` prevents login; allow room for
+rotation when setting limits. If no slot is available, the default response is 503
+and the existing session's authentication and refresh timer are preserved.
+Restart login after capacity becomes available.
+
+Logout and auth expiry cancel the session's live JaWS requests. Protected renders
+also recheck authorization when the HTTP handler returns, cancelling requests
+attached to that session during a concurrent revocation. Already-running handlers
+can finish; applications needing authorization at each event must recheck current
+claims, expiry, and `JawsAuth.IsAdmin` before acting. Changing `SetAdmins` also cancels
+every page of sessions that lose admin access; their ordinary login remains valid.
+Clients reconnect and reload. Use an HTTP endpoint for logout redirects: calling
+`Request.Redirect` after `Server.Logout` in a JaWS event cannot send the redirect
+because that request has been cancelled. Closed or expired JaWS sessions have
+their tokens and timers discarded at the next scheduled refresh, which calls
+`LogoutEvent` with a nil HTTP request.

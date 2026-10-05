@@ -126,7 +126,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method == http.MethodGet {
 		_, location := srv.begin(hr)
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			srv.clearSessionAuth(sess, hr, true, false, nil)
+			srv.clearSessionAuth(sess, hr, nil)
 		}
 		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
@@ -269,12 +269,22 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 	return
 }
 
+func (srv *Server) addUserInfoClaims(ctx context.Context, claims map[string]any, tokenSource oauth2.TokenSource) {
+	if fallback, err := srv.fetchUserInfo(ctx, srv.userinfoUrl, tokenSource); srv.Jaws.Log(err) == nil {
+		mergeUserInfoClaims(claims, fallback)
+	}
+}
+
 // HandleAuthResponse handles the OIDC redirect/callback endpoint.
 //
 // For GET requests it validates the state, exchanges the authorization code using the
-// stored PKCE verifier, verifies the id_token and its nonce, stores the verified claims
-// in the session, and invokes LoginEvent on success or LoginFailed on failure. Non-GET
-// requests receive 405.
+// stored PKCE verifier, verifies the id_token and its nonce, fetches UserInfo, and stores
+// the claims in a new session. It invokes [Server.LoginEvent] on success or
+// [Server.LoginFailed] on failure. Non-GET requests receive 405.
+//
+// Rotation discards pre-login application data and requires a free JaWS session slot.
+// If no slot is available, existing authentication is preserved and the default
+// response is 503. The user must restart login after capacity becomes available.
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
 	err := ErrOAuth2Callback
@@ -331,7 +341,29 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 														var claims map[string]any
 														if err = idToken.Claims(&claims); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
 															tokenSource := oauth2Config.TokenSource(srv.oauth2Context(context.Background()), token)
-															if err = srv.storeSessionAuthClaims(authctx, sess, claims, tokenSource, idToken.Expiry, nil); err == nil {
+															// Finish network work before starting the new session's idle lifetime.
+															srv.addUserInfoClaims(authctx, claims, tokenSource)
+															referrer := sess.Get(oauth2ReferrerKey)
+															requests := sess.Requests()
+															_, hadAuth := srv.sessionAuthStatus(sess, nil)
+															err = ErrOAuth2MissingSession
+															statusCode = http.StatusServiceUnavailable
+															if rotated := srv.Jaws.NewSession(hw, hr); rotated != nil {
+																srv.mu.Lock()
+																hadTimer := srv.authTimers[sess.ID()] != nil
+																srv.stopSessionAuthTimerLocked(sess, nil)
+																srv.mu.Unlock()
+																cancelAuthRequests(requests)
+																if hadAuth && hadTimer && srv.LogoutEvent != nil {
+																	srv.LogoutEvent(sess, hr)
+																}
+																sess = rotated
+																sess.Set(oauth2ReferrerKey, referrer)
+																err = srv.storeSessionAuthClaims(sess, claims, tokenSource, idToken.Expiry, nil)
+															} else {
+																hw.Header().Set("Retry-After", "60")
+															}
+															if err == nil {
 																sessValue = claims
 																sessEmail, _ = sess.Get(srv.SessionEmailKey).(string)
 																if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
