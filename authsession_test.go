@@ -1113,7 +1113,7 @@ func TestServerLogout(t *testing.T) {
 	}
 }
 
-func TestAuthDebugSessionReference(t *testing.T) {
+func TestAuthDebugSessionPrefix(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {
 		t.Fatal(err)
@@ -1140,7 +1140,11 @@ func TestAuthDebugSessionReference(t *testing.T) {
 			t.Fatal("session identifier appeared in debug output")
 		}
 	}
-	if !strings.Contains(logs, "session_ref="+debugSessionRef(sess)) || debugSessionRef(nil) != "" {
-		t.Fatal("missing stable session reference")
+	want := ""
+	if encoded := strconv.FormatUint(sess.ID(), 32); len(encoded) >= 12 {
+		want = encoded[:4]
+	}
+	if debugSessionPrefix(sess) != want || !strings.Contains(logs, "session_prefix="+want) || debugSessionPrefix(nil) != "" {
+		t.Fatal("missing session cookie prefix")
 	}
 }

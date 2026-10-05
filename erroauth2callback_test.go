@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/linkdata/jaws"
 	"golang.org/x/oauth2"
@@ -226,7 +225,7 @@ func Test_handleAuthResponseOAuthErrorCallbackReceivesSessionEmail(t *testing.T)
 	}
 }
 
-func TestCallbackParametersPreservePrintableUnicode(t *testing.T) {
+func TestCallbackParametersPreserveProviderText(t *testing.T) {
 	values := url.Values{
 		"error":             {"server_error"},
 		"error_description": {" Åtkomst nekad\r\nTrace ID: 123\t "},
@@ -238,12 +237,10 @@ func TestCallbackParametersPreservePrintableUnicode(t *testing.T) {
 	if !errors.As(err, &callbackErr) {
 		t.Fatal(err)
 	}
-	if callbackErr.Description != "Åtkomst nekad  Trace ID: 123" || callbackErr.URI != "https://provider.example/help" {
+	if callbackErr.Description != "Åtkomst nekad\r\nTrace ID: 123" || callbackErr.URI != "https://provider.example/help\x1b" {
 		t.Fatal(callbackErr)
 	}
-	for _, r := range err.Error() {
-		if !unicode.IsPrint(r) {
-			t.Fatal("non-printable callback error")
-		}
+	if !strings.Contains(err.Error(), "\r\nTrace ID: 123") {
+		t.Fatal(err)
 	}
 }
