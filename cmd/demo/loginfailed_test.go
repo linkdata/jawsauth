@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -61,5 +62,20 @@ func TestDemoLoginFailed(t *testing.T) {
 	}
 	if !strings.Contains(logText, underlyingErr.Error()) {
 		t.Fatalf("log output missing underlying error: %q", logText)
+	}
+}
+
+func TestDemoLoginFailedQuotesError(t *testing.T) {
+	var output strings.Builder
+	original := demoLoginFailedLogger
+	demoLoginFailedLogger = log.New(&output, "", 0)
+	t.Cleanup(func() { demoLoginFailedLogger = original })
+	for _, email := range []string{"", "user@example.com"} {
+		output.Reset()
+		err := errors.New("provider error\r\nTrace ID: 123\x1b")
+		demoLoginFailed(httptest.NewRecorder(), nil, http.StatusBadRequest, err, email)
+		if got := output.String(); strings.Count(got, "\n") != 1 || strings.ContainsAny(got, "\r\x1b") || !strings.Contains(got, strconv.Quote(err.Error())) {
+			t.Fatalf("unquoted log: %q", got)
+		}
 	}
 }

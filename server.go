@@ -58,7 +58,8 @@ type EventFunc func(sess *jaws.Session, hr *http.Request)
 // FailedFunc is called when a login attempt fails.
 //
 // It returns true if it wrote the HTTP response itself, in which case jawsauth writes
-// nothing further.
+// nothing further. Errors can contain untrusted browser-supplied text. Quote errors
+// when logging them and escape them for the output format when rendering them.
 type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
 // Server provides OIDC-verified authentication for JaWS sessions.

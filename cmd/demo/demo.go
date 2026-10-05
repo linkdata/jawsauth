@@ -339,9 +339,9 @@ func demoLoginFailed(hw http.ResponseWriter, hr *http.Request, httpCode int, err
 	}
 
 	if email != "" {
-		demoLoginFailedLogger.Printf("demo login failed: status=%d email=%q err=%v", httpCode, email, err)
+		demoLoginFailedLogger.Printf("demo login failed: status=%d email=%q err=%q", httpCode, email, err)
 	} else {
-		demoLoginFailedLogger.Printf("demo login failed: status=%d err=%v", httpCode, err)
+		demoLoginFailedLogger.Printf("demo login failed: status=%d err=%q", httpCode, err)
 	}
 
 	https := hr != nil && hr.TLS != nil

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -221,5 +222,25 @@ func Test_handleAuthResponseOAuthErrorCallbackReceivesSessionEmail(t *testing.T)
 	}
 	if email, _ := sess.Get(srv.SessionEmailKey).(string); email != "user@example.com" {
 		t.Fatal(email)
+	}
+}
+
+func TestCallbackParametersPreserveProviderText(t *testing.T) {
+	values := url.Values{
+		"error":             {"server_error"},
+		"error_description": {" Åtkomst nekad\r\nTrace ID: 123\t "},
+		"error_uri":         {"https://provider.example/help\x1b"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/callback?"+values.Encode(), nil)
+	_, err := oauth2CallbackError(http.StatusBadRequest, req)
+	var callbackErr *OAuth2CallbackError
+	if !errors.As(err, &callbackErr) {
+		t.Fatal(err)
+	}
+	if callbackErr.Description != "Åtkomst nekad\r\nTrace ID: 123" || callbackErr.URI != "https://provider.example/help\x1b" {
+		t.Fatal(callbackErr)
+	}
+	if !strings.Contains(err.Error(), "\r\nTrace ID: 123") {
+		t.Fatal(err)
 	}
 }

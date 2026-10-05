@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-// ErrOAuth2Callback matches OAuth2 callback errors returned by the identity provider.
+// ErrOAuth2Callback matches OAuth2 callback errors.
+//
+// Callback fields are untrusted browser input, even when they appear to come
+// from the identity provider.
 var ErrOAuth2Callback = errors.New("oauth2 callback error")
 
 // OAuth2CallbackError describes an OAuth2 callback error response.
