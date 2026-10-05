@@ -100,6 +100,7 @@ func TestUserInfoClaimProvenance(t *testing.T) {
 }
 
 func TestAdminEmailPolicyConcurrentUpdates(t *testing.T) {
+	// Exercise real concurrent updates and reads without forcing an interleaving.
 	jw, err := jaws.New()
 	if err != nil {
 		t.Fatal(err)

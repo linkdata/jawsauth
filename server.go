@@ -174,7 +174,7 @@ func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) {
 
 // IsAdmin returns true if email belongs to an admin, if the list of admins is empty, or if srv is nil.
 //
-// Address parsing and case matching follow [Server.SetAdmins]. This lookup cannot
+// It parses a raw address using the rules in [Server.SetAdmins]. This lookup cannot
 // verify email ownership. [Server.WrapAdmin], [Server.HandlerAdmin] and
 // [JawsAuth.IsAdmin] also enforce [Server.RequireVerifiedAdminEmail].
 func (srv *Server) IsAdmin(email string) (yes bool) {

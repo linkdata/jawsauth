@@ -20,7 +20,8 @@ func (a *JawsAuth) Data() (x map[string]any) {
 
 // Email returns the authenticated email stored in the session, or an empty string.
 //
-// Address parsing and case matching follow [Server.SetAdmins].
+// The value is a parsed address with ASCII letters lowercased.
+// Use [JawsAuth.IsAdmin] to check administrator status.
 // It is safe to call on a nil or zero-value JawsAuth.
 func (a *JawsAuth) Email() (s string) {
 	if a != nil && a.server != nil && a.sess != nil {
@@ -29,7 +30,9 @@ func (a *JawsAuth) Email() (s string) {
 	return
 }
 
-// EmailVerified returns whether the authenticated email was marked verified.
+// EmailVerified reports whether the session address came from a verified email claim.
+//
+// Addresses taken from mail or public_email claims are unverified.
 // It is safe to call on a nil or zero-value JawsAuth.
 func (a *JawsAuth) EmailVerified() (yes bool) {
 	if a != nil && a.server != nil && a.sess != nil {
