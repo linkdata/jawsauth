@@ -384,7 +384,7 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 			gotAuth = hr.Header.Get("Authorization")
 			mu.Unlock()
 			hw.Header().Set("Content-Type", "application/json")
-			_, _ = hw.Write([]byte(`{"email":"userinfo@example.com","name":"Profile Name"}`))
+			_, _ = hw.Write([]byte(`{"sub":"sub-123","email":"userinfo@example.com","name":"Profile Name"}`))
 		default:
 			setProviderErr(fmt.Errorf("unexpected provider path %s", hr.URL.Path))
 			hw.WriteHeader(http.StatusNotFound)
@@ -1183,6 +1183,21 @@ func TestServerExtractEmail(t *testing.T) {
 			want:     "testuser@example.com",
 		},
 		{
+			name:     "literalQuotesInLocalPart",
+			userinfo: map[string]any{"email": `"\"Quoted\""@Example.com`},
+			want:     `"quoted"@example.com`,
+		},
+		{
+			name:     "literalSpacesInLocalPart",
+			userinfo: map[string]any{"email": `" User "@Example.com`},
+			want:     " user @example.com",
+		},
+		{
+			name:     "nonASCIICasePreserved",
+			userinfo: map[string]any{"email": "ÅSA@Example.com"},
+			want:     "Åsa@example.com",
+		},
+		{
 			name:     "mailFieldFallback",
 			userinfo: map[string]any{"mail": "Secondary@Example.com "},
 			want:     "secondary@example.com",
@@ -1210,7 +1225,7 @@ func TestServerExtractEmail(t *testing.T) {
 			handler := &recordingHandler{}
 			jw.Logger = slog.New(handler)
 			srv := &Server{Jaws: jw}
-			got := srv.extractEmail(tc.userinfo)
+			got, _ := srv.extractEmail(tc.userinfo)
 			if tc.expectNil {
 				if got != nil {
 					t.Fatalf("expected nil email value, got %v", got)

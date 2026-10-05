@@ -103,7 +103,7 @@ func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Sessio
 			err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
 			if !expiry.IsZero() {
 				if fallback, e := srv.fetchUserInfo(ctx, srv.userinfoUrl, tokenSource); srv.Jaws.Log(e) == nil {
-					mergeMissingClaims(claims, fallback)
+					mergeUserInfoClaims(claims, fallback)
 				}
 				if entry != nil {
 					if !srv.sessionAuthTimerCurrent(sess, entry) {
@@ -111,13 +111,16 @@ func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Sessio
 						return
 					}
 				}
-				verified := extractEmailVerified(claims)
+				email, verified := srv.extractEmail(claims)
 				claims["email_verified"] = verified
+				// Publish the email and its verification together for admin checks.
+				srv.mu.Lock()
 				sess.Set(srv.SessionKey, claims)
 				sess.Set(srv.SessionTokenKey, tokenSource)
 				sess.Set(oauth2IDTokenExpiryKey, expiry)
-				sess.Set(srv.SessionEmailKey, srv.extractEmail(claims))
+				sess.Set(srv.SessionEmailKey, email)
 				sess.Set(srv.SessionEmailVerifiedKey, verified)
+				srv.mu.Unlock()
 				srv.Jaws.Dirty(sess)
 				srv.scheduleSessionAuthTimer(sess, expiry)
 				err = nil
@@ -358,11 +361,13 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, callLo
 	if srv != nil && sess != nil {
 		if srv.stopSessionAuthTimer(sess, entry) {
 			clearSessionOAuthFlow(sess)
+			srv.mu.Lock()
 			sess.Set(srv.SessionKey, nil)
 			sess.Set(srv.SessionTokenKey, nil)
 			sess.Set(oauth2IDTokenExpiryKey, nil)
 			sess.Set(srv.SessionEmailKey, nil)
 			sess.Set(srv.SessionEmailVerifiedKey, nil)
+			srv.mu.Unlock()
 			if callLogout && srv.LogoutEvent != nil {
 				srv.LogoutEvent(sess, hr)
 			}

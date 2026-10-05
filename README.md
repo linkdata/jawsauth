@@ -17,3 +17,21 @@ Protected routes create JaWS sessions for unauthenticated visitors. Set
 `Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound session counts. When a
 session cannot be created, login returns 503 with `Retry-After: 60`.
 Post-login return targets longer than 8192 bytes fall back to `/`.
+
+Admin allowlists match parsed addresses with ASCII case ignored; non-ASCII
+characters are matched exactly. Session email values use the same case rules.
+Email verification is not required by default. This supports providers such as
+Microsoft Entra ID that omit `email_verified`, but relies on the provider's policy
+for who may claim an address. Microsoft [advises against using its email claim for
+authorization](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference).
+To require verified email for a non-empty admin allowlist, set
+`Server.RequireVerifiedAdminEmail = true` before serving requests. This affects
+`WrapAdmin`, `HandlerAdmin`, and `JawsAuth.IsAdmin`; ordinary login stays available.
+Providers that omit the verification claim cannot grant admin access in this mode.
+`Server.IsAdmin(email)` only checks address membership. `mail` and `public_email`
+are always considered unverified; they can match the allowlist only when strict
+mode is disabled.
+An empty admin list allows every authenticated user through the HTTP admin gates.
+UserInfo fallback requires a matching non-empty `sub`; its verification flag is
+used only when that response supplies the email or confirms the exact same email
+claim, including case and whitespace.

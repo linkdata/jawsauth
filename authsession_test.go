@@ -431,7 +431,7 @@ func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 			userinfoAuth = hr.Header.Get("Authorization")
 			mu.Unlock()
 			hw.Header().Set("Content-Type", "application/json")
-			_, _ = hw.Write([]byte(`{"name":"Profile Name"}`))
+			_, _ = hw.Write([]byte(`{"sub":"sub-123","name":"Profile Name"}`))
 		default:
 			hw.WriteHeader(http.StatusNotFound)
 		}

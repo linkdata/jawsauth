@@ -24,11 +24,21 @@ import (
 // to be non-nil for the lifetime of the Server.
 var ErrServerNilJaws = errors.New("jawsauth: nil *jaws.Jaws")
 
+func foldEmailCase(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, s)
+}
+
 func normalizeEmail(s string) (email string) {
+	s = strings.TrimSpace(s)
 	if m, e := mail.ParseAddress(s); e == nil {
 		s = m.Address
 	}
-	email = strings.ToLower(strings.TrimSpace(s))
+	email = foldEmailCase(s)
 	return
 }
 
@@ -70,23 +80,31 @@ type Server struct {
 	Jaws                    *jaws.Jaws
 	SessionKey              string                  // default is "oidc_claims", value will be of type map[string]any
 	SessionTokenKey         string                  // default is "oauth2_tokensource", value will be of type oauth2.TokenSource
-	SessionEmailKey         string                  // default is "email", value will be of type string
+	SessionEmailKey         string                  // default is "email", value is a parsed string address with ASCII letters lowercased
 	SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
 	HandledPaths            map[string]struct{}     // URI paths we have registered handlers for
 	LoginEvent              EventFunc               // if not nil, called after a successful login
 	LogoutEvent             EventFunc               // if not nil, called before logout; hr may be nil for timer-driven logout
 	LoginFailed             FailedFunc              // if not nil, called on failed login
 	Options                 []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
-	oauth2cfg               *oauth2.Config
-	idTokenVerifier         *oidc.IDTokenVerifier
-	userinfoUrl             string
-	httpClient              *http.Client
-	ishttps                 bool
-	mu                      sync.Mutex          // protects following
-	admins                  map[string]struct{} // if not empty, emails of admins
-	handle403               http.Handler        // handler for 403 Forbidden
-	authTimers              map[uint64]*authTimerState
-	authTimerAfterFunc      authTimerAfterFunc
+
+	// RequireVerifiedAdminEmail requires email_verified for a non-empty admin list.
+	//
+	// It defaults to false. When true, providers that omit email_verified cannot
+	// grant admin access through a non-empty list. Set before serving requests.
+	// Ordinary login is unaffected.
+	RequireVerifiedAdminEmail bool
+
+	oauth2cfg          *oauth2.Config
+	idTokenVerifier    *oidc.IDTokenVerifier
+	userinfoUrl        string
+	httpClient         *http.Client
+	ishttps            bool
+	mu                 sync.Mutex          // protects following fields and session email/verification pairs
+	admins             map[string]struct{} // if not empty, emails of admins
+	handle403          http.Handler        // handler for 403 Forbidden
+	authTimers         map[uint64]*authTimerState
+	authTimerAfterFunc authTimerAfterFunc
 }
 
 // NewDebug behaves like New but can override the scheme and host of cfg.RedirectURL.
@@ -155,6 +173,10 @@ func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) {
 }
 
 // IsAdmin returns true if email belongs to an admin, if the list of admins is empty, or if srv is nil.
+//
+// It parses a raw address using the rules in [Server.SetAdmins]. This lookup cannot
+// verify email ownership. [Server.WrapAdmin], [Server.HandlerAdmin] and
+// [JawsAuth.IsAdmin] also enforce [Server.RequireVerifiedAdminEmail].
 func (srv *Server) IsAdmin(email string) (yes bool) {
 	yes = true
 	if srv != nil {
@@ -167,7 +189,30 @@ func (srv *Server) IsAdmin(email string) (yes bool) {
 	return
 }
 
-// SetAdmins sets the emails of administrators. If empty, everyone is considered an administrator.
+func (srv *Server) sessionIsAdmin(sess *jaws.Session) bool {
+	if srv == nil {
+		return true
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.admins) == 0 {
+		return true
+	}
+	if sess == nil {
+		return false
+	}
+	email, _ := sess.Get(srv.SessionEmailKey).(string)
+	verified, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool)
+	// Session emails are already parsed; parsing again can change quoted local parts.
+	_, listed := srv.admins[foldEmailCase(email)]
+	return listed && (!srv.RequireVerifiedAdminEmail || verified)
+}
+
+// SetAdmins sets the emails of administrators.
+//
+// Addresses are parsed with [mail.ParseAddress] and ASCII letters are lowercased.
+// Non-ASCII characters are matched exactly. If empty, everyone is considered an
+// administrator. Session checks also apply [Server.RequireVerifiedAdminEmail].
 func (srv *Server) SetAdmins(emails []string) {
 	if srv != nil {
 		srv.mu.Lock()
@@ -247,7 +292,8 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 //
 // Unauthenticated requests are redirected into the OIDC login flow (HandleLogin);
 // authenticated users whose email is not an admin (see SetAdmins and IsAdmin) are
-// served the 403 handler instead of h. If the Server is not Valid, returns h.
+// served the 403 handler instead of h. [Server.RequireVerifiedAdminEmail] also
+// applies. If the Server is not Valid, returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, true)
 }
@@ -266,6 +312,7 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 //
 // Unauthenticated requests are redirected into the OIDC login flow (HandleLogin);
 // authenticated non-admins (see SetAdmins and IsAdmin) are served the 403 handler.
+// [Server.RequireVerifiedAdminEmail] also applies.
 // If the Server is not Valid, the template handler is returned without the
 // authentication requirement.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
