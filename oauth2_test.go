@@ -430,7 +430,15 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	sess.Set(oauth2NonceKey, wantNonce)
 	sess.Set(oauth2ReferrerKey, "/secure")
 
+	oldSession := sess
 	srv.HandleAuthResponse(rec, req)
+	sess = jw.GetSession(req)
+	if sess == nil || sess == oldSession || oldSession.Cookie().MaxAge >= 0 {
+		t.Fatal("login did not rotate the session")
+	}
+	if oldSession.Get(srv.SessionKey) != nil {
+		t.Fatal("old session retained authentication")
+	}
 
 	resp := rec.Result()
 	if resp.StatusCode != http.StatusFound {
@@ -551,7 +559,15 @@ func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T)
 	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
 	sess.Set(oauth2NonceKey, wantNonce)
 
+	oldSession := sess
 	srv.HandleAuthResponse(rec, req)
+	sess = jw.GetSession(req)
+	if sess == nil || sess == oldSession || oldSession.Cookie().MaxAge >= 0 {
+		t.Fatal("login did not rotate the session")
+	}
+	if oldSession.Get(srv.SessionKey) != nil {
+		t.Fatal("old session retained authentication")
+	}
 
 	if status := rec.Result().StatusCode; status != http.StatusFound {
 		t.Fatal(status)

@@ -36,7 +36,7 @@ func TestAdminEmailPolicy(t *testing.T) {
 			srv.SetAdmins([]string{"admin@example.com", "kate@example.com", "Åsa@example.com", `"\"quoted\""@example.com`})
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
-			if err = srv.storeSessionAuthClaims(t.Context(), sess, tc.claims, nil, time.Now().Add(time.Hour), nil); err != nil {
+			if err = srv.storeSessionAuthClaims(sess, tc.claims, nil, time.Now().Add(time.Hour), nil); err != nil {
 				t.Fatal(err)
 			}
 			auth := &JawsAuth{server: srv, sess: sess}
@@ -126,7 +126,7 @@ func TestAdminEmailPolicyConcurrentUpdates(t *testing.T) {
 				verified bool
 			}{{"user@example.com", true}, {"admin@example.com", false}} {
 				claims := map[string]any{"sub": "user", "email": state.email, "email_verified": state.verified}
-				if err := srv.storeSessionAuthClaims(t.Context(), sess, claims, nil, expiry, nil); err != nil {
+				if err := srv.storeSessionAuthClaims(sess, claims, nil, expiry, nil); err != nil {
 					t.Error(err)
 					return
 				}

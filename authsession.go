@@ -95,39 +95,52 @@ func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (
 	return
 }
 
-func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState) (err error) {
-	err = ErrOAuth2NotConfigured
-	if srv != nil {
-		err = ErrOAuth2MissingSession
-		if sess != nil {
-			err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
-			if !expiry.IsZero() {
-				if fallback, e := srv.fetchUserInfo(ctx, srv.userinfoUrl, tokenSource); srv.Jaws.Log(e) == nil {
-					mergeUserInfoClaims(claims, fallback)
-				}
-				if entry != nil {
-					if !srv.sessionAuthTimerCurrent(sess, entry) {
-						err = errAuthTimerStale
-						return
-					}
-				}
-				email, verified := srv.extractEmail(claims)
-				claims["email_verified"] = verified
-				// Publish the email and its verification together for admin checks.
-				srv.mu.Lock()
-				sess.Set(srv.SessionKey, claims)
-				sess.Set(srv.SessionTokenKey, tokenSource)
-				sess.Set(oauth2IDTokenExpiryKey, expiry)
-				sess.Set(srv.SessionEmailKey, email)
-				sess.Set(srv.SessionEmailVerifiedKey, verified)
-				srv.mu.Unlock()
-				srv.Jaws.Dirty(sess)
-				srv.scheduleSessionAuthTimer(sess, expiry)
-				err = nil
-			}
-		}
+func sessionAlive(sess *jaws.Session) bool {
+	cookie := sess.Cookie()
+	return cookie != nil && cookie.MaxAge >= 0
+}
+
+func (srv *Server) storeSessionAuthClaims(sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState) error {
+	if srv == nil {
+		return ErrOAuth2NotConfigured
 	}
-	return
+	if sess == nil {
+		return ErrOAuth2MissingSession
+	}
+	if expiry.IsZero() {
+		return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
+	}
+	email, verified := srv.extractEmail(claims) // Logger callbacks must run outside srv.mu.
+	claims["email_verified"] = verified
+	srv.mu.Lock()
+	if entry != nil && srv.authTimers[sess.ID()] != entry {
+		srv.mu.Unlock()
+		return errAuthTimerStale
+	}
+	if !sessionAlive(sess) {
+		srv.mu.Unlock()
+		if entry == nil {
+			return ErrOAuth2MissingSession
+		}
+		srv.clearSessionAuth(sess, nil, entry)
+		return errAuthTimerStale
+	}
+	sess.Set(srv.SessionKey, claims)
+	sess.Set(srv.SessionTokenKey, tokenSource)
+	sess.Set(oauth2IDTokenExpiryKey, expiry)
+	sess.Set(srv.SessionEmailKey, email)
+	sess.Set(srv.SessionEmailVerifiedKey, verified)
+	delay, replaced := srv.scheduleSessionAuthTimerLocked(sess, expiry)
+	srv.mu.Unlock()
+	srv.Jaws.Dirty(sess)
+	srv.debugLog("jawsauth: scheduled auth refresh timer",
+		"session_prefix", debugSessionPrefix(sess),
+		"expiry", expiry,
+		"delay", delay,
+		"refresh_skew", authRefreshSkew,
+		"replaced_existing", replaced,
+	)
+	return nil
 }
 
 func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Session, tokenSource oauth2.TokenSource, token *oauth2.Token, minExpiry time.Time, entry *authTimerState) (err error) {
@@ -146,7 +159,8 @@ func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Sessi
 						} else if !minExpiry.IsZero() && !idToken.Expiry.After(minExpiry) {
 							err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCStaleIDToken}
 						} else {
-							err = srv.storeSessionAuthClaims(ctx, sess, claims, tokenSource, idToken.Expiry, entry)
+							srv.addUserInfoClaims(ctx, claims, tokenSource)
+							err = srv.storeSessionAuthClaims(sess, claims, tokenSource, idToken.Expiry, entry)
 						}
 					}
 				}
@@ -215,35 +229,25 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
 	return
 }
 
-func (srv *Server) scheduleSessionAuthTimer(sess *jaws.Session, expiry time.Time) {
-	if srv != nil && sess != nil && !expiry.IsZero() {
-		delay := max(time.Until(expiry.Add(-authRefreshSkew)), 0)
-		entry := &authTimerState{expiry: expiry}
-		srv.mu.Lock()
-		if srv.authTimers == nil {
-			srv.authTimers = make(map[uint64]*authTimerState)
-		}
-		if srv.authTimerAfterFunc == nil {
-			srv.authTimerAfterFunc = realAuthTimerAfterFunc
-		}
-		replaced := false
-		if old := srv.authTimers[sess.ID()]; old != nil && old.timer != nil {
-			replaced = true
-			old.timer.Stop()
-		}
-		srv.authTimers[sess.ID()] = entry
-		entry.timer = srv.authTimerAfterFunc(delay, func() {
-			srv.handleSessionAuthTimer(sess, entry)
-		})
-		srv.mu.Unlock()
-		srv.debugLog("jawsauth: scheduled auth refresh timer",
-			"session_prefix", debugSessionPrefix(sess),
-			"expiry", expiry,
-			"delay", delay,
-			"refresh_skew", authRefreshSkew,
-			"replaced_existing", replaced,
-		)
+// Caller holds srv.mu across the auth writes and timer replacement.
+func (srv *Server) scheduleSessionAuthTimerLocked(sess *jaws.Session, expiry time.Time) (delay time.Duration, replaced bool) {
+	delay = max(time.Until(expiry.Add(-authRefreshSkew)), 0)
+	entry := &authTimerState{expiry: expiry}
+	if srv.authTimers == nil {
+		srv.authTimers = make(map[uint64]*authTimerState)
 	}
+	if srv.authTimerAfterFunc == nil {
+		srv.authTimerAfterFunc = realAuthTimerAfterFunc
+	}
+	if old := srv.authTimers[sess.ID()]; old != nil && old.timer != nil {
+		replaced = true
+		old.timer.Stop()
+	}
+	srv.authTimers[sess.ID()] = entry
+	entry.timer = srv.authTimerAfterFunc(delay, func() {
+		srv.handleSessionAuthTimer(sess, entry)
+	})
+	return
 }
 
 func (srv *Server) sessionAuthTimerCurrent(sess *jaws.Session, entry *authTimerState) (current bool) {
@@ -255,31 +259,24 @@ func (srv *Server) sessionAuthTimerCurrent(sess *jaws.Session, entry *authTimerS
 	return
 }
 
-func (srv *Server) stopSessionAuthTimer(sess *jaws.Session, entry *authTimerState) (stopped bool) {
-	if srv != nil && sess != nil {
-		srv.mu.Lock()
-		defer srv.mu.Unlock()
-		if entry == nil {
-			if old := srv.authTimers[sess.ID()]; old != nil {
-				delete(srv.authTimers, sess.ID())
-				if old.timer != nil {
-					old.timer.Stop()
-				}
-			}
-			stopped = true
-		} else if srv.authTimers[sess.ID()] == entry {
-			delete(srv.authTimers, sess.ID())
-			if entry.timer != nil {
-				entry.timer.Stop()
-			}
-			stopped = true
-		}
+func (srv *Server) stopSessionAuthTimerLocked(sess *jaws.Session, entry *authTimerState) bool {
+	old := srv.authTimers[sess.ID()]
+	if entry != nil && old != entry {
+		return false
 	}
-	return
+	delete(srv.authTimers, sess.ID())
+	if old != nil && old.timer != nil {
+		old.timer.Stop()
+	}
+	return true
 }
 
 func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerState) {
 	if srv.sessionAuthTimerCurrent(sess, entry) {
+		if !sessionAlive(sess) {
+			srv.clearSessionAuth(sess, nil, entry)
+			return
+		}
 		current, present := srv.sessionAuthStatus(sess, time.Now)
 		srv.debugLog("jawsauth: auth refresh timer fired",
 			"session_prefix", debugSessionPrefix(sess),
@@ -326,7 +323,7 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 				"session_present", present,
 			)
 			_ = srv.Jaws.Log(err)
-			srv.clearSessionAuth(sess, nil, true, true, entry)
+			srv.clearSessionAuth(sess, nil, entry)
 		} else {
 			srv.debugLog("jawsauth: auth refresh timer completed", "session_prefix", debugSessionPrefix(sess))
 		}
@@ -345,46 +342,57 @@ func clearSessionOAuthFlow(sess *jaws.Session) {
 	sess.Set(oauth2ReferrerKey, nil)
 }
 
-// Logout clears all authentication state for the session and returns true if anything
-// was cleared.
+// Logout clears all authentication state for sess.
 //
 // It stops the auth-refresh timer, clears the OIDC claims, token source, email, expiry
-// and any in-flight OAuth flow keys, calls LogoutEvent (if set), and marks the session
-// dirty. It performs no HTTP redirect, so the caller can build its own post-logout
-// response (for example an RP-initiated end-session redirect). It is safe to call with
-// a nil receiver or nil session.
+// and any in-flight OAuth flow keys, then cancels live JaWS requests, calls
+// [Server.LogoutEvent] (if set), and marks the session dirty. It returns false for a
+// nil receiver or nil session, and true otherwise. The hr argument may be nil.
+//
+// It performs no HTTP redirect. An HTTP handler can build its own post-logout
+// response. A JaWS event handler cannot use [jaws.Request.Redirect] after Logout
+// cancels its request; use an HTTP logout endpoint instead.
 func (srv *Server) Logout(sess *jaws.Session, hr *http.Request) (cleared bool) {
-	return srv.clearSessionAuth(sess, hr, true, false, nil)
+	return srv.clearSessionAuth(sess, hr, nil)
 }
 
-func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, callLogout, reload bool, entry *authTimerState) (cleared bool) {
-	if srv != nil && sess != nil {
-		if srv.stopSessionAuthTimer(sess, entry) {
-			clearSessionOAuthFlow(sess)
-			srv.mu.Lock()
-			sess.Set(srv.SessionKey, nil)
-			sess.Set(srv.SessionTokenKey, nil)
-			sess.Set(oauth2IDTokenExpiryKey, nil)
-			sess.Set(srv.SessionEmailKey, nil)
-			sess.Set(srv.SessionEmailVerifiedKey, nil)
-			srv.mu.Unlock()
-			if callLogout && srv.LogoutEvent != nil {
-				srv.LogoutEvent(sess, hr)
-			}
-			srv.Jaws.Dirty(sess)
-			if reload {
-				sess.Reload()
-			}
-			cleared = true
-			srv.debugLog("jawsauth: cleared session auth",
-				"session_prefix", debugSessionPrefix(sess),
-				"request_present", hr != nil,
-				"call_logout", callLogout,
-				"reload", reload,
-				"timer_entry", entry != nil,
-				"entry_expiry", authTimerEntryExpiry(entry),
-			)
+func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry *authTimerState) (cleared bool) {
+	if srv == nil || sess == nil {
+		return
+	}
+	srv.mu.Lock()
+	cleared = srv.stopSessionAuthTimerLocked(sess, entry)
+	var requests []*jaws.Request
+	if cleared {
+		clearSessionOAuthFlow(sess)
+		sess.Set(srv.SessionKey, nil)
+		sess.Set(srv.SessionTokenKey, nil)
+		sess.Set(oauth2IDTokenExpiryKey, nil)
+		sess.Set(srv.SessionEmailKey, nil)
+		sess.Set(srv.SessionEmailVerifiedKey, nil)
+		requests = sess.Requests()
+	}
+	srv.mu.Unlock()
+	if cleared {
+		cancelAuthRequests(requests)
+		if srv.LogoutEvent != nil {
+			srv.LogoutEvent(sess, hr)
 		}
+		srv.Jaws.Dirty(sess)
+		srv.debugLog("jawsauth: cleared session auth",
+			"session_prefix", debugSessionPrefix(sess),
+			"request_present", hr != nil,
+			"timer_entry", entry != nil,
+			"entry_expiry", authTimerEntryExpiry(entry),
+		)
 	}
 	return
+}
+
+func cancelAuthRequests(requests []*jaws.Request) {
+	// ponytail: JaWS v0.805.0 never reuses Request identities; replace this snapshot
+	// cancellation with a Session-level API when JaWS provides one.
+	for _, rq := range requests {
+		rq.Cancel(nil)
+	}
 }
