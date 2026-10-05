@@ -12,3 +12,8 @@ OIDC-verified authentication for [JaWS](https://github.com/linkdata/jaws) sessio
 - Adds PKCE (S256) and OIDC nonce verification to the authorization-code flow.
 - Automatically refreshes the `id_token` in the background before it expires.
 - Supports admin-only handlers: `Wrap`/`Handler` for any authenticated user, `WrapAdmin`/`HandlerAdmin` gated by `SetAdmins`.
+
+Protected routes create JaWS sessions for unauthenticated visitors. Set
+`Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound session counts. When a
+session cannot be created, login returns 503 with `Retry-After: 60`.
+Post-login return targets longer than 8192 bytes fall back to `/`.

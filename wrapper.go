@@ -14,9 +14,6 @@ type wrapper struct {
 func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 	h := w.handler
 	sess := w.server.Jaws.GetSession(hr)
-	if sess == nil {
-		sess = w.server.Jaws.NewSession(hw, hr)
-	}
 	if current, present := w.server.sessionAuthStatus(sess, time.Now); !current {
 		if present {
 			w.server.clearSessionAuth(sess, hr, true, false, nil)

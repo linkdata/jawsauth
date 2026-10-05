@@ -1468,3 +1468,77 @@ func Test_handlersRejectNonGet(t *testing.T) {
 		t.Fatal(string(body))
 	}
 }
+
+func TestRedirectTargetBounds(t *testing.T) {
+	for _, target := range []string{`/\docs`, `\docs`, `/\/docs`} {
+		if got := sanitizeRedirectTarget("example.com", target); got != "/docs" {
+			t.Errorf("target %q: got %q", target, got)
+		}
+	}
+	for _, referer := range []bool{false, true} {
+		for _, tc := range []struct {
+			length   int
+			accepted bool
+		}{
+			// RFC 9110 section 4.1 recommends support for 8000-octet URIs.
+			{8000, true},
+			{maxRedirectTargetLen, true},
+			{maxRedirectTargetLen + 1, false},
+		} {
+			jw, err := jaws.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := newWrapperTestServer(jw, "https://issuer.example")
+			target := "/" + strings.Repeat("a", tc.length-1)
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			if referer {
+				req = httptest.NewRequest(http.MethodGet, "/oauth2/login", nil)
+				req.Header.Set("Referer", target)
+			}
+			srv.HandleLogin(httptest.NewRecorder(), req)
+			want := target
+			if !tc.accepted {
+				want = "/"
+			}
+			if got := jw.GetSession(req).Get(oauth2ReferrerKey); got != want {
+				t.Errorf("referer=%v length=%d: unexpected stored target", referer, tc.length)
+			}
+			jw.Close()
+		}
+	}
+}
+
+func TestLoginSessionUnavailable(t *testing.T) {
+	for _, limit := range []string{"global", "perIP", "closed"} {
+		t.Run(limit, func(t *testing.T) {
+			jw, err := jaws.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer jw.Close()
+			switch limit {
+			case "global":
+				jw.MaxSessions = 1
+			case "perIP":
+				jw.MaxSessionsPerIP = 1
+			}
+			jw.NewSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+			if limit == "closed" {
+				jw.Close()
+			}
+			srv := newWrapperTestServer(jw, "https://issuer.example")
+			for _, handler := range []http.Handler{
+				http.HandlerFunc(srv.HandleLogin),
+				srv.Wrap(testStatusHandler{http.StatusOK}),
+				srv.WrapAdmin(testStatusHandler{http.StatusOK}),
+			} {
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/protected", nil))
+				if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Location") != "" || rec.Header().Get("Retry-After") != "60" {
+					t.Fatalf("status=%d headers=%v", rec.Code, rec.Header())
+				}
+			}
+		})
+	}
+}
