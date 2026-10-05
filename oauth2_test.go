@@ -1183,6 +1183,21 @@ func TestServerExtractEmail(t *testing.T) {
 			want:     "testuser@example.com",
 		},
 		{
+			name:     "literalQuotesInLocalPart",
+			userinfo: map[string]any{"email": `"\"Quoted\""@Example.com`},
+			want:     `"quoted"@example.com`,
+		},
+		{
+			name:     "literalSpacesInLocalPart",
+			userinfo: map[string]any{"email": `" User "@Example.com`},
+			want:     " user @example.com",
+		},
+		{
+			name:     "nonASCIICasePreserved",
+			userinfo: map[string]any{"email": "ÅSA@Example.com"},
+			want:     "Åsa@example.com",
+		},
+		{
 			name:     "mailFieldFallback",
 			userinfo: map[string]any{"mail": "Secondary@Example.com "},
 			want:     "secondary@example.com",

@@ -19,6 +19,8 @@ func (a *JawsAuth) Data() (x map[string]any) {
 }
 
 // Email returns the authenticated email stored in the session, or an empty string.
+//
+// Address parsing and case matching follow [Server.SetAdmins].
 // It is safe to call on a nil or zero-value JawsAuth.
 func (a *JawsAuth) Email() (s string) {
 	if a != nil && a.server != nil && a.sess != nil {
@@ -37,7 +39,9 @@ func (a *JawsAuth) EmailVerified() (yes bool) {
 }
 
 // IsAdmin reports whether the authenticated email is an administrator.
-// A nil or zero-value JawsAuth follows Server.IsAdmin's nil-server behavior and returns true.
+//
+// It applies [Server.RequireVerifiedAdminEmail] to non-empty admin lists.
+// A nil or zero-value JawsAuth follows [Server.IsAdmin]'s nil-server behavior and returns true.
 func (a *JawsAuth) IsAdmin() (yes bool) {
 	if a == nil || a.server == nil {
 		yes = true

@@ -203,7 +203,7 @@ func mergeUserInfoClaims(dst, src map[string]any) {
 	} else if _, hasVerified := dst["email_verified"]; !hasVerified {
 		email, _ := dst["email"].(string)
 		other, _ := src["email"].(string)
-		if email != "" && other != "" && normalizeEmail(email) == normalizeEmail(other) {
+		if email != "" && email == other {
 			dst["email_verified"] = src["email_verified"]
 		}
 	}
@@ -221,7 +221,7 @@ func (srv *Server) extractEmail(claims map[string]any) (sessEmailValue any, veri
 		if s, ok := claims[k].(string); ok {
 			if s = strings.TrimSpace(s); s != "" {
 				if m, err := mail.ParseAddress(s); err == nil {
-					return normalizeEmail(m.Address), k == "email" && extractEmailVerified(claims)
+					return foldEmailCase(m.Address), k == "email" && extractEmailVerified(claims)
 				}
 			}
 		}
