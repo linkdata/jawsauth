@@ -1476,13 +1476,21 @@ func TestRedirectTargetBounds(t *testing.T) {
 		}
 	}
 	for _, referer := range []bool{false, true} {
-		for _, length := range []int{maxRedirectTargetLen, maxRedirectTargetLen + 1} {
+		for _, tc := range []struct {
+			length   int
+			accepted bool
+		}{
+			// RFC 9110 section 4.1 recommends support for 8000-octet URIs.
+			{8000, true},
+			{maxRedirectTargetLen, true},
+			{maxRedirectTargetLen + 1, false},
+		} {
 			jw, err := jaws.New()
 			if err != nil {
 				t.Fatal(err)
 			}
 			srv := newWrapperTestServer(jw, "https://issuer.example")
-			target := "/" + strings.Repeat("a", length-1)
+			target := "/" + strings.Repeat("a", tc.length-1)
 			req := httptest.NewRequest(http.MethodGet, target, nil)
 			if referer {
 				req = httptest.NewRequest(http.MethodGet, "/oauth2/login", nil)
@@ -1490,11 +1498,11 @@ func TestRedirectTargetBounds(t *testing.T) {
 			}
 			srv.HandleLogin(httptest.NewRecorder(), req)
 			want := target
-			if length > maxRedirectTargetLen {
+			if !tc.accepted {
 				want = "/"
 			}
 			if got := jw.GetSession(req).Get(oauth2ReferrerKey); got != want {
-				t.Errorf("referer=%v length=%d: unexpected stored target", referer, length)
+				t.Errorf("referer=%v length=%d: unexpected stored target", referer, tc.length)
 			}
 			jw.Close()
 		}

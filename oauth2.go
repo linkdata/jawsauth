@@ -28,7 +28,7 @@ const oauth2NonceKey = "oauth2nonce"
 const oauth2IDTokenExpiryKey = "oauth2idtokenexpiry" // #nosec G101
 
 // maxRedirectTargetLen bounds return targets retained in pre-auth sessions.
-const maxRedirectTargetLen = 2048
+const maxRedirectTargetLen = 8192
 
 func normalizeHost(hostport string) (normalized string) {
 	normalized = strings.TrimSpace(hostport)

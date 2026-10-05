@@ -16,4 +16,4 @@ OIDC-verified authentication for [JaWS](https://github.com/linkdata/jaws) sessio
 Protected routes create JaWS sessions for unauthenticated visitors. Set
 `Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound session counts. When a
 session cannot be created, login returns 503 with `Retry-After: 60`.
-Post-login return targets longer than 2048 bytes fall back to `/`.
+Post-login return targets longer than 8192 bytes fall back to `/`.
