@@ -182,8 +182,8 @@ func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) 
 }
 
 func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (current, present bool) {
-        <span class="cov10" title="2035">if srv != nil &amp;&amp; sess != nil </span>{
-                <span class="cov10" title="2035">expiryValue := sess.Get(oauth2IDTokenExpiryKey)
+        <span class="cov10" title="2041">if srv != nil &amp;&amp; sess != nil </span>{
+                <span class="cov9" title="2031">expiryValue := sess.Get(oauth2IDTokenExpiryKey)
                 authValue := sess.Get(srv.SessionKey)
                 present = authValue != nil || expiryValue != nil
                 if authValue != nil &amp;&amp; now != nil </span>{
@@ -192,7 +192,7 @@ func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (
 </span>                        }
                 }
         }
-        <span class="cov10" title="2035">return</span>
+        <span class="cov10" title="2041">return</span>
 }
 
 func (srv *Server) storeSessionAuthClaims(ctx context.Context, sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState) (err error) {
@@ -1202,6 +1202,9 @@ const oauth2PKCEVerifierKey = "oauth2pkceverifier"
 const oauth2NonceKey = "oauth2nonce"
 const oauth2IDTokenExpiryKey = "oauth2idtokenexpiry" // #nosec G101
 
+// maxRedirectTargetLen bounds return targets retained in pre-auth sessions.
+const maxRedirectTargetLen = 8192
+
 func normalizeHost(hostport string) (normalized string) {
         <span class="cov10" title="166">normalized = strings.TrimSpace(hostport)
         if normalized != "" </span>{
@@ -1217,78 +1220,75 @@ func normalizeHost(hostport string) (normalized string) {
 }
 
 func sanitizeRedirectTarget(requestHost, location string) (sanitized string) {
-        <span class="cov8" title="87">if trimmed := strings.TrimSpace(location); trimmed != "" </span>{
-                <span class="cov8" title="86">if u, err := url.Parse(trimmed); err == nil </span>{
-                        <span class="cov8" title="86">if u.IsAbs() </span>{
+        <span class="cov9" title="105">if trimmed := strings.TrimSpace(location); trimmed != "" </span>{
+                <span class="cov9" title="104">if u, err := url.Parse(trimmed); err == nil </span>{
+                        <span class="cov9" title="104">if u.IsAbs() </span>{
                                 <span class="cov8" title="83">if host := normalizeHost(requestHost); host != "" </span>{
                                         <span class="cov8" title="83">if normalizeHost(u.Host) == host </span>{
                                                 <span class="cov8" title="81">sanitized = u.RequestURI()
 </span>                                        }
                                 }
                         } else {
-                                <span class="cov2" title="3">sanitized = trimmed
+                                <span class="cov6" title="21">sanitized = trimmed
 </span>                        }
                 }
         }
-        <span class="cov8" title="87">sanitized = strings.TrimSpace(sanitized)
-        if sanitized != "" </span>{
-                <span class="cov8" title="84">if !strings.HasPrefix(sanitized, "/") </span>{
-                        <span class="cov1" title="1">sanitized = "/" + sanitized
-</span>                }
-                <span class="cov8" title="84">for strings.HasPrefix(sanitized, "//") </span>{
-                        <span class="cov1" title="1">sanitized = "/" + strings.TrimLeft(sanitized, "/")
-</span>                }
-        }
-        <span class="cov8" title="87">if sanitized == "" </span>{
-                <span class="cov2" title="3">sanitized = "/"
+        <span class="cov9" title="105">sanitized = strings.TrimSpace(sanitized)
+        sanitized = "/" + strings.TrimLeft(sanitized, "/\\")
+        if len(sanitized) &gt; maxRedirectTargetLen </span>{
+                <span class="cov2" title="2">sanitized = "/"
 </span>        }
-        <span class="cov8" title="87">return</span>
+        <span class="cov9" title="105">return</span>
 }
 
 func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location string) {
-        <span class="cov8" title="80">oauth2cfg = srv.oauth2cfg
+        <span class="cov9" title="95">oauth2cfg = srv.oauth2cfg
         if location = strings.TrimSpace(hr.Referer()); location == "" </span>{
-                <span class="cov6" title="25">location = hr.RequestURI
+                <span class="cov7" title="37">location = hr.RequestURI
 </span>        }
-        <span class="cov8" title="80">location = sanitizeRedirectTarget(hr.Host, location)
+        <span class="cov9" title="95">location = sanitizeRedirectTarget(hr.Host, location)
         if _, handled := srv.HandledPaths[location]; handled </span>{
                 <span class="cov8" title="54">location = "/"
 </span>        }
-        <span class="cov8" title="80">return</span>
+        <span class="cov9" title="95">return</span>
 }
 
 // HandleLogin begins the OIDC login flow.
 //
 // For GET requests it generates and stores the state, nonce and PKCE verifier in the
 // session, then responds with a 302 redirect to the provider's authorization URL.
+// If no session can be created, it returns 503 with Retry-After instead.
 // Non-GET requests receive 405.
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
-        <span class="cov5" title="12">statusCode := http.StatusMethodNotAllowed
+        <span class="cov6" title="27">statusCode := http.StatusMethodNotAllowed
         if hr.Method == http.MethodGet </span>{
-                <span class="cov4" title="9">oauth2cfg, location := srv.begin(hr)
+                <span class="cov6" title="24">oauth2cfg, location := srv.begin(hr)
                 if oauth2cfg != nil </span>{
-                        <span class="cov4" title="9">sess := srv.Jaws.GetSession(hr)
+                        <span class="cov6" title="24">sess := srv.Jaws.GetSession(hr)
                         if sess == nil </span>{
-                                <span class="cov1" title="1">sess = srv.Jaws.NewSession(hw, hr)
+                                <span class="cov6" title="20">sess = srv.Jaws.NewSession(hw, hr)
 </span>                        }
-                        <span class="cov4" title="9">if sess != nil </span>{
-                                <span class="cov4" title="9">authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
-                                state := randomHexString()
-                                sess.Set(oauth2StateKey, state)
-                                nonce := randomHexString()
-                                sess.Set(oauth2NonceKey, nonce)
-                                authOptions = append(authOptions, oidc.Nonce(nonce))
-                                verifier := oauth2.GenerateVerifier()
-                                sess.Set(oauth2PKCEVerifierKey, verifier)
-                                authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-                                sess.Set(oauth2ReferrerKey, location)
-                                location = oauth2cfg.AuthCodeURL(state, authOptions...)
+                        <span class="cov6" title="24">if sess == nil </span>{
+                                <span class="cov4" title="9">hw.Header().Set("Retry-After", "60")
+                                srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
+                                return
 </span>                        }
+                        <span class="cov5" title="15">authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
+                        state := randomHexString()
+                        sess.Set(oauth2StateKey, state)
+                        nonce := randomHexString()
+                        sess.Set(oauth2NonceKey, nonce)
+                        authOptions = append(authOptions, oidc.Nonce(nonce))
+                        verifier := oauth2.GenerateVerifier()
+                        sess.Set(oauth2PKCEVerifierKey, verifier)
+                        authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
+                        sess.Set(oauth2ReferrerKey, location)
+                        location = oauth2cfg.AuthCodeURL(state, authOptions...)</span>
                 }
-                <span class="cov4" title="9">hw.Header().Set("Location", location)
+                <span class="cov5" title="15">hw.Header().Set("Location", location)
                 statusCode = http.StatusFound</span>
         }
-        <span class="cov5" title="12">SetHeaders(hw, srv.ishttps)
+        <span class="cov6" title="18">SetHeaders(hw, srv.ishttps)
         hw.WriteHeader(statusCode)</span>
 }
 
@@ -1311,13 +1311,13 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 }
 
 func writeBody(w io.Writer, statusCode int, err error, body []byte) {
-        <span class="cov6" title="19">const tmpl = `&lt;html&gt;&lt;body&gt;&lt;h2&gt;%03d %s&lt;/h2&gt;&lt;p&gt;%s&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;`
+        <span class="cov6" title="28">const tmpl = `&lt;html&gt;&lt;body&gt;&lt;h2&gt;%03d %s&lt;/h2&gt;&lt;p&gt;%s&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;`
         if body == nil </span>{
-                <span class="cov6" title="19">if err != nil </span>{
-                        <span class="cov5" title="17">body = fmt.Appendf(nil, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
+                <span class="cov6" title="28">if err != nil </span>{
+                        <span class="cov6" title="26">body = fmt.Appendf(nil, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
 </span>                }
         }
-        <span class="cov6" title="19">_, _ = w.Write(body)</span>
+        <span class="cov6" title="28">_, _ = w.Write(body)</span>
 }
 
 // SetHeaders writes the HTTP response headers for all OAuth endpoint responses.
@@ -1328,12 +1328,12 @@ var SetHeaders = DefaultSetHeaders
 
 // DefaultSetHeaders writes response headers for OAuth endpoint responses.
 func DefaultSetHeaders(hw http.ResponseWriter, ishttps bool) {
-        <span class="cov7" title="36">secureheaders.SetHeaders(secureheaders.DefaultHeaders(), hw, ishttps)
+        <span class="cov7" title="51">secureheaders.SetHeaders(secureheaders.DefaultHeaders(), hw, ishttps)
         hw.Header().Set("Cache-Control", "no-store")
 </span>}
 
 func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) {
-        <span class="cov6" title="18">SetHeaders(hw, srv.ishttps)
+        <span class="cov6" title="27">SetHeaders(hw, srv.ishttps)
         hw.WriteHeader(statusCode)
         writeBody(hw, statusCode, err, body)
 </span>}
@@ -1357,7 +1357,7 @@ var ErrOAuth2MissingPKCEVerifier = errors.New("oauth2 missing pkce verifier")
 var ErrUserInfoStatus = errors.New("userinfo status")
 
 func randomHexString() string {
-        <span class="cov6" title="18">b := [32]byte{}
+        <span class="cov6" title="30">b := [32]byte{}
         _, _ = rand.Read(b[:]) // never returns an error, always fills all of b
         return hex.EncodeToString(b[:])
 </span>}
@@ -1754,7 +1754,7 @@ func (srv *Server) get403Handler() (h http.Handler) {
 
 // Valid returns true if OIDC authentication is configured.
 func (srv *Server) Valid() bool {
-        <span class="cov2" title="5">return srv != nil &amp;&amp; srv.oauth2cfg != nil &amp;&amp; srv.idTokenVerifier != nil
+        <span class="cov3" title="11">return srv != nil &amp;&amp; srv.oauth2cfg != nil &amp;&amp; srv.idTokenVerifier != nil
 </span>}
 
 // wrap returns a http.Handler that requires an authenticated user before invoking h.
@@ -1765,11 +1765,11 @@ func (srv *Server) Valid() bool {
 // srv.SessionKey (with optional UserInfo fallback) before the user returns. If the
 // Server is not Valid, returns h.
 func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
-        <span class="cov2" title="4">rh = h
+        <span class="cov3" title="10">rh = h
         if srv.Valid() </span>{
-                <span class="cov2" title="4">rh = wrapper{server: srv, handler: h, admin: admin}
+                <span class="cov3" title="10">rh = wrapper{server: srv, handler: h, admin: admin}
 </span>        }
-        <span class="cov2" title="4">return</span>
+        <span class="cov3" title="10">return</span>
 }
 
 // WrapAdmin returns a http.Handler that requires an authenticated administrator
@@ -1779,7 +1779,7 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 // authenticated users whose email is not an admin (see SetAdmins and IsAdmin) are
 // served the 403 handler instead of h. If the Server is not Valid, returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
-        <span class="cov1" title="1">return srv.wrap(h, true)
+        <span class="cov2" title="4">return srv.wrap(h, true)
 </span>}
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
@@ -1788,7 +1788,7 @@ func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 // verifies the id_token and stores the claims in srv.SessionKey (with optional UserInfo
 // fallback) before the user returns. If the Server is not Valid, returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
-        <span class="cov1" title="1">return srv.wrap(h, false)
+        <span class="cov2" title="4">return srv.wrap(h, false)
 </span>}
 
 // HandlerAdmin returns a http.Handler that renders the named jaws.Template with dot
@@ -1828,16 +1828,13 @@ type wrapper struct {
 }
 
 func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
-        <span class="cov10" title="2008">h := w.handler
+        <span class="cov10" title="2014">h := w.handler
         sess := w.server.Jaws.GetSession(hr)
-        if sess == nil </span>{
-                <span class="cov2" title="4">sess = w.server.Jaws.NewSession(hw, hr)
-</span>        }
-        <span class="cov10" title="2008">if current, present := w.server.sessionAuthStatus(sess, time.Now); !current </span>{
-                <span class="cov3" title="6">if present </span>{
+        if current, present := w.server.sessionAuthStatus(sess, time.Now); !current </span>{
+                <span class="cov3" title="12">if present </span>{
                         <span class="cov1" title="2">w.server.clearSessionAuth(sess, hr, true, false, nil)
 </span>                }
-                <span class="cov3" title="6">w.server.HandleLogin(hw, hr)
+                <span class="cov3" title="12">w.server.HandleLogin(hw, hr)
                 return</span>
         }
 
