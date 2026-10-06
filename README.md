@@ -45,14 +45,14 @@ rotation when setting limits. If no slot is available, the default response is 5
 and the existing session's authentication and refresh timer are preserved.
 Restart login after capacity becomes available.
 
-Logout and auth expiry stop accepting new events and reload the session's JaWS pages.
+Logout and auth expiry clear authentication and reload the session's JaWS pages.
 Connected pages receive the reload command before their sockets close; pending
 pages reload when they connect. Protected renders also recheck authorization when
 the HTTP handler returns, retiring requests attached during a concurrent revocation.
-Already accepted callbacks may run until disconnection, and running handlers can
-finish; applications needing authorization at each event must recheck current
-claims, expiry, and `JawsAuth.IsAdmin` before acting. Changing `SetAdmins` also
-reloads every page of sessions that lose admin access; their ordinary login remains valid.
+Events and callbacks run normally until disconnection. Protected operations must
+check current claims and expiry, plus `JawsAuth.IsAdmin` for administrator actions.
+Changing `SetAdmins` also reloads every page of sessions that lose admin access;
+their ordinary login remains valid.
 Use an HTTP endpoint for logout redirects: calling `Request.Redirect` after
 `Server.Logout` in a JaWS event cannot send the redirect because Reload closes the
 connection and discards later messages. Closed or expired JaWS sessions have their
