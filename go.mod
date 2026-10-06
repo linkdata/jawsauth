@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.20.0
-	github.com/linkdata/jaws v0.807.1-0.20261006093819-08abb120f724
+	github.com/linkdata/jaws v0.807.1-0.20261006100551-b31c95d69c85
 	github.com/linkdata/secureheaders v1.5.0
 	golang.org/x/oauth2 v0.36.0
 )
