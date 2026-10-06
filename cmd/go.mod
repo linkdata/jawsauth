@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/linkdata/deadlock v0.5.5
-	github.com/linkdata/jaws v0.807.1-0.20261006090322-63f971880f94
+	github.com/linkdata/jaws v0.807.1-0.20261006092355-ae77ec7d24ce
 	github.com/linkdata/jawsauth v0.0.0
 	github.com/linkdata/webserv v1.4.2
 	github.com/moby/moby/api v1.55.0

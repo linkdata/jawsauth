@@ -13,6 +13,7 @@ import (
 
 	"github.com/linkdata/jaws"
 	"github.com/linkdata/jaws/jawstest"
+	"github.com/linkdata/jaws/lib/what"
 	"golang.org/x/oauth2"
 )
 
@@ -124,6 +125,7 @@ func TestAuthorizationWithdrawalCancelsRequests(t *testing.T) {
 			default:
 				srv.SetAdmins([]string{"other@example.com"})
 			}
+			waitAuthRequestCancelled(t, ctx)
 			if !errors.Is(context.Cause(ctx), context.Canceled) {
 				t.Fatalf("request cancellation cause: %v", context.Cause(ctx))
 			}
@@ -238,6 +240,9 @@ func TestWrapperRevocationDuringRender(t *testing.T) {
 			ctx = newLiveAuthRequest(t, jw, hr).Context()
 		})
 		srv.wrap(h, admin).ServeHTTP(httptest.NewRecorder(), req)
+		if ctx != nil {
+			waitAuthRequestCancelled(t, ctx)
+		}
 		if ctx == nil || ctx.Err() == nil {
 			t.Fatal("request attached after revocation was not cancelled")
 		}
@@ -282,6 +287,9 @@ func TestSetAdminsUsesSessionPolicy(t *testing.T) {
 				t.Fatal("initial admin request not live")
 			}
 			srv.SetAdmins(tc.after)
+			if !tc.wantAdmin {
+				waitAuthRequestCancelled(t, ctx)
+			}
 			if srv.sessionIsAdmin(sess) != tc.wantAdmin || errors.Is(ctx.Err(), context.Canceled) == tc.wantAdmin {
 				t.Fatalf("admin=%v cancellation=%v, want admin=%v", srv.sessionIsAdmin(sess), ctx.Err(), tc.wantAdmin)
 			}
@@ -341,6 +349,7 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 		if hw.Code != http.StatusFound || logins != 1 || logouts != 1 || userinfoCalls != 1 {
 			t.Fatalf("status=%d logins=%d logouts=%d userinfo=%d", hw.Code, logins, logouts, userinfoCalls)
 		}
+		waitAuthRequestCancelled(t, ctx)
 		if current == nil || current == sess || sess.Cookie().MaxAge >= 0 || !errors.Is(ctx.Err(), context.Canceled) {
 			t.Fatal("login did not retire the old session and request")
 		}
@@ -353,10 +362,18 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 func newLiveAuthRequest(t *testing.T, jw *jaws.Jaws, hr *http.Request) *jaws.Request {
 	t.Helper()
 	tr := jawstest.NewTestRequest(jw, hr)
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		for msg := range tr.OutCh {
+			if msg.What == what.Reload {
+				tr.Cancel(nil) // Simulate the writer disconnecting after Reload.
+			}
+		}
+	}()
 	t.Cleanup(func() {
 		tr.Close()
-		for range tr.OutCh {
-		}
+		<-written
 		<-tr.DoneCh
 	})
 	select {
@@ -365,4 +382,13 @@ func newLiveAuthRequest(t *testing.T, jw *jaws.Jaws, hr *http.Request) *jaws.Req
 		t.Fatal("request did not start")
 	}
 	return tr.Request
+}
+
+func waitAuthRequestCancelled(t *testing.T, ctx context.Context) {
+	t.Helper()
+	select {
+	case <-ctx.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("request did not disconnect after Reload")
+	}
 }

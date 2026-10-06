@@ -345,13 +345,13 @@ func clearSessionOAuthFlow(sess *jaws.Session) {
 // Logout clears all authentication state for sess.
 //
 // It stops the auth-refresh timer, clears the OIDC claims, token source, email, expiry
-// and any in-flight OAuth flow keys, then retires JaWS requests with a page reload, calls
-// [Server.LogoutEvent] (if set), and marks the session dirty. It returns false for a
+// and any in-flight OAuth flow keys, then reloads its pages with [jaws.Request.Reload],
+// calls [Server.LogoutEvent] (if set), and marks the session dirty. It returns false for a
 // nil receiver or nil session, and true otherwise. The hr argument may be nil.
 //
 // It performs no HTTP redirect. An HTTP handler can build its own post-logout
 // response. A JaWS event handler cannot use [jaws.Request.Redirect] after Logout
-// cancels its request; use an HTTP logout endpoint instead.
+// queues Reload, which closes the connection; use an HTTP logout endpoint instead.
 func (srv *Server) Logout(sess *jaws.Session, hr *http.Request) (cleared bool) {
 	return srv.clearSessionAuth(sess, hr, nil)
 }
