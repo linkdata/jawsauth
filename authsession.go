@@ -345,13 +345,13 @@ func clearSessionOAuthFlow(sess *jaws.Session) {
 // Logout clears all authentication state for sess.
 //
 // It stops the auth-refresh timer, clears the OIDC claims, token source, email, expiry
-// and any in-flight OAuth flow keys, then cancels live JaWS requests, calls
-// [Server.LogoutEvent] (if set), and marks the session dirty. It returns false for a
+// and any in-flight OAuth flow keys, then reloads its pages with [jaws.Request.Reload],
+// calls [Server.LogoutEvent] (if set), and marks the session dirty. It returns false for a
 // nil receiver or nil session, and true otherwise. The hr argument may be nil.
 //
 // It performs no HTTP redirect. An HTTP handler can build its own post-logout
 // response. A JaWS event handler cannot use [jaws.Request.Redirect] after Logout
-// cancels its request; use an HTTP logout endpoint instead.
+// queues Reload, which closes the connection; use an HTTP logout endpoint instead.
 func (srv *Server) Logout(sess *jaws.Session, hr *http.Request) (cleared bool) {
 	return srv.clearSessionAuth(sess, hr, nil)
 }
@@ -374,7 +374,7 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 	}
 	srv.mu.Unlock()
 	if cleared {
-		cancelAuthRequests(requests)
+		reloadAuthRequests(requests)
 		if srv.LogoutEvent != nil {
 			srv.LogoutEvent(sess, hr)
 		}
@@ -389,10 +389,10 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 	return
 }
 
-func cancelAuthRequests(requests []*jaws.Request) {
-	// ponytail: JaWS v0.805.0 never reuses Request identities; replace this snapshot
-	// cancellation with a Session-level API when JaWS provides one.
+func reloadAuthRequests(requests []*jaws.Request) {
+	// ponytail: JaWS never reuses Request identities; replace this snapshot
+	// reload with a Session-level API when JaWS provides one.
 	for _, rq := range requests {
-		rq.Cancel(nil)
+		rq.Reload()
 	}
 }

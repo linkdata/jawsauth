@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/linkdata/jaws"
+	"github.com/linkdata/jaws/jawstest"
+	"github.com/linkdata/jaws/lib/what"
 	"golang.org/x/oauth2"
 )
 
@@ -93,7 +95,7 @@ func TestAuthorizationWithdrawalCancelsRequests(t *testing.T) {
 				t.Fatal(err)
 			}
 			go jw.Serve()
-			defer jw.Close()
+			t.Cleanup(jw.Close)
 			factory := &testAuthTimerFactory{}
 			srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 			if action != "restrictEveryone" {
@@ -108,7 +110,7 @@ func TestAuthorizationWithdrawalCancelsRequests(t *testing.T) {
 			if err = srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, nil, expiry, nil); err != nil {
 				t.Fatal(err)
 			}
-			rq := jw.NewRequest(httptest.NewRecorder(), req)
+			rq := newLiveAuthRequest(t, jw, req)
 			ctx := rq.Context()
 			if rq.Session() != sess || len(sess.Requests()) != 1 {
 				t.Fatal("request not attached")
@@ -123,6 +125,7 @@ func TestAuthorizationWithdrawalCancelsRequests(t *testing.T) {
 			default:
 				srv.SetAdmins([]string{"other@example.com"})
 			}
+			waitAuthRequestCancelled(t, ctx)
 			if !errors.Is(context.Cause(ctx), context.Canceled) {
 				t.Fatalf("request cancellation cause: %v", context.Cause(ctx))
 			}
@@ -218,6 +221,8 @@ func TestWrapperRevocationDuringRender(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		go jw.Serve()
+		t.Cleanup(jw.Close)
 		srv := newTimerTestServer(t, jw, "https://issuer.example", &testAuthTimerFactory{})
 		srv.SetAdmins([]string{"user@example.com"})
 		req := httptest.NewRequest(http.MethodGet, "/protected", nil)
@@ -232,13 +237,15 @@ func TestWrapperRevocationDuringRender(t *testing.T) {
 			} else {
 				srv.Logout(sess, hr)
 			}
-			ctx = jw.NewRequest(hw, hr).Context()
+			ctx = newLiveAuthRequest(t, jw, hr).Context()
 		})
 		srv.wrap(h, admin).ServeHTTP(httptest.NewRecorder(), req)
+		if ctx != nil {
+			waitAuthRequestCancelled(t, ctx)
+		}
 		if ctx == nil || ctx.Err() == nil {
 			t.Fatal("request attached after revocation was not cancelled")
 		}
-		jw.Close()
 	}
 }
 
@@ -262,7 +269,7 @@ func TestSetAdminsUsesSessionPolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			go jw.Serve()
-			defer jw.Close()
+			t.Cleanup(jw.Close)
 			srv := newWrapperTestServer(jw, "https://issuer.example")
 			srv.RequireVerifiedAdminEmail = tc.strict
 			srv.SetAdmins(tc.before)
@@ -274,12 +281,15 @@ func TestSetAdminsUsesSessionPolicy(t *testing.T) {
 			defer srv.Logout(sess, nil)
 			var ctx context.Context
 			srv.WrapAdmin(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
-				ctx = jw.NewRequest(hw, hr).Context()
+				ctx = newLiveAuthRequest(t, jw, hr).Context()
 			})).ServeHTTP(httptest.NewRecorder(), hr)
 			if ctx == nil || ctx.Err() != nil {
 				t.Fatal("initial admin request not live")
 			}
 			srv.SetAdmins(tc.after)
+			if !tc.wantAdmin {
+				waitAuthRequestCancelled(t, ctx)
+			}
 			if srv.sessionIsAdmin(sess) != tc.wantAdmin || errors.Is(ctx.Err(), context.Canceled) == tc.wantAdmin {
 				t.Fatalf("admin=%v cancellation=%v, want admin=%v", srv.sessionIsAdmin(sess), ctx.Err(), tc.wantAdmin)
 			}
@@ -299,7 +309,7 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 			t.Fatal(err)
 		}
 		go jw.ServeWithTimeout(2 * time.Minute)
-		defer jw.Close()
+		t.Cleanup(jw.Close)
 		srv := newWrapperTestServer(jw, "https://issuer.example")
 		expiry := time.Now().Add(time.Hour)
 		hr := httptest.NewRequest(http.MethodGet, "/callback?state=state&code=code", nil)
@@ -310,7 +320,7 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 		defer srv.Logout(sess, nil)
 		var ctx context.Context
 		srv.Wrap(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
-			ctx = jw.NewRequest(hw, hr).Context()
+			ctx = newLiveAuthRequest(t, jw, hr).Context()
 		})).ServeHTTP(httptest.NewRecorder(), hr)
 		raw := makeIDToken(t, map[string]any{"iss": "https://issuer.example", "aud": "client", "sub": "user", "exp": expiry.Unix(), "nonce": "nonce", "email": "user@example.com"})
 		userinfoCalls := 0
@@ -339,6 +349,7 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 		if hw.Code != http.StatusFound || logins != 1 || logouts != 1 || userinfoCalls != 1 {
 			t.Fatalf("status=%d logins=%d logouts=%d userinfo=%d", hw.Code, logins, logouts, userinfoCalls)
 		}
+		waitAuthRequestCancelled(t, ctx)
 		if current == nil || current == sess || sess.Cookie().MaxAge >= 0 || !errors.Is(ctx.Err(), context.Canceled) {
 			t.Fatal("login did not retire the old session and request")
 		}
@@ -346,4 +357,38 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 			t.Fatal("login did not store prepared UserInfo claims")
 		}
 	})
+}
+
+func newLiveAuthRequest(t *testing.T, jw *jaws.Jaws, hr *http.Request) *jaws.Request {
+	t.Helper()
+	tr := jawstest.NewTestRequest(jw, hr)
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		for msg := range tr.OutCh {
+			if msg.What == what.Reload {
+				tr.Cancel(nil) // Simulate the writer disconnecting after Reload.
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		tr.Close()
+		<-written
+		<-tr.DoneCh
+	})
+	select {
+	case <-tr.ReadyCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("request did not start")
+	}
+	return tr.Request
+}
+
+func waitAuthRequestCancelled(t *testing.T, ctx context.Context) {
+	t.Helper()
+	select {
+	case <-ctx.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("request did not disconnect after Reload")
+	}
 }

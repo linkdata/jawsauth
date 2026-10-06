@@ -353,7 +353,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 																hadTimer := srv.authTimers[sess.ID()] != nil
 																srv.stopSessionAuthTimerLocked(sess, nil)
 																srv.mu.Unlock()
-																cancelAuthRequests(requests)
+																reloadAuthRequests(requests)
 																if hadAuth && hadTimer && srv.LogoutEvent != nil {
 																	srv.LogoutEvent(sess, hr)
 																}

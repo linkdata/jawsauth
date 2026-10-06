@@ -218,7 +218,7 @@ func (srv *Server) sessionIsAdminLocked(sess *jaws.Session, admins map[string]st
 // Non-ASCII characters are matched exactly. If empty, everyone is considered an
 // administrator. Session checks also apply [Server.RequireVerifiedAdminEmail].
 //
-// Sessions losing admin access have all their live JaWS requests cancelled;
+// Sessions losing admin access have their JaWS requests retired with a page reload;
 // they remain authenticated and can reopen non-admin pages.
 func (srv *Server) SetAdmins(emails []string) {
 	if srv == nil {
@@ -243,7 +243,7 @@ func (srv *Server) SetAdmins(emails []string) {
 	}
 	srv.admins = admins
 	srv.mu.Unlock()
-	cancelAuthRequests(requests)
+	reloadAuthRequests(requests)
 }
 
 // GetAdmins returns a sorted list of the administrator emails. If empty, everyone is considered an administrator.
