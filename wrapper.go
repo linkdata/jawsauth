@@ -29,6 +29,6 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 	// A revocation may have taken its request snapshot before rendering attached
 	// a new JaWS request. Retire that request before this response completes.
 	if current, _ := w.server.sessionAuthStatus(sess, time.Now); !current || (w.admin && !w.server.sessionIsAdmin(sess)) {
-		cancelAuthRequests(sess.Requests())
+		reloadAuthRequests(sess.Requests())
 	}
 }
