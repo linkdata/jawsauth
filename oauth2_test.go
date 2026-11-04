@@ -780,6 +780,21 @@ func TestServer_fetchUserInfoStatusError(t *testing.T) {
 	}
 }
 
+func TestServer_fetchUserInfoOversizedStatusError(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		_ = hr
+		hw.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(hw, strings.Repeat("x", 32769))
+	}))
+	defer provider.Close()
+
+	_, err := (&Server{}).fetchUserInfo(t.Context(), provider.URL,
+		oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "token", TokenType: "Bearer"}))
+	if !errors.Is(err, ErrUserInfoStatus) || errors.Is(err, ErrUserInfoTooLarge) || !strings.Contains(err.Error(), "503 Service Unavailable") {
+		t.Fatalf("oversized error response = %v, want status error", err)
+	}
+}
+
 func TestServer_fetchUserInfoDoesNotFollowBearerRedirect(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("UserInfo redirect target received the bearer token request")

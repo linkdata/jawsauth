@@ -102,6 +102,10 @@ func sessionAlive(sess *jaws.Session) bool {
 }
 
 func (srv *Server) storeSessionAuthClaims(sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState) error {
+	return srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, entry, nil)
+}
+
+func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState, canceled <-chan struct{}) error {
 	if srv == nil {
 		return ErrOAuth2NotConfigured
 	}
@@ -114,6 +118,12 @@ func (srv *Server) storeSessionAuthClaims(sess *jaws.Session, claims map[string]
 	email, verified := srv.extractEmail(claims) // Logger callbacks must run outside srv.mu.
 	claims["email_verified"] = verified
 	srv.mu.Lock()
+	select {
+	case <-canceled:
+		srv.mu.Unlock()
+		return ErrOAuth2MissingSession
+	default:
+	}
 	if entry != nil && srv.authTimers[sess.ID()] != entry {
 		srv.mu.Unlock()
 		return errAuthTimerStale
@@ -354,6 +364,10 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 }
 
 func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
+	if canceled := srv.oauthCallbacks[sess]; canceled != nil {
+		close(canceled)
+		delete(srv.oauthCallbacks, sess)
+	}
 	sess.Set(srv.sessionKey(oauth2StateKey), nil)
 	sess.Set(srv.sessionKey(oauth2FlowExpiryKey), nil)
 	sess.Set(srv.sessionKey(oauth2LinkKey), nil)

@@ -200,6 +200,136 @@ func TestOAuthFailedCallbackDoesNotEraseNewFlow(t *testing.T) {
 	}
 }
 
+func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
+	for _, action := range []string{"logout", "new flow"} {
+		t.Run(action, func(t *testing.T) {
+			jw, err := jaws.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer jw.Close()
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(release) })
+			calls := 0
+			srv := newProfileTestServer(t, jw, &calls)
+			srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/token" {
+					close(entered)
+					<-release
+					return profileTestResponse(`{"access_token":"first-token","token_type":"Bearer"}`), nil
+				}
+				return profileTestResponse(`{"id":42,"email":"first@example.com"}`), nil
+			})}
+			logins := 0
+			srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+			request.RemoteAddr = "192.0.2.1:1234"
+			request.AddCookie(cookie)
+			sess := jw.GetSession(request)
+			if sess == nil {
+				t.Fatal("missing pre-auth session")
+			}
+			result := make(chan *httptest.ResponseRecorder, 1)
+			go func() { result <- profileCallback(srv, cookie, state, "first") }()
+			<-entered
+
+			var nextState string
+			if action == "logout" {
+				if !srv.Logout(sess, nil) {
+					t.Fatal("logout did not clear session")
+				}
+			} else {
+				start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
+				start.RemoteAddr = "192.0.2.1:1234"
+				start.AddCookie(cookie)
+				w := httptest.NewRecorder()
+				srv.HandleLogin(w, start)
+				if w.Code != http.StatusFound {
+					t.Fatalf("new flow start: %d", w.Code)
+				}
+				location, err := url.Parse(w.Header().Get("Location"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				nextState = location.Query().Get("state")
+				if nextState == "" || nextState == state {
+					t.Fatalf("new flow state = %q", nextState)
+				}
+			}
+
+			releaseOnce.Do(func() { close(release) })
+			w := <-result
+			if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || logins != 0 {
+				t.Fatalf("canceled callback: status=%d cookies=%v logins=%d", w.Code, w.Result().Cookies(), logins)
+			}
+			storedState, _ := sess.Get(srv.sessionKey(oauth2StateKey)).(string)
+			if sess.Get(srv.SessionKey) != nil || storedState != nextState {
+				t.Fatalf("canceled callback changed session or new flow: claims=%v state=%v", sess.Get(srv.SessionKey), sess.Get(srv.sessionKey(oauth2StateKey)))
+			}
+		})
+	}
+}
+
+func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	calls := 0
+	srv := newProfileTestServer(t, jw, &calls)
+	srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/token" {
+			if err := r.ParseForm(); err != nil {
+				return nil, err
+			}
+			if r.PostForm.Get("code") == "second" {
+				close(entered)
+				<-release
+			}
+			return profileTestResponse(`{"access_token":"first-token","token_type":"Bearer"}`), nil
+		}
+		return profileTestResponse(`{"id":42,"email":"first@example.com"}`), nil
+	})}
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	login := profileCallback(srv, cookie, state, "first")
+	if login.Code != http.StatusFound || len(login.Result().Cookies()) != 1 {
+		t.Fatalf("initial login: status=%d cookies=%v", login.Code, login.Result().Cookies())
+	}
+	cookie = login.Result().Cookies()[0]
+	request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	request.AddCookie(cookie)
+	sess := jw.GetSession(request)
+	if sess == nil || sess.Get(srv.SessionKey) == nil {
+		t.Fatal("missing authenticated session")
+	}
+	links := 0
+	srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) {
+		links++
+		return 0, nil
+	}
+	_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() { result <- profileCallback(srv, cookie, linkState, "second") }()
+	<-entered
+	if !srv.Logout(sess, nil) {
+		t.Fatal("logout did not clear linked session")
+	}
+	releaseOnce.Do(func() { close(release) })
+	w := <-result
+	if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || links != 0 || sess.Get(srv.SessionKey) != nil {
+		t.Fatalf("canceled link: status=%d cookies=%v links=%d claims=%v", w.Code, w.Result().Cookies(), links, sess.Get(srv.SessionKey))
+	}
+}
+
 func newProfileTestServer(t *testing.T, jw *jaws.Jaws, calls *int) *Server {
 	t.Helper()
 	client := &http.Client{Timeout: time.Second, Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

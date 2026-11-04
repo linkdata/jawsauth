@@ -40,6 +40,16 @@ type pendingOAuthFlow struct {
 	nonce    string
 	referrer string
 	link     bool
+	canceled chan struct{}
+}
+
+func (flow pendingOAuthFlow) revoked() bool {
+	select {
+	case <-flow.canceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func (srv *Server) takeOAuthFlow(sess *jaws.Session, gotState string) (flow pendingOAuthFlow, err error) {
@@ -61,7 +71,23 @@ func (srv *Server) takeOAuthFlow(sess *jaws.Session, gotState string) (flow pend
 	if !time.Now().Before(expiry) {
 		return flow, ErrOAuth2ExpiredState
 	}
+	flow.canceled = make(chan struct{})
+	if srv.oauthCallbacks == nil {
+		srv.oauthCallbacks = make(map[*jaws.Session]chan struct{})
+	}
+	srv.oauthCallbacks[sess] = flow.canceled
 	return flow, nil
+}
+
+func (srv *Server) finishOAuthFlow(sess *jaws.Session, flow pendingOAuthFlow) {
+	if flow.canceled == nil {
+		return
+	}
+	srv.mu.Lock()
+	if srv.oauthCallbacks[sess] == flow.canceled {
+		delete(srv.oauthCallbacks, sess)
+	}
+	srv.mu.Unlock()
 }
 
 // maxRedirectTargetLen bounds return targets retained in pre-auth sessions.
@@ -176,6 +202,7 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link boo
 				location = "/"
 			}
 			srv.mu.Lock()
+			srv.clearSessionOAuthFlow(sess)
 			sess.Set(srv.sessionKey(oauth2StateKey), state)
 			sess.Set(srv.sessionKey(oauth2FlowExpiryKey), flowExpiry)
 			sess.Set(srv.sessionKey(oauth2LinkKey), link)
@@ -348,11 +375,14 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 					err = closeErr
 				}
 			}()
+			if resp.StatusCode != http.StatusOK {
+				return nil, fmt.Errorf("%w %s", ErrUserInfoStatus, resp.Status)
+			}
 			var body []byte
 			if body, err = io.ReadAll(io.LimitReader(resp.Body, 32769)); err == nil {
 				if len(body) > 32768 {
 					err = ErrUserInfoTooLarge
-				} else if resp.StatusCode == http.StatusOK {
+				} else {
 					decoder := json.NewDecoder(bytes.NewReader(body))
 					if srv.profileSubject != nil {
 						decoder.UseNumber()
@@ -364,8 +394,6 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 							err = ErrOAuth2InvalidProfile
 						}
 					}
-				} else {
-					err = fmt.Errorf("%w %s", ErrUserInfoStatus, resp.Status)
 				}
 			}
 		}
@@ -475,6 +503,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 				flow, flowErr := srv.takeOAuthFlow(sess, gotState)
 				err = flowErr
 				if err == nil {
+					defer srv.finishOAuthFlow(sess, flow)
 					if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil {
 						err = ErrOAuth2MissingPKCEVerifier
 						if flow.verifier != "" {
@@ -491,10 +520,13 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 								var expiry time.Time
 								claims, tokenSource, expiry, statusCode, err = srv.verifyOAuthIdentity(authctx, token, flow.nonce)
 								if err == nil {
-									if flow.link {
+									if flow.revoked() || srv.Jaws.GetSession(hr) != sess {
+										err = ErrOAuth2MissingSession
+										statusCode = http.StatusForbidden
+									} else if flow.link {
 										statusCode = http.StatusForbidden
 										err = ErrOAuth2MissingSession
-										if srv.LinkEvent != nil && srv.Jaws.GetSession(hr) == sess {
+										if srv.LinkEvent != nil && !flow.revoked() && srv.Jaws.GetSession(hr) == sess {
 											var linkErr error
 											statusCode, linkErr = srv.LinkEvent(sess, hr, claims)
 											if linkErr == nil && statusCode == 0 {
@@ -522,16 +554,26 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 										err = ErrOAuth2MissingSession
 										statusCode = http.StatusServiceUnavailable
 										if rotated := srv.Jaws.NewSession(hw, hr); rotated != nil {
-											srv.mu.Lock()
-											hadTimer := srv.authTimers[sess.ID()] != nil
-											srv.stopSessionAuthTimerLocked(sess, nil)
-											srv.mu.Unlock()
-											reloadAuthRequests(requests)
-											if hadAuth && hadTimer && srv.LogoutEvent != nil {
-												srv.LogoutEvent(sess, hr)
+											if flow.revoked() {
+												http.SetCookie(hw, rotated.Close())
+												err = ErrOAuth2MissingSession
+												statusCode = http.StatusForbidden
+											} else {
+												srv.mu.Lock()
+												hadTimer := srv.authTimers[sess.ID()] != nil
+												srv.stopSessionAuthTimerLocked(sess, nil)
+												srv.mu.Unlock()
+												reloadAuthRequests(requests)
+												if hadAuth && hadTimer && srv.LogoutEvent != nil {
+													srv.LogoutEvent(sess, hr)
+												}
+												sess = rotated
+												err = srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, nil, flow.canceled)
+												if errors.Is(err, ErrOAuth2MissingSession) {
+													http.SetCookie(hw, rotated.Close())
+													statusCode = http.StatusForbidden
+												}
 											}
-											sess = rotated
-											err = srv.storeSessionAuthClaims(sess, claims, tokenSource, expiry, nil)
 										} else {
 											hw.Header().Set("Retry-After", "60")
 										}

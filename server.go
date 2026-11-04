@@ -110,6 +110,7 @@ type Server struct {
 	admins             map[string]struct{} // if not empty, emails of admins
 	handle403          http.Handler        // handler for 403 Forbidden
 	authTimers         map[uint64]*authTimerState
+	oauthCallbacks     map[*jaws.Session]chan struct{}
 	authTimerAfterFunc authTimerAfterFunc
 	namespace          string
 }
