@@ -72,7 +72,9 @@ type EventFunc func(sess *jaws.Session, hr *http.Request)
 type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
 // LinkFunc receives the current session and a newly verified identity before
-// any session rotation. Return zero and nil on success, or an HTTP error status.
+// any session rotation. Serialize the final current-auth check and durable link
+// write with logout and other provider auth revocation. Return zero and nil on
+// success, or an HTTP error status.
 type LinkFunc func(sess *jaws.Session, hr *http.Request, claims map[string]any) (statusCode int, err error)
 
 // Server provides OIDC or verified OAuth2 profile authentication for JaWS sessions.
@@ -110,7 +112,7 @@ type Server struct {
 	admins             map[string]struct{} // if not empty, emails of admins
 	handle403          http.Handler        // handler for 403 Forbidden
 	authTimers         map[uint64]*authTimerState
-	oauthCallbacks     map[*jaws.Session]chan struct{}
+	oauthCallbacks     map[*jaws.Session]pendingOAuthFlow
 	authTimerAfterFunc authTimerAfterFunc
 	namespace          string
 }

@@ -54,8 +54,8 @@ github.com/klauspost/compress v1.19.2 h1:hMRETovs/pu/dVWN7zIT1PGG8t509MwT6bO7XSi
 github.com/klauspost/compress v1.19.2/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/linkdata/deadlock v0.5.5 h1:d6O+rzEqasSfamGDA8u7bjtaq7hOX8Ha4Zn36Wxrkvo=
 github.com/linkdata/deadlock v0.5.5/go.mod h1:tXb28stzAD3trzEEK0UJWC+rZKuobCoPktPYzebb1u0=
-github.com/linkdata/jaws v0.901.2-0.20261104081709-b5ee7ec23e15 h1:lhEtb6Ok6GnUNHl65ADniyyY1kkrUH1b8ueg3hmvvyc=
-github.com/linkdata/jaws v0.901.2-0.20261104081709-b5ee7ec23e15/go.mod h1:4l/hXl4qhhEzBMyej3tXT3tLlkEyz1iAAEwWS6Yxpqg=
+github.com/linkdata/jaws v0.902.0 h1:YU/WN3EpAeq/I1uoEh9w1fkoiWvkgJ30LR67Ks1QJOk=
+github.com/linkdata/jaws v0.902.0/go.mod h1:4l/hXl4qhhEzBMyej3tXT3tLlkEyz1iAAEwWS6Yxpqg=
 github.com/linkdata/jq v0.6.0 h1:yxAeWsknIWmt7Wbr5CIEkj2i1WwC2DnJDZlOrPxJkr0=
 github.com/linkdata/jq v0.6.0/go.mod h1:b76MMuWybyXrVEKSHJkv+r5IEattnghPf1bNRJ5PNlE=
 github.com/linkdata/rate v1.17.1 h1:b3ld6CaQQzDxk/ChR7x1iDGMQIFyWIZAKQknZWAmiuc=

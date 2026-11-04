@@ -846,7 +846,7 @@ func TestAuthTimerDebugLogsRefreshFailure(t *testing.T) {
 	factory.timer(0).fire()
 
 	for _, msg := range []string{
-		"jawsauth: scheduled auth refresh timer",
+		"jawsauth: scheduled auth timer",
 		"jawsauth: auth refresh timer fired",
 		"jawsauth: refresh session auth started",
 		"jawsauth: requesting token from stored token source",

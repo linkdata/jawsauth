@@ -330,6 +330,177 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 	}
 }
 
+func TestOAuthProfileLinkRevokedDuringEventRejectsCallback(t *testing.T) {
+	for _, action := range []string{"logout", "auth expiry"} {
+		t.Run(action, func(t *testing.T) {
+			jw, err := jaws.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer jw.Close()
+			calls := 0
+			srv := newProfileTestServer(t, jw, &calls)
+			factory := &testAuthTimerFactory{}
+			srv.authTimerAfterFunc = factory.after
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			first := profileCallback(srv, cookie, state, "first")
+			if first.Code != http.StatusFound {
+				t.Fatalf("initial login: %d", first.Code)
+			}
+			cookie = first.Result().Cookies()[0]
+			r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+			r.RemoteAddr = "192.0.2.1:1234"
+			r.AddCookie(cookie)
+			sess := jw.GetSession(r)
+			if sess == nil || sess.Get(srv.SessionKey) == nil {
+				t.Fatal("missing original authentication")
+			}
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(release) })
+			links := 0
+			srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) {
+				links++
+				close(entered)
+				<-release
+				return 0, nil
+			}
+			_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
+			result := make(chan *httptest.ResponseRecorder, 1)
+			go func() { result <- profileCallback(srv, cookie, linkState, "second") }()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("LinkEvent was not reached")
+			}
+			if action == "logout" {
+				if !srv.Logout(sess, nil) {
+					t.Fatal("logout failed")
+				}
+			} else {
+				srv.mu.Lock()
+				srv.authTimers[sess.ID()].expiry = time.Now().Add(-time.Second)
+				srv.mu.Unlock()
+				factory.timer(0).fire()
+			}
+			releaseOnce.Do(func() { close(release) })
+			var response *httptest.ResponseRecorder
+			select {
+			case response = <-result:
+			case <-time.After(5 * time.Second):
+				t.Fatal("revoked link callback did not finish")
+			}
+			if response.Code != http.StatusForbidden || response.Header().Get("Location") != "" ||
+				len(response.Result().Cookies()) != 0 || links != 1 || sess.Get(srv.SessionKey) != nil {
+				t.Fatalf("revoked link: status=%d location=%q cookies=%v links=%d claims=%v",
+					response.Code, response.Header().Get("Location"), response.Result().Cookies(), links, sess.Get(srv.SessionKey))
+			}
+		})
+	}
+}
+
+func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
+	for _, phase := range []string{"pending", "callback"} {
+		t.Run(phase, func(t *testing.T) {
+			jw, err := jaws.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer jw.Close()
+			calls := 0
+			srv := newProfileTestServer(t, jw, &calls)
+			factory := &testAuthTimerFactory{}
+			srv.authTimerAfterFunc = factory.after
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			first := profileCallback(srv, cookie, state, "first")
+			if first.Code != http.StatusFound {
+				t.Fatalf("initial login: %d", first.Code)
+			}
+			cookie = first.Result().Cookies()[0]
+			start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
+			start.RemoteAddr = "192.0.2.1:1234"
+			start.AddCookie(cookie)
+			sess := jw.GetSession(start)
+			if sess == nil {
+				t.Fatal("missing original session")
+			}
+			redirect := httptest.NewRecorder()
+			srv.HandleLogin(redirect, start)
+			if redirect.Code != http.StatusFound {
+				t.Fatalf("new login start: %d", redirect.Code)
+			}
+			location, err := url.Parse(redirect.Header().Get("Location"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			state = location.Query().Get("state")
+			if state == "" {
+				t.Fatal("missing new login state")
+			}
+			var result chan *httptest.ResponseRecorder
+			var releaseOnce sync.Once
+			var release chan struct{}
+			if phase == "callback" {
+				entered := make(chan struct{})
+				release = make(chan struct{})
+				defer releaseOnce.Do(func() { close(release) })
+				transport := srv.httpClient.Transport
+				srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path == "/token" {
+						if err := r.ParseForm(); err != nil {
+							return nil, err
+						}
+						if r.PostForm.Get("code") == "second" {
+							close(entered)
+							<-release
+						}
+					}
+					return transport.RoundTrip(r)
+				})}
+				result = make(chan *httptest.ResponseRecorder, 1)
+				go func() { result <- profileCallback(srv, cookie, state, "second") }()
+				select {
+				case <-entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("new login callback did not reach token exchange")
+				}
+			}
+			srv.mu.Lock()
+			srv.authTimers[sess.ID()].expiry = time.Now().Add(-time.Second)
+			srv.mu.Unlock()
+			factory.timer(0).fire()
+			if sess.Get(srv.SessionKey) != nil {
+				t.Fatal("expired original auth remained")
+			}
+			if phase == "pending" && sess.Get(srv.sessionKey(oauth2StateKey)) != state {
+				t.Fatal("auth expiry erased pending login state")
+			}
+			var response *httptest.ResponseRecorder
+			if phase == "callback" {
+				releaseOnce.Do(func() { close(release) })
+				select {
+				case response = <-result:
+				case <-time.After(5 * time.Second):
+					t.Fatal("new login callback did not finish")
+				}
+			} else {
+				response = profileCallback(srv, cookie, state, "second")
+			}
+			if response.Code != http.StatusFound || len(response.Result().Cookies()) != 1 {
+				t.Fatalf("new login: status=%d cookies=%v body=%q", response.Code, response.Result().Cookies(), response.Body.String())
+			}
+			check := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+			check.RemoteAddr = "192.0.2.1:1234"
+			check.AddCookie(response.Result().Cookies()[0])
+			rotated := jw.GetSession(check)
+			if rotated == nil || rotated == sess || rotated.Get(srv.SessionKey).(map[string]any)["sub"] != "99" {
+				t.Fatal("new login did not authenticate a fresh session")
+			}
+		})
+	}
+}
+
 func newProfileTestServer(t *testing.T, jw *jaws.Jaws, calls *int) *Server {
 	t.Helper()
 	client := &http.Client{Timeout: time.Second, Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -503,7 +674,7 @@ func TestOAuthProfileExpiredLinkStateNeverCallsProvider(t *testing.T) {
 	}
 }
 
-func TestOAuthLinkRequiresCurrentSameOriginProofAndRejectsDeclinedLink(t *testing.T) {
+func TestOAuthLinkRequiresSessionAndSameOriginRequestAndRejectsDeclinedLink(t *testing.T) {
 	for _, reject := range []struct {
 		name string
 		err  error
@@ -769,6 +940,45 @@ func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
 	factory.timer(1).fire()
 	if sess.Get(srv.SessionKey) != nil || !factory.timer(1).isStopped() {
 		t.Fatal("profile auth remained after expiry timer")
+	}
+}
+
+func TestOAuthProfileAuthTimerLogIsModeSpecific(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	logger := &testAuthDebugLogger{}
+	jw.Debug = true
+	jw.Logger = logger
+	calls := 0
+	srv := newProfileTestServer(t, jw, &calls)
+	factory := &testAuthTimerFactory{}
+	srv.authTimerAfterFunc = factory.after
+	req := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "42"}, nil, time.Now().Add(time.Hour), nil); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := logger.info("jawsauth: scheduled auth timer")
+	if !ok {
+		t.Fatal("missing neutral auth timer log")
+	}
+	foundMode := false
+	for i := 0; i+1 < len(record.args); i += 2 {
+		if record.args[i] == "mode" {
+			foundMode = true
+			if record.args[i+1] != "profile" {
+				t.Fatalf("timer mode = %v", record.args[i+1])
+			}
+		}
+		if record.args[i] == "refresh_skew" {
+			t.Fatal("profile timer log claims refresh skew")
+		}
+	}
+	if !foundMode {
+		t.Fatal("profile timer mode missing")
 	}
 }
 

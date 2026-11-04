@@ -33,7 +33,10 @@ run only while the original JaWS session and one-use flow state remain valid.
 Successful linking keeps the session whose idle grace was extended for the
 provider visit. With no connected pages, that authenticated session can retain
 that grace until the original flow's grace deadline, about ten minutes plus
-the callback allowance after link start.
+the callback allowance after link start. `LinkEvent` must serialize its final
+current-auth check and durable link write with logout and any other provider's
+auth revocation. jawsauth cannot roll back an application write if revocation
+finishes while `LinkEvent` is running; it rejects the stale callback response.
 
 Admin allowlists match parsed addresses with ASCII case ignored; non-ASCII
 characters are matched exactly. Session email values use the same case rules.
@@ -63,6 +66,8 @@ and the existing session's authentication and refresh timer are preserved.
 Restart login after capacity becomes available.
 
 Logout and auth expiry clear authentication and reload the session's JaWS pages.
+Auth expiry preserves an ordinary login in progress but cancels a pending link;
+explicit logout cancels either flow.
 Connected pages receive the reload command before their sockets close; pending
 pages reload when they connect. Protected renders also recheck authorization when
 the HTTP handler returns, retiring requests attached during a concurrent revocation.

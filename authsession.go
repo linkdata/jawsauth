@@ -161,11 +161,15 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 	delay, replaced := srv.scheduleSessionAuthTimerLocked(sess, expiry)
 	srv.mu.Unlock()
 	srv.Jaws.Dirty(sess)
-	srv.debugLog("jawsauth: scheduled auth refresh timer",
+	mode := "oidc"
+	if srv.profileSubject != nil {
+		mode = "profile"
+	}
+	srv.debugLog("jawsauth: scheduled auth timer",
 		"session_prefix", debugSessionPrefix(sess),
+		"mode", mode,
 		"expiry", expiry,
 		"delay", delay,
-		"refresh_skew", authRefreshSkew,
 		"replaced_existing", replaced,
 	)
 	return nil
@@ -386,8 +390,8 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 }
 
 func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
-	if canceled := srv.oauthCallbacks[sess]; canceled != nil {
-		close(canceled)
+	if flow := srv.oauthCallbacks[sess]; flow.canceled != nil {
+		close(flow.canceled)
 		delete(srv.oauthCallbacks, sess)
 	}
 	sess.Set(srv.sessionKey(oauth2StateKey), nil)
@@ -420,7 +424,20 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 	cleared = srv.stopSessionAuthTimerLocked(sess, entry)
 	var requests []*jaws.Request
 	if cleared {
-		srv.clearSessionOAuthFlow(sess)
+		// Auth expiry must not cancel an ordinary login already in progress.
+		// Explicit logout and link flows still revoke their pending callbacks.
+		preserveLogin := false
+		if entry != nil {
+			if flow := srv.oauthCallbacks[sess]; flow.canceled != nil {
+				preserveLogin = !flow.link
+			} else if state, _ := sess.Get(srv.sessionKey(oauth2StateKey)).(string); state != "" {
+				link, _ := sess.Get(srv.sessionKey(oauth2LinkKey)).(bool)
+				preserveLogin = !link
+			}
+		}
+		if !preserveLogin {
+			srv.clearSessionOAuthFlow(sess)
+		}
 		sess.Set(srv.SessionKey, nil)
 		sess.Set(srv.SessionTokenKey, nil)
 		sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), nil)

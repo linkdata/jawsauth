@@ -73,9 +73,9 @@ func (srv *Server) takeOAuthFlow(sess *jaws.Session, gotState string) (flow pend
 	}
 	flow.canceled = make(chan struct{})
 	if srv.oauthCallbacks == nil {
-		srv.oauthCallbacks = make(map[*jaws.Session]chan struct{})
+		srv.oauthCallbacks = make(map[*jaws.Session]pendingOAuthFlow)
 	}
-	srv.oauthCallbacks[sess] = flow.canceled
+	srv.oauthCallbacks[sess] = flow
 	return flow, nil
 }
 
@@ -84,7 +84,7 @@ func (srv *Server) finishOAuthFlow(sess *jaws.Session, flow pendingOAuthFlow) {
 		return
 	}
 	srv.mu.Lock()
-	if srv.oauthCallbacks[sess] == flow.canceled {
+	if srv.oauthCallbacks[sess].canceled == flow.canceled {
 		delete(srv.oauthCallbacks, sess)
 	}
 	srv.mu.Unlock()
@@ -560,9 +560,14 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 											var linkErr error
 											statusCode, linkErr = srv.LinkEvent(sess, hr, claims)
 											if linkErr == nil && statusCode == 0 {
-												err = nil
-												sessValue = claims
-												linked = true
+												if flow.revoked() || srv.Jaws.GetSession(hr) != sess || !sessionAlive(sess) {
+													err = ErrOAuth2MissingSession
+													statusCode = http.StatusForbidden
+												} else {
+													err = nil
+													sessValue = claims
+													linked = true
+												}
 											} else {
 												_ = srv.Jaws.Log(linkErr)
 												err = ErrOAuth2LinkRejected
