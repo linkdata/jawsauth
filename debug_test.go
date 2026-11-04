@@ -161,13 +161,14 @@ func TestDebugOAuth2TransportLogsRequestAndPreservesBody(t *testing.T) {
 	}
 }
 
-func TestDebugHTTPClientWrapsExistingClient(t *testing.T) {
-	srv := &Server{}
+func TestOAuth2ContextDebugWrapsExistingClient(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
+	srv := &Server{Jaws: &jaws.Jaws{Debug: true, Logger: &testAuthDebugLogger{}}, httpClient: client}
 
-	debugClient := srv.debugHTTPClient(client, &testAuthDebugLogger{})
+	ctx := srv.oauth2Context(t.Context())
+	debugClient, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
 
-	if debugClient == client {
+	if debugClient == nil || debugClient == client || client.Transport != nil {
 		t.Fatal("debug client reused original client")
 	}
 	if debugClient.Timeout != time.Second {

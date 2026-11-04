@@ -409,6 +409,21 @@ func TestConfigBuildContextDiscoveryRedirectScheme(t *testing.T) {
 	}
 }
 
+func TestConfigBuildContextDiscoveryRedirectLimit(t *testing.T) {
+	var hits atomic.Int32
+	provider := httptest.NewTLSServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		hits.Add(1)
+		http.Redirect(hw, hr, "/again", http.StatusFound)
+	}))
+	defer provider.Close()
+	cfg := Config{RedirectURL: "https://app.example/callback", Issuer: provider.URL,
+		ClientID: "client", HTTPClient: provider.Client()}
+	_, _, _, err := cfg.buildContext(t.Context(), "")
+	if !errors.Is(err, ErrOIDCDiscovery) || hits.Load() != 10 || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("discovery redirect limit: err=%v hits=%d", err, hits.Load())
+	}
+}
+
 func TestConfigBuildContextJWKSRedirectScheme(t *testing.T) {
 	for _, secure := range []bool{false, true} {
 		name := "http blocked"

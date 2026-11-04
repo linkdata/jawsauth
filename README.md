@@ -11,18 +11,19 @@ sessions. Both modes use authorization-code state and PKCE (S256). `Wrap` and
 
 ## Setup
 
-`Config` requires `RedirectURL`, `Issuer` and `ClientID`. OIDC mode discovers
-provider endpoints, verifies the ID token and nonce, and attempts refresh before
-expiry when the provider issues a refresh token. Providers that issue refresh
-tokens only with offline access can use
+`Config` requires `RedirectURL`, `Issuer` and `ClientID`. The issuer, endpoint
+overrides, discovered endpoints and JWKS URI must use HTTPS;
+`AllowInsecureIssuer` permits HTTP for tests and development. OIDC mode
+discovers provider endpoints, verifies the ID token and nonce, and attempts
+refresh before expiry when the provider issues a refresh token. Providers that
+issue refresh tokens only with offline access can use
 `Server.Options = []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}`.
 
-Profile mode requires `AuthURL`, `TokenURL` and `UserInfoURL` over HTTPS, plus a
+Profile mode requires `AuthURL`, `TokenURL` and `UserInfoURL`, plus a
 `ProfileSubject` function that extracts a stable subject from the authenticated
-profile. HTTP endpoints require `AllowInsecureIssuer` for development. Email
-and names are not identity proof. Profile JSON numbers arrive as `json.Number`
-to preserve large IDs. Profile authentication expires after 24 hours or the
-access token's earlier expiry.
+profile. Email and names are not identity proof. Profile JSON numbers arrive as
+`json.Number` to preserve large IDs. Profile authentication expires after 24
+hours or the access token's earlier expiry.
 
 Set `Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound sessions created by
 unauthenticated requests. A login attempt can retain an anonymous session for
@@ -43,13 +44,16 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
 - `HandleLink` is an opt-in POST handler. Authorize the existing session before
   calling it, then recheck the original provider's `CurrentClaims` in
   `LinkEvent` before writing the link. A link keeps the session; an ordinary
-  login rotates it and signs out the other providers.
+  login rotates it and signs out the other providers. Their `LogoutEvent` may
+  run later at their next auth timer check, with a nil request.
 - `New` gives each server a private `SessionRotationLock`. For cross-provider
   linking, give the involved servers one shared lock before serving. jawsauth
-  holds it during logout, expiry and `LinkEvent`, so do not acquire it around
-  `Server.Logout` or inside `LinkEvent`; keep the callback brief. Logout of one
-  provider does not cancel another provider's pending link, which must recheck
-  the original authentication.
+  holds it during login rotation, logout, expiry, protected-handler revocation
+  and `LinkEvent`. Do not hold it around any jawsauth handler or `Server.Logout`,
+  or inside `LinkEvent`. Keep `LinkEvent` brief: while it runs, login, logout
+  and expiry for other sessions sharing the lock wait. Logout of one provider
+  does not cancel another provider's pending link, which must recheck the
+  original authentication.
 
 ## Admin access
 
@@ -69,12 +73,14 @@ admin handlers enforce email verification when required.
 ## Session lifetime
 
 Pending OAuth flows expire after ten minutes. jawsauth extends the original
-JaWS session's grace while the user visits the provider. Logout and
-authentication expiry clear that server's credentials and reload the session's
-JaWS pages. Auth expiry preserves a pending login but cancels a pending link;
-explicit logout cancels either flow. Protected operations should check
-`CurrentClaims`, plus `JawsAuth.IsAdmin` for administrator actions. Protected
-requests during a callback may return 409.
+JaWS session's grace while the user visits the provider. Protected requests
+during a pending login may return 409 without restarting or extending the flow;
+the original callback keeps its return target. Logout and authentication expiry
+clear that server's credentials and reload the session's JaWS pages. Auth expiry
+preserves a pending login but cancels a pending link;
+explicit logout cancels either flow. A new login on the same server, including
+one started by `Wrap` or `Handler`, cancels a pending link. Protected operations
+should check `CurrentClaims`, plus `JawsAuth.IsAdmin` for administrator actions.
 
 Use an HTTP endpoint for a post-logout redirect. `Server.Logout` reloads pages
 and closes their sockets, so a later JaWS `Request.Redirect` cannot deliver the

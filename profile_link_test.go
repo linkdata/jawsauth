@@ -234,7 +234,6 @@ func TestOAuthFailedCallbackDoesNotEraseNewFlow(t *testing.T) {
 	go func() { firstResult <- profileCallback(srv, cookie, firstState, "first").Code }()
 	waitFor(t, entered, "first callback did not reach provider")
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
-	r.RemoteAddr = "192.0.2.1:1234"
 	r.Header.Set("Referer", "https://app.example/second")
 	r.AddCookie(cookie)
 	w := httptest.NewRecorder()
@@ -288,7 +287,6 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 			srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
 			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 			request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-			request.RemoteAddr = "192.0.2.1:1234"
 			request.AddCookie(cookie)
 			sess := jw.GetSession(request)
 			if sess == nil {
@@ -305,7 +303,6 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 				}
 			} else {
 				start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
-				start.RemoteAddr = "192.0.2.1:1234"
 				start.AddCookie(cookie)
 				w := httptest.NewRecorder()
 				srv.HandleLogin(w, start)
@@ -352,7 +349,6 @@ func TestOAuthProfileCallbackCanceledBeforeFinalStore(t *testing.T) {
 	}
 	cookie = first.Result().Cookies()[0]
 	request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-	request.RemoteAddr = "192.0.2.1:1234"
 	request.AddCookie(cookie)
 	old := jw.GetSession(request)
 	if old == nil {
@@ -373,7 +369,6 @@ func TestOAuthProfileCallbackCanceledBeforeFinalStore(t *testing.T) {
 		t.Fatalf("canceled before store: canceled=%t status=%d location=%q cookies=%v", canceled, w.Code, w.Header().Get("Location"), cookies)
 	}
 	request = httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-	request.RemoteAddr = "192.0.2.1:1234"
 	request.AddCookie(cookies[0])
 	if jw.GetSession(request) != nil || old.Get(srv.SessionKey) != nil || len(srv.authTimers) != 0 {
 		t.Fatalf("canceled login retained auth or timer: old=%v timers=%d", old.Get(srv.SessionKey), len(srv.authTimers))
@@ -412,7 +407,6 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 	}
 	cookie = login.Result().Cookies()[0]
 	request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-	request.RemoteAddr = "192.0.2.1:1234"
 	request.AddCookie(cookie)
 	sess := jw.GetSession(request)
 	if sess == nil || sess.Get(srv.SessionKey) == nil {
@@ -474,7 +468,6 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 				}
 				cookie = first.Result().Cookies()[0]
 				req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-				req.RemoteAddr = "192.0.2.1:1234"
 				req.AddCookie(cookie)
 				sess := jw.GetSession(req)
 				lock := &observedRotationLock{second: make(chan struct{})}
@@ -563,7 +556,6 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 			}
 			cookie = first.Result().Cookies()[0]
 			start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
-			start.RemoteAddr = "192.0.2.1:1234"
 			start.AddCookie(cookie)
 			sess := jw.GetSession(start)
 			if sess == nil {
@@ -639,7 +631,6 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 				t.Fatalf("new login: status=%d cookies=%v body=%q", response.Code, response.Result().Cookies(), response.Body.String())
 			}
 			check := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-			check.RemoteAddr = "192.0.2.1:1234"
 			check.AddCookie(response.Result().Cookies()[0])
 			rotated := jw.GetSession(check)
 			if rotated == nil || rotated == sess || rotated.Get(srv.SessionKey).(map[string]any)["sub"] != "99" {
@@ -698,7 +689,6 @@ func newProfileTestServer(t *testing.T, jw *jaws.Jaws, calls *int) *Server {
 func profileStart(t *testing.T, srv *Server, method, path string, cookie *http.Cookie) (*http.Cookie, string) {
 	t.Helper()
 	r := httptest.NewRequest(method, "https://app.example"+path, nil)
-	r.RemoteAddr = "192.0.2.1:1234"
 	if cookie != nil {
 		r.AddCookie(cookie)
 	}
@@ -730,7 +720,6 @@ func profileStart(t *testing.T, srv *Server, method, path string, cookie *http.C
 
 func profileCallback(srv *Server, cookie *http.Cookie, state, code string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback?state="+url.QueryEscape(state)+"&code="+code, nil)
-	r.RemoteAddr = "192.0.2.1:1234"
 	r.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	srv.HandleAuthResponse(w, r)
@@ -764,7 +753,6 @@ func TestOAuthProfileSignInAndDualProofLink(t *testing.T) {
 		}
 		cookie := newCookies[0]
 		request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-		request.RemoteAddr = "192.0.2.1:1234"
 		request.AddCookie(cookie)
 		sess := jw.GetSession(request)
 		claims, _ := sess.Get(srv.SessionKey).(map[string]any)
@@ -811,7 +799,6 @@ func TestOAuthProfileExpiredLinkStateNeverCallsProvider(t *testing.T) {
 	}
 	_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-	r.RemoteAddr = "192.0.2.1:1234"
 	r.AddCookie(cookie)
 	sess := jw.GetSession(r)
 	flow := testOAuthFlow(sess, srv)
@@ -841,7 +828,6 @@ func TestOAuthLinkRequiresSessionAndSameOriginRequestAndRejectsDeclinedLink(t *t
 			calls := 0
 			srv := newProfileTestServer(t, jw, &calls)
 			missing := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link/github", nil)
-			missing.RemoteAddr = "192.0.2.1:1234"
 			w := httptest.NewRecorder()
 			srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) {
 				return http.StatusForbidden, reject.err
@@ -857,7 +843,6 @@ func TestOAuthLinkRequiresSessionAndSameOriginRequestAndRejectsDeclinedLink(t *t
 			}
 			cookie := first.Result().Cookies()[0]
 			cross := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link/github", nil)
-			cross.RemoteAddr = "192.0.2.1:1234"
 			cross.Header.Set("Origin", "https://evil.example")
 			cross.AddCookie(cookie)
 			w = httptest.NewRecorder()
@@ -873,7 +858,6 @@ func TestOAuthLinkRequiresSessionAndSameOriginRequestAndRejectsDeclinedLink(t *t
 				t.Fatalf("declined link: status=%d body=%q", declined.Code, declined.Body.String())
 			}
 			r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-			r.RemoteAddr = "192.0.2.1:1234"
 			r.AddCookie(cookie)
 			sess := jw.GetSession(r)
 			if sess == nil || sess.Get(srv.SessionKey).(map[string]any)["sub"] != "9007199254740993" {
@@ -898,7 +882,6 @@ func TestOAuthProfileRejectsInvalidSubjectAndOversizedResponse(t *testing.T) {
 		t.Fatalf("invalid subject: status=%d calls=%d", response.Code, calls)
 	}
 	request := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
-	request.RemoteAddr = "192.0.2.1:1234"
 	request.AddCookie(cookie)
 	if sess := jw.GetSession(request); sess == nil || sess.Get(srv.SessionKey) != nil {
 		t.Fatal("invalid profile authenticated the preauth session")
@@ -955,7 +938,6 @@ func TestOAuthProfileUserInfoCallbackDeadline(t *testing.T) {
 		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 		response := profileCallback(srv, cookie, state, "code")
 		request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-		request.RemoteAddr = "192.0.2.1:1234"
 		request.AddCookie(cookie)
 		sess := jw.GetSession(request)
 		var claims any
@@ -1044,7 +1026,6 @@ func TestOAuthProfileExplicitZeroExpiryRejectedButOmittedExpiryCapped(t *testing
 				t.Fatalf("rotated cookies: %v", cookies)
 			}
 			r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-			r.RemoteAddr = "192.0.2.1:1234"
 			r.AddCookie(cookies[0])
 			sess := jw.GetSession(r)
 			if sess == nil || sess.Get(srv.SessionKey) == nil {
@@ -1077,7 +1058,6 @@ func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
 		t.Fatalf("profile auth cleanup interval: %s", delay)
 	}
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
-	r.RemoteAddr = "192.0.2.1:1234"
 	r.AddCookie(response.Result().Cookies()[0])
 	sess := jw.GetSession(r)
 	factory.timer(0).fire()
@@ -1109,7 +1089,6 @@ func TestOAuthProfileTimerReleasesClosedSession(t *testing.T) {
 		t.Fatalf("profile sign-in: status=%d timers=%d", response.Code, factory.len())
 	}
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
-	r.RemoteAddr = "192.0.2.1:1234"
 	r.AddCookie(response.Result().Cookies()[0])
 	sess := jw.GetSession(r)
 	sess.Close()

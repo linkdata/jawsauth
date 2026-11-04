@@ -50,20 +50,6 @@ func (transport debugOAuth2Transport) RoundTrip(req *http.Request) (resp *http.R
 	return
 }
 
-func (srv *Server) debugHTTPClient(client *http.Client, logger jaws.Logger) (debugClient *http.Client) {
-	debugClient = &http.Client{Transport: http.DefaultTransport}
-	if client != nil {
-		clientCopy := *client
-		debugClient = &clientCopy
-	}
-	next := debugClient.Transport
-	if next == nil {
-		next = http.DefaultTransport
-	}
-	debugClient.Transport = debugOAuth2Transport{logger: logger, next: next}
-	return
-}
-
 func oauth2RequestDebugAttrs(req *http.Request) (attrs []any) {
 	attrs = []any{"request_nil", req == nil}
 	if req != nil {

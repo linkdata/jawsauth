@@ -12,6 +12,21 @@ import (
 	"github.com/linkdata/jaws"
 )
 
+func newConcurrentProfileProvider(t *testing.T, jw *jaws.Jaws, client *http.Client, namespace string) *Server {
+	t.Helper()
+	srv, err := New(jw, &Config{
+		Namespace: namespace, RedirectURL: "https://app.example/auth/" + namespace + "/callback",
+		Issuer: "https://provider.example", AuthURL: "https://provider.example/authorize",
+		TokenURL: "https://provider.example/token", UserInfoURL: "https://provider.example/user",
+		ClientID: "app", HTTPClient: client,
+		ProfileSubject: func(profile map[string]any) (string, error) { return string(profile["id"].(json.Number)), nil },
+	}, func(string, http.Handler) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv
+}
+
 type gateRotationLock struct {
 	mu       sync.Mutex
 	entrants atomic.Int32
@@ -44,15 +59,9 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(gate.release) }) }
 	defer release()
-	mk := func(ns string) *Server {
-		srv, err := New(jw, &Config{Namespace: ns, RedirectURL: "https://app.example/auth/" + ns + "/callback", Issuer: "https://provider.example", AuthURL: "https://provider.example/authorize", TokenURL: "https://provider.example/token", UserInfoURL: "https://provider.example/user", ClientID: "app", HTTPClient: client, ProfileSubject: func(m map[string]any) (string, error) { return string(m["id"].(json.Number)), nil }}, func(string, http.Handler) {})
-		if err != nil {
-			t.Fatal(err)
-		}
-		srv.SessionRotationLock = gate
-		return srv
-	}
-	a, b := mk("a"), mk("b")
+	a := newConcurrentProfileProvider(t, jw, client, "a")
+	b := newConcurrentProfileProvider(t, jw, client, "b")
+	a.SessionRotationLock, b.SessionRotationLock = gate, gate
 	cookie, stateA := profileStart(t, a, http.MethodGet, "/auth/a/login", nil)
 	startB := httptest.NewRequest(http.MethodGet, "https://app.example/auth/b/login", nil)
 	startB.AddCookie(cookie)
@@ -68,7 +77,6 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 	stateB := locB.Query().Get("state")
 	callback := func(srv *Server, ns, state string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "https://app.example/auth/"+ns+"/callback?state="+url.QueryEscape(state)+"&code=proof", nil)
-		req.RemoteAddr = "192.0.2.1:1234"
 		req.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		srv.HandleAuthResponse(w, req)
@@ -136,14 +144,8 @@ func TestLinkedProviderLogoutBeforeLinkWrite(t *testing.T) {
 		}
 		return profileTestResponse(`{"id":42}`), nil
 	})}
-	mk := func(ns string) *Server {
-		srv, err := New(jw, &Config{Namespace: ns, RedirectURL: "https://app.example/auth/" + ns + "/callback", Issuer: "https://provider.example", AuthURL: "https://provider.example/authorize", TokenURL: "https://provider.example/token", UserInfoURL: "https://provider.example/user", ClientID: "app", HTTPClient: client, ProfileSubject: func(m map[string]any) (string, error) { return string(m["id"].(json.Number)), nil }}, func(string, http.Handler) {})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return srv
-	}
-	a, b := mk("a"), mk("b")
+	a := newConcurrentProfileProvider(t, jw, client, "a")
+	b := newConcurrentProfileProvider(t, jw, client, "b")
 	cookie, state := profileStart(t, a, http.MethodGet, "/auth/a/login", nil)
 	login := profileCallback(a, cookie, state, "proof")
 	if login.Code != http.StatusFound || len(login.Result().Cookies()) != 1 {
@@ -170,7 +172,6 @@ func TestLinkedProviderLogoutBeforeLinkWrite(t *testing.T) {
 	callbackDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		callbackRequest := httptest.NewRequest(http.MethodGet, "https://app.example/auth/b/callback?state="+url.QueryEscape(linkState)+"&code=proof", nil)
-		callbackRequest.RemoteAddr = "192.0.2.1:1234"
 		callbackRequest.AddCookie(cookie)
 		callback := httptest.NewRecorder()
 		b.HandleAuthResponse(callback, callbackRequest)

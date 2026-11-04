@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -28,7 +27,6 @@ func TestOAuthProviderVisitKeepsOnlyPendingSessionAlive(t *testing.T) {
 			Endpoint: oauth2.Endpoint{AuthURL: "https://provider.example/auth", TokenURL: "https://provider.example/token"},
 		}}
 		start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
-		start.RemoteAddr = "192.0.2.1:1234"
 		response := httptest.NewRecorder()
 		srv.HandleLogin(response, start)
 		if response.Code != http.StatusFound {
@@ -60,7 +58,7 @@ func TestOAuthProviderVisitKeepsOnlyPendingSessionAlive(t *testing.T) {
 	})
 }
 
-func TestPendingLoginRedirectDoesNotRenewGrace(t *testing.T) {
+func TestPendingLoginProtectedRequestDoesNotRestartOrRenewGrace(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		jw, err := jaws.New()
 		if err != nil {
@@ -69,24 +67,20 @@ func TestPendingLoginRedirectDoesNotRenewGrace(t *testing.T) {
 		defer jw.Close()
 		calls := 0
 		srv := newProfileTestServer(t, jw, &calls)
-		srv.Options = []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
 		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 		protected := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
-		protected.RemoteAddr = "192.0.2.1:1234"
 		protected.AddCookie(cookie)
 		time.Sleep(9 * time.Minute)
 		response := httptest.NewRecorder()
 		srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("pending login reached protected handler")
 		})).ServeHTTP(response, protected)
-		if response.Code != http.StatusFound {
-			t.Fatalf("pending login: status=%d", response.Code)
+		if response.Code != http.StatusConflict || response.Header().Get("Location") != "" || !strings.Contains(response.Body.String(), ErrOAuth2LoginInProgress.Error()) {
+			t.Fatalf("pending login: status=%d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
 		}
-		location, err := url.Parse(response.Header().Get("Location"))
 		stored := testOAuthFlow(jw.GetSession(protected), srv)
-		original, _ := url.Parse(srv.oauth2cfg.AuthCodeURL(state, oauth2.S256ChallengeOption(stored.verifier)))
-		if err != nil || location.Query().Get("state") != state || location.Query().Get("code_challenge") != original.Query().Get("code_challenge") || location.Query().Get("access_type") != "offline" {
-			t.Fatalf("pending login redirect: location=%q err=%v", response.Header().Get("Location"), err)
+		if stored.state != state {
+			t.Fatalf("pending login replaced state: want %q got %q", state, stored.state)
 		}
 		time.Sleep(time.Minute + oauth2ProviderTimeout + 2*time.Second)
 		if jw.GetSession(protected) != nil {
@@ -111,7 +105,6 @@ func TestOAuthFlowExpiresEvenWithLiveSession(t *testing.T) {
 			return nil, errors.New("provider should not be called")
 		})}}
 		start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
-		start.RemoteAddr = "192.0.2.1:1234"
 		response := httptest.NewRecorder()
 		srv.HandleLogin(response, start)
 		if response.Code != http.StatusFound {
@@ -164,7 +157,6 @@ func TestOIDCInitialCallbackAfterProviderVisit(t *testing.T) {
 			})},
 		}
 		start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
-		start.RemoteAddr = "192.0.2.1:1234"
 		response := httptest.NewRecorder()
 		srv.HandleLogin(response, start)
 		if response.Code != http.StatusFound {
@@ -223,7 +215,6 @@ func TestOAuthLinkCallbackNearDeadlineCanFinishProviderExchange(t *testing.T) {
 			})},
 		}
 		start := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link", nil)
-		start.RemoteAddr = "192.0.2.1:1234"
 		created := httptest.NewRecorder()
 		sess := jw.NewSession(created, start)
 		if sess == nil {

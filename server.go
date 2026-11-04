@@ -349,7 +349,7 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 // Unauthenticated requests are redirected into the configured login flow (HandleLogin);
 // authenticated users whose email is not an admin (see SetAdmins and IsAdmin) are
 // served the 403 handler instead of h. [Server.RequireVerifiedAdminEmail] also
-// applies. A protected request during a callback may return 409.
+// applies. A protected request during a pending login may return 409.
 // If the Server is not Valid, returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, true)
@@ -359,7 +359,7 @@ func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 //
 // Unauthenticated requests are redirected into the configured login flow
 // (HandleLogin), which stores verified claims in srv.SessionKey before the user
-// returns. A protected request during a callback may return 409.
+// returns. A protected request during a pending login may return 409.
 // If the Server is not Valid, returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, false)
@@ -370,7 +370,7 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 //
 // Unauthenticated requests are redirected into the configured login flow (HandleLogin);
 // authenticated non-admins (see SetAdmins and IsAdmin) are served the 403 handler.
-// [Server.RequireVerifiedAdminEmail] also applies. A protected request during a callback may return 409.
+// [Server.RequireVerifiedAdminEmail] also applies. A protected request during a pending login may return 409.
 // If the Server is not Valid, the template handler is returned without the
 // authentication requirement.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
@@ -382,7 +382,7 @@ func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
 //
 // Unauthenticated requests are redirected into the configured login flow
 // (HandleLogin), which stores verified claims in srv.SessionKey before the user
-// returns. A protected request during a callback may return 409.
+// returns. A protected request during a pending login may return 409.
 // If the Server is not Valid, the template
 // handler is returned without the authentication requirement.
 func (srv *Server) Handler(name string, dot any) http.Handler {

@@ -176,7 +176,6 @@ func TestOAuthLogoutDuringLoginEventClosesRotatedSession(t *testing.T) {
 	}
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-	req.RemoteAddr = "192.0.2.1:1234"
 	req.AddCookie(cookie)
 	preauth := jw.GetSession(req)
 	if preauth == nil {

@@ -32,7 +32,6 @@ func TestCallbackRevokedAfterStoreBalancesEvents(t *testing.T) {
 	srv := newProfileTestServer(t, jw, &calls)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-	r.RemoteAddr = "192.0.2.1:1234"
 	r.AddCookie(cookie)
 	old := jw.GetSession(r)
 	if old == nil {
@@ -75,7 +74,6 @@ func TestProfileTokenExpiresBetweenRotationAndStore(t *testing.T) {
 		}
 		cookie = first.Result().Cookies()[0]
 		r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-		r.RemoteAddr = "192.0.2.1:1234"
 		r.AddCookie(cookie)
 		old := jw.GetSession(r)
 		if old == nil {
@@ -115,7 +113,6 @@ func TestLinkWithoutEventDoesNotStartFlow(t *testing.T) {
 	srv := newProfileTestServer(t, jw, &calls)
 	srv.LinkEvent = nil
 	r := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link/github", nil)
-	r.RemoteAddr = "192.0.2.1:1234"
 	if jw.NewSession(httptest.NewRecorder(), r) == nil {
 		t.Fatal("missing session")
 	}
@@ -137,7 +134,6 @@ func TestLinkRejectsGETBeforeStartingFlow(t *testing.T) {
 	srv := newProfileTestServer(t, jw, &calls)
 	srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) { return 0, nil }
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/link/github", nil)
-	r.RemoteAddr = "192.0.2.1:1234"
 	sess := jw.NewSession(httptest.NewRecorder(), r)
 	if sess == nil {
 		t.Fatal("missing session")
@@ -186,6 +182,48 @@ func TestLinkRejectsInvalidEventResults(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLinkRejectsIdentityThatExpiresWhileWaitingForLock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		jw, err := jaws.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer jw.Close()
+		calls := 0
+		srv := newProfileTestServer(t, jw, &calls)
+		lock := &holdFirstRotationLock{first: make(chan struct{}), releaseFirst: make(chan struct{})}
+		srv.SessionRotationLock = lock
+		release := sync.OnceFunc(func() { close(lock.releaseFirst) })
+		defer release()
+		writes := 0
+		srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) {
+			writes++
+			return 0, nil
+		}
+		request := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback", nil)
+		sess := jw.NewSession(httptest.NewRecorder(), request)
+		if sess == nil || jw.GetSession(request) != sess {
+			t.Fatal("missing session")
+		}
+		type completion struct {
+			status int
+			err    error
+		}
+		result := make(chan completion, 1)
+		go func() {
+			status, err := srv.completeLink(sess, request, map[string]any{"sub": "42"}, time.Now().Add(time.Second), pendingOAuthFlow{})
+			result <- completion{status, err}
+		}()
+		<-lock.first
+		time.Sleep(2 * time.Second) // synctest advances time while completeLink waits.
+		release()
+		got := <-result
+		if got.status != http.StatusUnauthorized || !errors.Is(got.err, ErrOAuth2InvalidProfile) || writes != 0 {
+			t.Fatalf("expired link: status=%d err=%v writes=%d", got.status, got.err, writes)
+		}
+	})
 }
 
 func TestUserInfoRejectsTrailingJSON(t *testing.T) {
@@ -279,7 +317,6 @@ func TestCallbackClosesRotatedSessionOnStoreFailure(t *testing.T) {
 func startProfileLoginWithCookie(t *testing.T, srv *Server, cookie *http.Cookie) string {
 	t.Helper()
 	start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
-	start.RemoteAddr = "192.0.2.1:1234"
 	start.AddCookie(cookie)
 	begin := httptest.NewRecorder()
 	srv.HandleLogin(begin, start)
@@ -322,7 +359,6 @@ func TestCallbackRevokedAfterRotationClosesNewSession(t *testing.T) {
 	}
 	cookie = first.Result().Cookies()[0]
 	oldRequest := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-	oldRequest.RemoteAddr = "192.0.2.1:1234"
 	oldRequest.AddCookie(cookie)
 	old := jw.GetSession(oldRequest)
 	if old == nil {

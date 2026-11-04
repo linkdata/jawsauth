@@ -43,6 +43,7 @@ type Config struct {
 	// ProfileSubject enables OAuth2 profile authentication without an OIDC ID token.
 	// AuthURL, TokenURL and UserInfoURL are required in this mode. It must return
 	// a stable, non-empty provider subject from the authenticated profile response.
+	// JSON numbers arrive as json.Number to preserve large numeric IDs.
 	// Profile emails can be unverified. For a non-empty admin list, set
 	// Server.RequireVerifiedAdminEmail unless the provider guarantees verified
 	// addresses; ProfileSubject may map a provider signal to claims["email_verified"].
@@ -60,36 +61,31 @@ func requireStr(k, u string) error {
 	return requireLen(k, len(strings.TrimSpace(u)))
 }
 
-func validateUrl(k, value string, optional bool) (err error) {
+func validateUrl(k, value string, optional bool) (*url.URL, error) {
 	if optional && value == "" {
-		return
+		return nil, nil
 	}
-	if err = requireStr(k, value); err == nil {
-		var parsed *url.URL
-		if parsed, err = url.Parse(value); err == nil {
-			err = ErrConfigURLNotAbsolute
-			if parsed.IsAbs() {
-				err = ErrConfigURLMissingHost
-				if parsed.Hostname() != "" {
-					err = nil
-				}
-			}
-			if err != nil {
-				err = errConfig{field: k, cause: err}
-			}
-		} else {
-			err = errConfig{field: k, cause: err}
-		}
+	if err := requireStr(k, value); err != nil {
+		return nil, err
 	}
-	return
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return nil, errConfig{field: k, cause: err}
+	}
+	if !parsed.IsAbs() {
+		return nil, errConfig{field: k, cause: ErrConfigURLNotAbsolute}
+	}
+	if parsed.Hostname() == "" {
+		return nil, errConfig{field: k, cause: ErrConfigURLMissingHost}
+	}
+	return parsed, nil
 }
 
 func validateEndpoint(field, value string, optional, allowInsecure bool) error {
-	err := validateUrl(field, value, optional)
-	if err != nil || value == "" {
+	parsed, err := validateUrl(field, value, optional)
+	if err != nil || parsed == nil {
 		return err
 	}
-	parsed, _ := url.Parse(value)
 	if parsed.Scheme != "https" && (!allowInsecure || parsed.Scheme != "http") {
 		return errConfig{field: field, cause: ErrConfigEndpointMustBeHTTPS}
 	}
@@ -103,26 +99,25 @@ func validateEndpoint(field, value string, optional, allowInsecure bool) error {
 // are required and must use HTTPS, or HTTP when AllowInsecureIssuer is true.
 // OIDC endpoints and Issuer must use HTTPS unless AllowInsecureIssuer is true.
 // Returned failures match [ErrConfig].
-func (cfg *Config) Validate() (err error) {
-	if err = validateUrl("RedirectURL", cfg.RedirectURL, false); err == nil {
-		if err = validateUrl("Issuer", cfg.Issuer, false); err == nil {
-			issuer, _ := url.Parse(cfg.Issuer)
-			if issuer.Scheme != "https" && (!cfg.AllowInsecureIssuer || issuer.Scheme != "http") {
-				err = errConfig{field: "Issuer", cause: ErrConfigIssuerMustBeHTTPS}
-			}
-			if err == nil {
-				for _, field := range []struct{ name, value string }{
-					{"AuthURL", cfg.AuthURL}, {"TokenURL", cfg.TokenURL}, {"UserInfoURL", cfg.UserInfoURL},
-				} {
-					if err = validateEndpoint(field.name, field.value, cfg.ProfileSubject == nil, cfg.AllowInsecureIssuer); err != nil {
-						return
-					}
-				}
-				err = requireStr("ClientID", cfg.ClientID)
-			}
+func (cfg *Config) Validate() error {
+	if _, err := validateUrl("RedirectURL", cfg.RedirectURL, false); err != nil {
+		return err
+	}
+	issuer, err := validateUrl("Issuer", cfg.Issuer, false)
+	if err != nil {
+		return err
+	}
+	if issuer.Scheme != "https" && (!cfg.AllowInsecureIssuer || issuer.Scheme != "http") {
+		return errConfig{field: "Issuer", cause: ErrConfigIssuerMustBeHTTPS}
+	}
+	for _, field := range []struct{ name, value string }{
+		{"AuthURL", cfg.AuthURL}, {"TokenURL", cfg.TokenURL}, {"UserInfoURL", cfg.UserInfoURL},
+	} {
+		if err := validateEndpoint(field.name, field.value, cfg.ProfileSubject == nil, cfg.AllowInsecureIssuer); err != nil {
+			return err
 		}
 	}
-	return
+	return requireStr("ClientID", cfg.ClientID)
 }
 
 func overrideStr(a *string, b string) {

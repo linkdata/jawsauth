@@ -79,11 +79,13 @@ func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) 
 		// Token POSTs carry secrets, and 307/308 redirects preserve their body.
 		clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		if logger := srv.debugLogger(); logger != nil {
-			client = srv.debugHTTPClient(&clientCopy, logger)
-		} else {
-			client = &clientCopy
+			next := clientCopy.Transport
+			if next == nil {
+				next = http.DefaultTransport
+			}
+			clientCopy.Transport = debugOAuth2Transport{logger: logger, next: next}
 		}
-		authctx = context.WithValue(authctx, oauth2.HTTPClient, client)
+		authctx = context.WithValue(authctx, oauth2.HTTPClient, &clientCopy)
 	}
 	return
 }
