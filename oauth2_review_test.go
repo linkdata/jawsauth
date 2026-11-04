@@ -154,9 +154,11 @@ func TestLinkRejectsInvalidEventResults(t *testing.T) {
 		name   string
 		status int
 		err    error
+		want   int
 	}{
-		{"error without status", 0, errors.New("secret persistence detail")},
-		{"success status without acceptance", http.StatusOK, nil},
+		{"error without status", 0, errors.New("secret persistence detail"), http.StatusForbidden},
+		{"success status without acceptance", http.StatusOK, nil, http.StatusForbidden},
+		{"conflict status", http.StatusConflict, errors.New("secret persistence detail"), http.StatusConflict},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			jw, err := jaws.New()
@@ -177,7 +179,7 @@ func TestLinkRejectsInvalidEventResults(t *testing.T) {
 			}
 			_, state = profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
 			w := profileCallback(srv, cookie, state, "second")
-			if w.Code != http.StatusForbidden || w.Header().Get("Location") != "" ||
+			if w.Code != tc.want || w.Header().Get("Location") != "" ||
 				len(w.Result().Cookies()) != 0 || !strings.Contains(w.Body.String(), ErrOAuth2LinkRejected.Error()) ||
 				strings.Contains(w.Body.String(), "secret persistence detail") {
 				t.Fatalf("invalid LinkEvent result: status=%d location=%q body=%q cookies=%v", w.Code, w.Header().Get("Location"), w.Body.String(), w.Result().Cookies())

@@ -427,7 +427,7 @@ func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
 	sess.Set(srv.sessionKey(oauth2FlowKey), nil)
 }
 
-// Logout clears all authentication state for sess.
+// Logout clears this server's authentication state for sess.
 //
 // It stops the auth timer, clears verified claims, token source, email, expiry
 // and any in-flight OAuth flow keys, then reloads its pages with [jaws.Request.Reload],
@@ -486,8 +486,6 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 }
 
 func reloadAuthRequests(requests []*jaws.Request) {
-	// ponytail: JaWS never reuses Request identities; replace this snapshot
-	// reload with a Session-level API when JaWS provides one.
 	for _, rq := range requests {
 		rq.Reload()
 	}

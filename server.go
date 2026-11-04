@@ -73,11 +73,13 @@ type EventFunc func(sess *jaws.Session, hr *http.Request)
 type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
 // LinkFunc receives the current session and a newly verified identity. Recheck
-// the current authentication before a durable link write. When configured,
-// jawsauth holds SessionRotationLock while calling LinkFunc; do not acquire it
-// again or call Server.Logout in the callback. Claims contain raw provider fields, so their types
-// (including email_verified) may differ from stored session values. Return zero
-// and nil on success, or an HTTP error status.
+// the existing authentication before a durable link write; with multiple
+// providers, use the original provider's CurrentClaims. Logout and flow
+// cancellation affect only their own Server. jawsauth holds
+// SessionRotationLock while calling LinkFunc; do not acquire it again or call
+// Server.Logout in the callback. Claims contain raw provider fields, so their
+// types (including email_verified) may differ from stored session values.
+// Return zero and nil on success, or an HTTP error status.
 type LinkFunc func(sess *jaws.Session, hr *http.Request, claims map[string]any) (statusCode int, err error)
 
 // Server provides OIDC or verified OAuth2 profile authentication for JaWS sessions.
@@ -85,7 +87,8 @@ type LinkFunc func(sess *jaws.Session, hr *http.Request, claims map[string]any) 
 // Create one with New or NewDebug. Its methods are safe for concurrent use; the
 // exported configuration fields and callbacks should be set before serving requests.
 type Server struct {
-	Jaws                    *jaws.Jaws
+	Jaws *jaws.Jaws
+	// New appends Config.Namespace to these four session keys when configured.
 	SessionKey              string              // default is "oidc_claims", value will be of type map[string]any
 	SessionTokenKey         string              // default is "oauth2_tokensource"; an oauth2.TokenSource in OIDC mode, empty in profile mode
 	SessionEmailKey         string              // default is "email", value is a parsed string address with ASCII letters lowercased
@@ -96,8 +99,7 @@ type Server struct {
 	LoginFailed             FailedFunc          // if not nil, called on failed login or link
 	LinkEvent               LinkFunc            // if not nil, enables HandleLink
 	// SessionRotationLock is held during rotation, revocation, HandleLogout,
-	// Logout, and LinkEvent.
-	// shortcut: One lock serializes all sessions; shard it if link writes delay auth traffic.
+	// Logout, and LinkEvent. New supplies a private lock; share one for cross-provider links.
 	SessionRotationLock sync.Locker
 	Options             []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
 
@@ -146,6 +148,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		SessionEmailKey:         "email",
 		SessionEmailVerifiedKey: "email_verified",
 		HandledPaths:            make(map[string]struct{}),
+		SessionRotationLock:     &sync.Mutex{},
 		admins:                  make(map[string]struct{}),
 		handle403:               default403handler{},
 		authTimers:              make(map[uint64]*authTimerState),
@@ -346,7 +349,8 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 // Unauthenticated requests are redirected into the configured login flow (HandleLogin);
 // authenticated users whose email is not an admin (see SetAdmins and IsAdmin) are
 // served the 403 handler instead of h. [Server.RequireVerifiedAdminEmail] also
-// applies. If the Server is not Valid, returns h.
+// applies. A protected request during a callback may return 409.
+// If the Server is not Valid, returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, true)
 }
@@ -355,7 +359,8 @@ func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 //
 // Unauthenticated requests are redirected into the configured login flow
 // (HandleLogin), which stores verified claims in srv.SessionKey before the user
-// returns. If the Server is not Valid, returns h.
+// returns. A protected request during a callback may return 409.
+// If the Server is not Valid, returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, false)
 }
@@ -365,7 +370,7 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 //
 // Unauthenticated requests are redirected into the configured login flow (HandleLogin);
 // authenticated non-admins (see SetAdmins and IsAdmin) are served the 403 handler.
-// [Server.RequireVerifiedAdminEmail] also applies.
+// [Server.RequireVerifiedAdminEmail] also applies. A protected request during a callback may return 409.
 // If the Server is not Valid, the template handler is returned without the
 // authentication requirement.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
@@ -377,7 +382,8 @@ func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
 //
 // Unauthenticated requests are redirected into the configured login flow
 // (HandleLogin), which stores verified claims in srv.SessionKey before the user
-// returns. If the Server is not Valid, the template
+// returns. A protected request during a callback may return 409.
+// If the Server is not Valid, the template
 // handler is returned without the authentication requirement.
 func (srv *Server) Handler(name string, dot any) http.Handler {
 	return srv.wrap(ui.Handler(srv.Jaws, name, dot), false)

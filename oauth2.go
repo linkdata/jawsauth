@@ -24,7 +24,7 @@ import (
 )
 
 const oauth2FlowKey = "oauth2flow"
-const oauth2AuthExpiryKey = "oauth2idtokenexpiry" // #nosec G101
+const oauth2AuthExpiryKey = "oauth2authexpiry"
 
 const oauth2FlowLifetime = 10 * time.Minute
 const oauth2ProviderTimeout = 15 * time.Second
@@ -205,6 +205,10 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 				}
 				if !sess.ExtendGrace(oauth2FlowGrace) {
 					srv.mu.Unlock()
+					if link {
+						srv.writeResult(hw, http.StatusForbidden, ErrOAuth2MissingSession, nil)
+						return
+					}
 					hw.Header().Set("Retry-After", "60")
 					srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
 					return
@@ -227,7 +231,7 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 	hw.WriteHeader(statusCode)
 }
 
-// HandleLogout clears the session's stored authentication and redirects.
+// HandleLogout clears this server's authentication in the session and redirects.
 //
 // For GET requests it clears the auth (firing LogoutEvent if set) and responds with a
 // 302 redirect back to the sanitized referrer (or "/"). Non-GET requests receive 405.
@@ -303,7 +307,7 @@ var ErrUserInfoStatus = errors.New("userinfo status")
 // ErrUserInfoTooLarge means the authenticated profile exceeded the response limit.
 var ErrUserInfoTooLarge = errors.New("userinfo response too large")
 
-// ErrUserInfoInvalidResponse means the UserInfo response contained trailing JSON data.
+// ErrUserInfoInvalidResponse means the UserInfo response was not one valid JSON value.
 var ErrUserInfoInvalidResponse = errors.New("userinfo invalid response")
 
 // ErrOAuth2InvalidProfile means the profile or access token could not prove a stable subject.
@@ -397,19 +401,14 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 			if body, err = io.ReadAll(io.LimitReader(resp.Body, maxUserInfoBytes+1)); err == nil {
 				if len(body) > maxUserInfoBytes {
 					err = ErrUserInfoTooLarge
+				} else if !json.Valid(body) {
+					err = ErrUserInfoInvalidResponse
 				} else {
 					decoder := json.NewDecoder(bytes.NewReader(body))
 					if srv.profileSubject != nil {
 						decoder.UseNumber()
 					}
 					err = decoder.Decode(&userinfo)
-					if err == nil {
-						var extra any
-						if trailingErr := decoder.Decode(&extra); trailingErr != io.EOF {
-							err = ErrUserInfoInvalidResponse
-							userinfo = nil
-						}
-					}
 				}
 			}
 		}
@@ -458,6 +457,7 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 	if err != nil {
 		return
 	}
+	// UserInfo can outlive the token; reject it before calling application code.
 	if !profileTokenUnexpired(token) {
 		return nil, nil, time.Time{}, http.StatusUnauthorized, ErrOAuth2InvalidProfile
 	}
@@ -585,7 +585,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 	err := ErrOAuth2Callback
 
 	if hr.Method == http.MethodGet {
-		oauth2Config, location := srv.begin(hr)
+		oauth2Config := srv.oauth2cfg
 		var sessEmail string
 		var flow pendingOAuthFlow
 		providerCtx, cancel := context.WithTimeout(hr.Context(), oauth2ProviderTimeout)
@@ -616,6 +616,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 								var expiry time.Time
 								claims, tokenSource, expiry, statusCode, err = srv.verifyOAuthIdentity(authctx, token, flow.nonce)
 								if err == nil {
+									// A link has no later store check if identity expires here.
 									if err = srv.identityExpiryError(expiry); err != nil {
 										statusCode = http.StatusUnauthorized
 									} else if flow.link {
@@ -627,10 +628,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 										}
 									}
 									if err == nil {
-										if flow.referrer != "" {
-											location = flow.referrer
-										}
-										hw.Header().Set("Location", location)
+										hw.Header().Set("Location", flow.referrer)
 									}
 								}
 							}

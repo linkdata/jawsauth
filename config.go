@@ -23,7 +23,8 @@ import (
 type Config struct {
 	RedirectURL string // required. e.g. "https://application.example.com/oauth2/callback"
 	Issuer      string // required. e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
-	// Namespace isolates this provider's session values when multiple Servers share one JaWS instance.
+	// Namespace isolates providers sharing one JaWS instance. New appends it to
+	// the four exported Server session-key fields; use a distinct value per provider.
 	Namespace   string
 	AuthURL     string // OIDC override; required in profile mode
 	TokenURL    string // OIDC override; required in profile mode
@@ -42,6 +43,9 @@ type Config struct {
 	// ProfileSubject enables OAuth2 profile authentication without an OIDC ID token.
 	// AuthURL, TokenURL and UserInfoURL are required in this mode. It must return
 	// a stable, non-empty provider subject from the authenticated profile response.
+	// Profile emails can be unverified. For a non-empty admin list, set
+	// Server.RequireVerifiedAdminEmail unless the provider guarantees verified
+	// addresses; ProfileSubject may map a provider signal to claims["email_verified"].
 	ProfileSubject func(map[string]any) (string, error)
 }
 
