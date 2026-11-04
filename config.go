@@ -142,6 +142,14 @@ func ensureScopes(rawScopes []string) (scopes []string) {
 
 func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2cfg *oauth2.Config, userInfoURL string, verifier *oidc.IDTokenVerifier, err error) {
 	if err = cfg.Validate(); err == nil {
+		var redir *url.URL
+		if redir, err = url.Parse(cfg.RedirectURL); err != nil {
+			return
+		}
+		if u, parseErr := url.Parse(overrideUrl); parseErr == nil {
+			overrideStr(&redir.Scheme, u.Scheme)
+			overrideStr(&redir.Host, u.Host)
+		}
 		if cfg.ProfileSubject != nil {
 			var scopes []string
 			for _, set := range cfg.Scopes {
@@ -149,14 +157,6 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 			}
 			slices.Sort(scopes)
 			scopes = slices.Compact(scopes)
-			var redir *url.URL
-			if redir, err = url.Parse(cfg.RedirectURL); err != nil {
-				return
-			}
-			if u, parseErr := url.Parse(overrideUrl); parseErr == nil {
-				overrideStr(&redir.Scheme, u.Scheme)
-				overrideStr(&redir.Host, u.Host)
-			}
 			oauth2cfg = &oauth2.Config{
 				ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
 				Endpoint:    oauth2.Endpoint{AuthURL: cfg.AuthURL, TokenURL: cfg.TokenURL},
@@ -181,24 +181,17 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 				if authURL, err = validateUrl("AuthURL", cfg.AuthURL, metadata.AuthorizationEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
 					if tokenURL, err = validateUrl("TokenURL", cfg.TokenURL, metadata.TokenEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
 						if userInfoURL, err = validateUrl("UserInfoURL", cfg.UserInfoURL, metadata.UserinfoEndpoint, true); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
-							var redir *url.URL
-							if redir, err = url.Parse(cfg.RedirectURL); err == nil {
-								if u, e := url.Parse(overrideUrl); e == nil {
-									overrideStr(&redir.Scheme, u.Scheme)
-									overrideStr(&redir.Host, u.Host)
-								}
-								oauth2cfg = &oauth2.Config{
-									ClientID:     cfg.ClientID,
-									ClientSecret: cfg.ClientSecret,
-									Endpoint: oauth2.Endpoint{
-										AuthURL:  authURL,
-										TokenURL: tokenURL,
-									},
-									RedirectURL: redir.String(),
-									Scopes:      ensureScopes(cfg.Scopes),
-								}
-								verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
+							oauth2cfg = &oauth2.Config{
+								ClientID:     cfg.ClientID,
+								ClientSecret: cfg.ClientSecret,
+								Endpoint: oauth2.Endpoint{
+									AuthURL:  authURL,
+									TokenURL: tokenURL,
+								},
+								RedirectURL: redir.String(),
+								Scopes:      ensureScopes(cfg.Scopes),
 							}
+							verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 						}
 					}
 				}

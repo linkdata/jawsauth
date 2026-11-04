@@ -189,10 +189,6 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 				return
 			}
 			flowExpiry := time.Now().Add(oauth2FlowLifetime)
-			if !sess.ExtendGrace(oauth2FlowLifetime + oauth2ProviderTimeout + time.Second) {
-				srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
-				return
-			}
 			authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
 			state := randomHexString()
 			var nonce string
@@ -209,6 +205,11 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 			if preservePendingLogin && srv.pendingOrdinaryLoginLocked(sess) {
 				srv.mu.Unlock()
 				srv.writeResult(hw, http.StatusConflict, errors.New("oauth2 login already in progress"), nil)
+				return
+			}
+			if !sess.ExtendGrace(oauth2FlowLifetime + oauth2ProviderTimeout + time.Second) {
+				srv.mu.Unlock()
+				srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
 				return
 			}
 			srv.clearSessionOAuthFlow(sess)

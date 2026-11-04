@@ -12,7 +12,7 @@ import (
 )
 
 const authRefreshSkew = 10 * time.Second
-const profileAuthCheckInterval = time.Minute
+const authSessionCheckInterval = time.Minute
 
 var errOIDCStaleIDToken = errors.New("oidc stale id_token")
 var errAuthTimerStale = errors.New("auth timer stale")
@@ -277,8 +277,9 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
 func (srv *Server) scheduleSessionAuthTimerLocked(sess *jaws.Session, expiry time.Time) (delay time.Duration, replaced bool) {
 	delay = max(time.Until(expiry.Add(-authRefreshSkew)), 0)
 	if srv.profileSubject != nil {
-		delay = min(max(time.Until(expiry), 0), profileAuthCheckInterval)
+		delay = max(time.Until(expiry), 0)
 	}
+	delay = min(delay, authSessionCheckInterval)
 	entry := &authTimerState{expiry: expiry}
 	if srv.authTimers == nil {
 		srv.authTimers = make(map[uint64]*authTimerState)
@@ -327,7 +328,7 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 			}
 			srv.mu.Lock()
 			if srv.authTimers[sess.ID()] == entry {
-				entry.timer = srv.authTimerAfterFunc(min(time.Until(entry.expiry), profileAuthCheckInterval), func() {
+				entry.timer = srv.authTimerAfterFunc(min(time.Until(entry.expiry), authSessionCheckInterval), func() {
 					srv.handleSessionAuthTimer(sess, entry)
 				})
 			}
@@ -336,6 +337,16 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 		}
 		if !sessionAlive(sess) {
 			srv.clearSessionAuth(sess, nil, entry, true)
+			return
+		}
+		if remaining := time.Until(entry.expiry.Add(-authRefreshSkew)); remaining > 0 {
+			srv.mu.Lock()
+			if srv.authTimers[sess.ID()] == entry {
+				entry.timer = srv.authTimerAfterFunc(min(remaining, authSessionCheckInterval), func() {
+					srv.handleSessionAuthTimer(sess, entry)
+				})
+			}
+			srv.mu.Unlock()
 			return
 		}
 		current, present := srv.sessionAuthStatus(sess, time.Now)

@@ -59,6 +59,34 @@ func TestOAuthProviderVisitKeepsOnlyPendingSessionAlive(t *testing.T) {
 	})
 }
 
+func TestPendingLoginConflictDoesNotRenewGrace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		jw, err := jaws.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer jw.Close()
+		calls := 0
+		srv := newProfileTestServer(t, jw, &calls)
+		cookie, _ := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+		protected := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
+		protected.RemoteAddr = "192.0.2.1:1234"
+		protected.AddCookie(cookie)
+		time.Sleep(9 * time.Minute)
+		response := httptest.NewRecorder()
+		srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("pending login reached protected handler")
+		})).ServeHTTP(response, protected)
+		if response.Code != http.StatusConflict {
+			t.Fatalf("pending login: status=%d", response.Code)
+		}
+		time.Sleep(time.Minute + oauth2ProviderTimeout + 2*time.Second)
+		if jw.GetSession(protected) != nil {
+			t.Fatal("rejected start renewed pending session grace")
+		}
+	})
+}
+
 func TestOAuthFlowExpiresEvenWithLiveSession(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		jw, err := jaws.New()

@@ -60,7 +60,7 @@ func TestAuthTimerDiscardsClosedSession(t *testing.T) {
 		srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		sess := jw.NewSession(httptest.NewRecorder(), req)
-		expiry := time.Now().Add(time.Hour)
+		expiry := time.Now().Add(5 * time.Second)
 		raw := makeIDToken(t, map[string]any{"iss": "https://issuer.example", "aud": "client", "sub": "one", "exp": expiry.Add(time.Hour).Unix(), "email": "user@example.com"})
 		calls := 0
 		source := tokenSourceFunc(func() (*oauth2.Token, error) {
@@ -84,6 +84,42 @@ func TestAuthTimerDiscardsClosedSession(t *testing.T) {
 		}
 		assertWrapperAuthCleared(t, srv, sess)
 		jw.Close()
+	}
+}
+
+func TestOIDCTimerReleasesSessionRotatedByOtherProvider(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	first := httptest.NewRecorder()
+	old := jw.NewSession(first, req)
+	if old == nil {
+		t.Fatal("initial session missing")
+	}
+	if err := srv.storeSessionAuthClaims(old, map[string]any{"sub": "one"}, nil, time.Now().Add(4*time.Hour), nil); err != nil {
+		t.Fatal(err)
+	}
+	if delay := factory.timer(0).delay; delay <= 0 || delay > time.Minute {
+		t.Fatalf("old session cleanup delay = %s", delay)
+	}
+	factory.timer(0).fire()
+	if factory.len() != 2 || !srv.sessionAuthTimerCurrent(old, srv.authTimers[old.ID()]) {
+		t.Fatal("live OIDC session did not schedule its next liveness check")
+	}
+	replace := httptest.NewRequest(http.MethodGet, "/", nil)
+	replace.RemoteAddr = req.RemoteAddr
+	replace.AddCookie(first.Result().Cookies()[0])
+	if next := jw.NewSession(httptest.NewRecorder(), replace); next == nil || next == old || sessionAlive(old) {
+		t.Fatal("session was not rotated")
+	}
+	factory.timer(1).fire()
+	if len(srv.authTimers) != 0 {
+		t.Fatal("other provider retained the rotated session")
 	}
 }
 

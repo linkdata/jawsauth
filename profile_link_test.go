@@ -987,7 +987,7 @@ func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
 	if response.Code != http.StatusFound || factory.len() != 1 {
 		t.Fatalf("profile sign-in: status=%d timers=%d", response.Code, factory.len())
 	}
-	if delay := factory.timer(0).delay; delay <= 0 || delay > profileAuthCheckInterval {
+	if delay := factory.timer(0).delay; delay <= 0 || delay > authSessionCheckInterval {
 		t.Fatalf("profile auth cleanup interval: %s", delay)
 	}
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
