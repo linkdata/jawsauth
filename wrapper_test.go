@@ -285,6 +285,21 @@ func TestOAuth2ContextUsesServerHTTPClient(t *testing.T) {
 		got.Transport != otherClient.Transport || got.Timeout != otherClient.Timeout || got.CheckRedirect == nil {
 		t.Fatal(got)
 	}
+
+	for _, timeout := range []time.Duration{0, 2 * oauth2ProviderTimeout} {
+		client := &http.Client{Timeout: timeout}
+		srv.httpClient = client
+		ctx = srv.oauth2Context(t.Context())
+		got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
+		if got == nil || got.Timeout != oauth2ProviderTimeout || client.Timeout != timeout {
+			t.Fatalf("configured=%s copied=%v", timeout, got)
+		}
+	}
+	srv.httpClient = nil
+	ctx = srv.oauth2Context(t.Context())
+	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got == nil || got.Timeout != oauth2ProviderTimeout {
+		t.Fatalf("default OAuth client: %v", got)
+	}
 }
 
 func newWrapperTestServer(jw *jaws.Jaws, issuer string) *Server {

@@ -136,6 +136,21 @@ func Test_beginReferrerHandling(t *testing.T) {
 	if location != "/app/home" {
 		t.Fatal(location)
 	}
+	hr = httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login?next=x", nil)
+	_, location = srv.begin(hr)
+	if location != "/" {
+		t.Fatalf("query-bearing login loops to %q", location)
+	}
+	hr.Header.Set("Referer", "https://example.com/oauth2/login?next=x")
+	_, location = srv.begin(hr)
+	if location != "/" {
+		t.Fatalf("query-bearing referrer loops to %q", location)
+	}
+	hr.Header.Set("Referer", "https://example.com/app/home?next=x")
+	_, location = srv.begin(hr)
+	if location != "/app/home?next=x" {
+		t.Fatalf("unhandled target changed to %q", location)
+	}
 }
 
 // Test_beginPathBoundary verifies that handled paths only rewrite exact

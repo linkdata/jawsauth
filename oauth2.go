@@ -135,8 +135,10 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location s
 		location = hr.RequestURI
 	}
 	location = sanitizeRedirectTarget(hr.Host, location)
-	if _, handled := srv.HandledPaths[location]; handled {
-		location = "/"
+	if target, err := url.Parse(location); err == nil {
+		if _, handled := srv.HandledPaths[target.Path]; handled {
+			location = "/"
+		}
 	}
 	return
 }

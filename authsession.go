@@ -78,6 +78,9 @@ func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) 
 			client = http.DefaultClient
 		}
 		clientCopy := *client
+		if clientCopy.Timeout <= 0 || clientCopy.Timeout > oauth2ProviderTimeout {
+			clientCopy.Timeout = oauth2ProviderTimeout
+		}
 		// Token POSTs carry secrets, and 307/308 redirects preserve their body.
 		clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		if logger := srv.debugLogger(); logger != nil {

@@ -123,6 +123,53 @@ func TestOIDCTimerReleasesSessionRotatedByOtherProvider(t *testing.T) {
 	}
 }
 
+func TestOIDCRefreshTimeoutReleasesClosedSession(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		jw, err := jaws.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer jw.Close()
+		factory := &testAuthTimerFactory{}
+		srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+		started := make(chan struct{}, 1)
+		srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-req.Context().Done()
+			return nil, req.Context().Err()
+		})}
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		sess := jw.NewSession(httptest.NewRecorder(), req)
+		if sess == nil {
+			t.Fatal("initial session missing")
+		}
+		source := srv.oauth2cfg.TokenSource(srv.oauth2Context(context.Background()), &oauth2.Token{RefreshToken: "refresh"})
+		if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "one"}, source, time.Now().Add(5*time.Second), nil); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() {
+			factory.timer(0).fire()
+			close(done)
+		}()
+		<-started
+		sess.Close()
+		time.Sleep(oauth2ProviderTimeout + time.Second)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("stalled refresh retained closed session")
+		}
+		if len(srv.authTimers) != 0 {
+			t.Fatal("stalled refresh left auth timer")
+		}
+	})
+}
+
 func TestAuthorizationWithdrawalCancelsRequests(t *testing.T) {
 	for _, action := range []string{"logout", "httpLogout", "expiry", "demotion", "restrictEveryone"} {
 		t.Run(action, func(t *testing.T) {

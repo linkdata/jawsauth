@@ -18,6 +18,7 @@ Protected routes create JaWS sessions for unauthenticated visitors. Set
 session cannot be created, login returns 503 with `Retry-After: 60`.
 Post-login return targets longer than 8192 bytes fall back to `/`.
 Login callback token/profile calls and startup discovery have a 15-second deadline;
+OIDC background refresh requests have the same maximum timeout.
 profile responses are capped at 32 KiB.
 
 For multiple providers on one JaWS instance, give each `Config` a distinct
