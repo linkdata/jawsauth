@@ -295,6 +295,7 @@ func TestConfigBuildContextRejectsInsecureOIDCMetadata(t *testing.T) {
 		{"userinfo_endpoint", "UserInfoURL", "http://provider.example/userinfo", false},
 		{"jwks_uri", "JWKSURI", "http://provider.example/jwks", false},
 		{"jwks_uri", "JWKSURI", "", false},
+		{"jwks_uri", "JWKSURI", "", true},
 		{"jwks_uri", "JWKSURI", "ftp://provider.example/jwks", true},
 	} {
 		t.Run(tc.key+"/"+tc.value, func(t *testing.T) {
@@ -441,6 +442,52 @@ func TestConfigBuildContextJWKSRedirectScheme(t *testing.T) {
 			}
 			if !secure && (insecureHits.Load() != 0 || !strings.Contains(err.Error(), "oidc redirect must use https")) {
 				t.Fatalf("HTTP JWKS redirect hits=%d, error=%v", insecureHits.Load(), err)
+			}
+		})
+	}
+}
+
+func TestConfigBuildContextJWKSTimeout(t *testing.T) {
+	for _, configuredTimeout := range []time.Duration{0, 100 * time.Millisecond} {
+		t.Run(configuredTimeout.String(), func(t *testing.T) {
+			const issuer = "https://issuer.example"
+			var jwksHits atomic.Int32
+			deadlineObserved := make(chan time.Duration, 1)
+			client := &http.Client{Timeout: configuredTimeout, Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/.well-known/openid-configuration":
+					return profileTestResponse(`{"issuer":"https://issuer.example","authorization_endpoint":"https://issuer.example/auth","token_endpoint":"https://issuer.example/token","jwks_uri":"https://issuer.example/jwks"}`), nil
+				case "/jwks":
+					jwksHits.Add(1)
+					deadline, ok := req.Context().Deadline()
+					if !ok {
+						deadlineObserved <- -1
+						return nil, errors.New("JWKS request has no deadline")
+					}
+					deadlineObserved <- time.Until(deadline)
+					if configuredTimeout > 0 {
+						<-req.Context().Done()
+						return nil, req.Context().Err()
+					}
+					return nil, errors.New("JWKS request stopped by test")
+				}
+				return nil, errors.New("unexpected provider request")
+			})}
+			cfg := Config{RedirectURL: "https://app.example/callback", Issuer: issuer, ClientID: "client", HTTPClient: client}
+			_, _, verifier, err := cfg.buildContext(t.Context(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = verifier.Verify(t.Context(), makeIDToken(t, map[string]any{"iss": issuer, "aud": "client", "exp": time.Now().Add(time.Hour).Unix()}))
+			if err == nil || jwksHits.Load() != 1 || client.Timeout != configuredTimeout {
+				t.Fatalf("JWKS verify: err=%v hits=%d original timeout=%s", err, jwksHits.Load(), client.Timeout)
+			}
+			want := configuredTimeout
+			if want == 0 {
+				want = oauth2ProviderTimeout
+			}
+			if remaining := <-deadlineObserved; remaining <= 0 || remaining > want {
+				t.Fatalf("JWKS deadline %s, want at most %s", remaining, want)
 			}
 		})
 	}

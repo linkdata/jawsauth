@@ -494,6 +494,126 @@ func TestOAuthProfileLinkRevokedDuringEventRejectsCallback(t *testing.T) {
 	}
 }
 
+type observedRotationLock struct {
+	sync.Mutex
+	attempts atomic.Int32
+	second   chan struct{}
+}
+
+func (lock *observedRotationLock) Lock() {
+	if lock.attempts.Add(1) == 2 {
+		close(lock.second)
+	}
+	lock.Mutex.Lock()
+}
+
+func TestOAuthProfileLinkSerializesInternalRevocation(t *testing.T) {
+	for _, revocation := range []string{"timer", "wrapper"} {
+		for _, revocationFirst := range []bool{false, true} {
+			name := revocation + "/event first"
+			if revocationFirst {
+				name = revocation + "/revocation first"
+			}
+			t.Run(name, func(t *testing.T) {
+				jw, err := jaws.New()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer jw.Close()
+				calls := 0
+				srv := newProfileTestServer(t, jw, &calls)
+				factory := &testAuthTimerFactory{}
+				srv.authTimerAfterFunc = factory.after
+				cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+				first := profileCallback(srv, cookie, state, "first")
+				if first.Code != http.StatusFound {
+					t.Fatalf("initial login: %d", first.Code)
+				}
+				cookie = first.Result().Cookies()[0]
+				req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+				req.RemoteAddr = "192.0.2.1:1234"
+				req.AddCookie(cookie)
+				sess := jw.GetSession(req)
+				lock := &observedRotationLock{second: make(chan struct{})}
+				srv.SessionRotationLock = lock
+				srv.LogoutEvent = func(*jaws.Session, *http.Request) {
+					lock.Lock()
+					lock.Unlock()
+				}
+				checked := make(chan struct{})
+				release := make(chan struct{})
+				releaseEvent := sync.OnceFunc(func() { close(release) })
+				defer releaseEvent()
+				writes := 0
+				srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) {
+					lock.Lock()
+					defer lock.Unlock()
+					if current, _ := srv.sessionAuthStatus(sess, time.Now); !current {
+						return http.StatusForbidden, ErrOAuth2MissingSession
+					}
+					close(checked)
+					<-release
+					writes++ // durable application write
+					return 0, nil
+				}
+				_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
+				revoke := func() {
+					if revocation == "timer" {
+						srv.mu.Lock()
+						srv.authTimers[sess.ID()].expiry = time.Now().Add(-time.Second)
+						srv.mu.Unlock()
+						factory.timer(0).fire()
+					} else {
+						sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), time.Now().Add(-time.Second))
+						wrapper{server: srv}.ServeHTTP(httptest.NewRecorder(), req)
+					}
+				}
+				if revocationFirst {
+					revoke()
+					response := profileCallback(srv, cookie, linkState, "second")
+					if response.Code < http.StatusBadRequest || writes != 0 {
+						t.Fatalf("revocation won: status=%d writes=%d", response.Code, writes)
+					}
+					return
+				}
+				callbackDone := make(chan *httptest.ResponseRecorder, 1)
+				go func() { callbackDone <- profileCallback(srv, cookie, linkState, "second") }()
+				select {
+				case <-checked:
+				case <-time.After(5 * time.Second):
+					t.Fatal("link did not check current auth")
+				}
+				revoked := make(chan struct{})
+				go func() { revoke(); close(revoked) }()
+				select {
+				case <-lock.second:
+				case <-time.After(5 * time.Second):
+					t.Fatal("revocation did not reach rotation lock")
+				}
+				select {
+				case <-revoked:
+					t.Fatal("revocation completed before durable link write")
+				default:
+				}
+				releaseEvent()
+				select {
+				case <-revoked:
+				case <-time.After(5 * time.Second):
+					t.Fatal("revocation did not finish after link write")
+				}
+				select {
+				case <-callbackDone:
+				case <-time.After(5 * time.Second):
+					t.Fatal("link callback did not finish")
+				}
+				if writes != 1 {
+					t.Fatalf("durable link writes = %d", writes)
+				}
+			})
+		}
+	}
+}
+
 func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 	for _, phase := range []string{"pending", "callback"} {
 		t.Run(phase, func(t *testing.T) {

@@ -178,15 +178,18 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 			}
 			return oauth2cfg, cfg.UserInfoURL, nil, nil
 		}
-		if cfg.HTTPClient != nil {
-			ctx = context.WithValue(ctx, oauth2.HTTPClient, cfg.HTTPClient)
+		client := cfg.HTTPClient
+		if client == nil {
+			client, _ = ctx.Value(oauth2.HTTPClient).(*http.Client)
+		}
+		if client == nil {
+			client = http.DefaultClient
+		}
+		clientCopy := *client
+		if clientCopy.Timeout <= 0 || clientCopy.Timeout > oauth2ProviderTimeout {
+			clientCopy.Timeout = oauth2ProviderTimeout
 		}
 		if !cfg.AllowInsecureIssuer {
-			client, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
-			if client == nil {
-				client = http.DefaultClient
-			}
-			clientCopy := *client
 			checkRedirect := clientCopy.CheckRedirect
 			clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 				if req.URL.Scheme != "https" {
@@ -200,8 +203,8 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 				}
 				return nil
 			}
-			ctx = context.WithValue(ctx, oauth2.HTTPClient, &clientCopy)
 		}
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, &clientCopy)
 
 		var provider *oidc.Provider
 		if provider, err = oidc.NewProvider(ctx, cfg.Issuer); wrapOIDC(ErrOIDCDiscovery, &err) == nil {
@@ -219,7 +222,7 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 					{"AuthURL", metadata.AuthorizationEndpoint, true},
 					{"TokenURL", metadata.TokenEndpoint, true},
 					{"UserInfoURL", metadata.UserinfoEndpoint, true},
-					{"JWKSURI", metadata.JWKSURI, cfg.AllowInsecureIssuer},
+					{"JWKSURI", metadata.JWKSURI, false},
 				} {
 					if err = validateOIDCEndpoint(field.name, field.value, field.optional, cfg.AllowInsecureIssuer); wrapOIDC(ErrOIDCProviderMetadata, &err) != nil {
 						return

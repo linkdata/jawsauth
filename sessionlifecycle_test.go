@@ -60,7 +60,7 @@ func TestAuthTimerDiscardsClosedSession(t *testing.T) {
 		srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		sess := jw.NewSession(httptest.NewRecorder(), req)
-		expiry := time.Now().Add(5 * time.Second)
+		expiry := time.Now().Add(authRefreshSkew - time.Second)
 		raw := makeIDToken(t, map[string]any{"iss": "https://issuer.example", "aud": "client", "sub": "one", "exp": expiry.Add(time.Hour).Unix(), "email": "user@example.com"})
 		calls := 0
 		source := tokenSourceFunc(func() (*oauth2.Token, error) {

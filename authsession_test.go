@@ -396,7 +396,7 @@ func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 	jw.Logger = logger
 
 	const issuer = "https://issuer.example"
-	initialExpiry := time.Now().Add(5 * time.Second).Truncate(time.Second)
+	initialExpiry := time.Now().Add(authRefreshSkew - time.Second).Truncate(time.Second)
 	refreshedExpiry := time.Now().Add(time.Hour).Truncate(time.Second)
 	cachedIDToken := makeIDToken(t, map[string]any{
 		"iss":            issuer,
@@ -669,7 +669,7 @@ func TestAuthTimerRefreshFailureKeepsCurrentAuthUntilExpiry(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
-	expiry := time.Now().Add(5 * time.Second).Truncate(time.Second)
+	expiry := time.Now().Add(authRefreshSkew - time.Second).Truncate(time.Second)
 	err = srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":            expiry.Unix(),
 		"email":          "current@example.com",
@@ -830,7 +830,7 @@ func TestAuthTimerDebugLogsRefreshFailure(t *testing.T) {
 	srv := newTimerTestServer(t, jw, issuer, factory)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
-	expiry := time.Now().Add(5 * time.Second).Truncate(time.Second)
+	expiry := time.Now().Add(authRefreshSkew - time.Second).Truncate(time.Second)
 
 	err = srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":            expiry.Unix(),
