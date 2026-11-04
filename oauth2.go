@@ -148,17 +148,17 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location s
 // If no session can be created, it returns 503 with Retry-After instead.
 // Non-GET requests receive 405.
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
-	srv.startOAuth(hw, hr, false)
+	srv.startOAuth(hw, hr, false, false)
 }
 
 // HandleLink begins a provider flow for linking to the caller's existing
 // identity. The application must authorize this POST before calling it and
 // recheck that identity in LinkEvent when the provider returns.
 func (srv *Server) HandleLink(hw http.ResponseWriter, hr *http.Request) {
-	srv.startOAuth(hw, hr, true)
+	srv.startOAuth(hw, hr, true, false)
 }
 
-func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link bool) {
+func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, preservePendingLogin bool) {
 	statusCode := http.StatusMethodNotAllowed
 	if (!link && hr.Method == http.MethodGet) || (link && hr.Method == http.MethodPost) {
 		if link && http.NewCrossOriginProtection().Check(hr) != nil {
@@ -206,6 +206,11 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link boo
 				location = "/"
 			}
 			srv.mu.Lock()
+			if preservePendingLogin && srv.pendingOrdinaryLoginLocked(sess) {
+				srv.mu.Unlock()
+				srv.writeResult(hw, http.StatusConflict, errors.New("oauth2 login already in progress"), nil)
+				return
+			}
 			srv.clearSessionOAuthFlow(sess)
 			sess.Set(srv.sessionKey(oauth2StateKey), state)
 			sess.Set(srv.sessionKey(oauth2FlowExpiryKey), flowExpiry)
@@ -232,7 +237,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method == http.MethodGet {
 		_, location := srv.begin(hr)
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			srv.clearSessionAuth(sess, hr, nil)
+			srv.clearSessionAuth(sess, hr, nil, false)
 		}
 		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
@@ -499,12 +504,15 @@ func profileTokenUnexpired(token *oauth2.Token) bool {
 	return token.Expiry.After(time.Now())
 }
 
-func (srv *Server) rotateOAuthSession(hw http.ResponseWriter, hr *http.Request) *jaws.Session {
+func (srv *Server) rotateOAuthSession(hw http.ResponseWriter, hr *http.Request, old *jaws.Session, flow pendingOAuthFlow) (rotated *jaws.Session, stale bool) {
 	if srv.SessionRotationLock != nil {
 		srv.SessionRotationLock.Lock()
 		defer srv.SessionRotationLock.Unlock()
 	}
-	return srv.Jaws.NewSession(hw, hr)
+	if flow.revoked() || srv.Jaws.GetSession(hr) != old {
+		return nil, true
+	}
+	return srv.Jaws.NewSession(hw, hr), false
 }
 
 // HandleAuthResponse handles the OIDC or OAuth2 profile callback endpoint.
@@ -595,7 +603,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 										_, hadAuth := srv.sessionAuthStatus(sess, nil)
 										err = ErrOAuth2MissingSession
 										statusCode = http.StatusServiceUnavailable
-										if rotated := srv.rotateOAuthSession(hw, hr); rotated != nil {
+										if rotated, stale := srv.rotateOAuthSession(hw, hr, sess, flow); rotated != nil {
 											if flow.revoked() {
 												http.SetCookie(hw, rotated.Close())
 												err = ErrOAuth2MissingSession
@@ -619,6 +627,8 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 													}
 												}
 											}
+										} else if stale {
+											statusCode = http.StatusForbidden
 										} else {
 											hw.Header().Set("Retry-After", "60")
 										}

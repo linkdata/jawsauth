@@ -37,7 +37,8 @@ the callback allowance after link start. `LinkEvent` must serialize its final
 current-auth check and durable link write with logout and any other provider's
 auth revocation. Set each provider's `SessionRotationLock` to the same lock so
 ordinary login callbacks serialize JaWS session replacement with that write;
-the lock is not held during provider requests. jawsauth cannot roll back an
+the original session is rechecked inside that lock, and the lock is not held
+during provider requests. jawsauth cannot roll back an
 application write if revocation finishes while `LinkEvent` is running; it
 rejects the stale callback response.
 
@@ -71,6 +72,7 @@ Restart login after capacity becomes available.
 Logout and auth expiry clear authentication and reload the session's JaWS pages.
 Auth expiry preserves an ordinary login in progress but cancels a pending link;
 explicit logout cancels either flow.
+Protected requests during a pending login return 409 instead of replacing that flow.
 Connected pages receive the reload command before their sockets close; pending
 pages reload when they connect. Protected renders also recheck authorization when
 the HTTP handler returns, retiring requests attached during a concurrent revocation.
