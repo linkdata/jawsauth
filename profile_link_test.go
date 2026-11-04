@@ -209,6 +209,9 @@ func TestOAuthFailedCallbackDoesNotEraseNewFlow(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var enterOnce sync.Once
+	var releaseOnce sync.Once
+	releaseCallback := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseCallback()
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/token" {
 			if err := r.ParseForm(); err != nil {
@@ -234,7 +237,11 @@ func TestOAuthFailedCallbackDoesNotEraseNewFlow(t *testing.T) {
 	cookie, firstState := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	firstResult := make(chan int, 1)
 	go func() { firstResult <- profileCallback(srv, cookie, firstState, "first").Code }()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first callback did not reach provider")
+	}
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
 	r.RemoteAddr = "192.0.2.1:1234"
 	r.Header.Set("Referer", "https://app.example/second")
@@ -249,9 +256,14 @@ func TestOAuthFailedCallbackDoesNotEraseNewFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondState := location.Query().Get("state")
-	close(release)
-	if code := <-firstResult; code == http.StatusFound {
-		t.Fatal("failed callback signed in")
+	releaseCallback()
+	select {
+	case code := <-firstResult:
+		if code == http.StatusFound {
+			t.Fatal("failed callback signed in")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("failed callback did not finish")
 	}
 	sess := jw.GetSession(r)
 	if sess == nil || sess.Get(srv.sessionKey(oauth2StateKey)) != secondState ||
@@ -298,7 +310,11 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 			}
 			result := make(chan *httptest.ResponseRecorder, 1)
 			go func() { result <- profileCallback(srv, cookie, state, "first") }()
-			<-entered
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("callback did not reach provider")
+			}
 
 			var nextState string
 			if action == "logout" {
@@ -325,7 +341,12 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 			}
 
 			releaseOnce.Do(func() { close(release) })
-			w := <-result
+			var w *httptest.ResponseRecorder
+			select {
+			case w = <-result:
+			case <-time.After(5 * time.Second):
+				t.Fatal("canceled callback did not finish")
+			}
 			if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || logins != 0 {
 				t.Fatalf("canceled callback: status=%d cookies=%v logins=%d", w.Code, w.Result().Cookies(), logins)
 			}
@@ -383,12 +404,21 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 	_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
 	result := make(chan *httptest.ResponseRecorder, 1)
 	go func() { result <- profileCallback(srv, cookie, linkState, "second") }()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("link callback did not reach provider")
+	}
 	if !srv.Logout(sess, nil) {
 		t.Fatal("logout did not clear linked session")
 	}
 	releaseOnce.Do(func() { close(release) })
-	w := <-result
+	var w *httptest.ResponseRecorder
+	select {
+	case w = <-result:
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled link callback did not finish")
+	}
 	if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || links != 0 || sess.Get(srv.SessionKey) != nil {
 		t.Fatalf("canceled link: status=%d cookies=%v links=%d claims=%v", w.Code, w.Result().Cookies(), links, sess.Get(srv.SessionKey))
 	}

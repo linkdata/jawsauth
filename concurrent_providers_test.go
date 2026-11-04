@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/linkdata/jaws"
 )
@@ -41,6 +42,9 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 		return profileTestResponse(`{"id":42}`), nil
 	})}
 	gate := &gateRotationLock{both: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate.release) }) }
+	defer release()
 	mk := func(ns string) *Server {
 		srv, err := New(jw, &Config{Namespace: ns, RedirectURL: "https://app.example/auth/" + ns + "/callback", Issuer: "https://provider.example", AuthURL: "https://provider.example/authorize", TokenURL: "https://provider.example/token", UserInfoURL: "https://provider.example/user", ClientID: "app", HTTPClient: client, ProfileSubject: func(m map[string]any) (string, error) { return string(m["id"].(json.Number)), nil }}, func(string, http.Handler) {})
 		if err != nil {
@@ -74,11 +78,23 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 	out := make(chan *httptest.ResponseRecorder, 2)
 	go func() { out <- callback(a, "a", stateA) }()
 	go func() { out <- callback(b, "b", stateB) }()
-	<-gate.both
-	close(gate.release)
-	first, second := <-out, <-out
+	select {
+	case <-gate.both:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider callbacks did not reach rotation")
+	}
+	release()
+	responses := make([]*httptest.ResponseRecorder, 0, 2)
+	for range 2 {
+		select {
+		case response := <-out:
+			responses = append(responses, response)
+		case <-time.After(5 * time.Second):
+			t.Fatal("provider callback did not finish")
+		}
+	}
 	success, rejected := 0, 0
-	for _, response := range []*httptest.ResponseRecorder{first, second} {
+	for _, response := range responses {
 		switch response.Code {
 		case http.StatusFound:
 			success++
