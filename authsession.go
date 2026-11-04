@@ -83,7 +83,7 @@ func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) 
 
 func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (current, present bool) {
 	if srv != nil && sess != nil {
-		expiryValue := sess.Get(oauth2IDTokenExpiryKey)
+		expiryValue := sess.Get(srv.sessionKey(oauth2IDTokenExpiryKey))
 		authValue := sess.Get(srv.SessionKey)
 		present = authValue != nil || expiryValue != nil
 		if authValue != nil && now != nil {
@@ -127,7 +127,7 @@ func (srv *Server) storeSessionAuthClaims(sess *jaws.Session, claims map[string]
 	}
 	sess.Set(srv.SessionKey, claims)
 	sess.Set(srv.SessionTokenKey, tokenSource)
-	sess.Set(oauth2IDTokenExpiryKey, expiry)
+	sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), expiry)
 	sess.Set(srv.SessionEmailKey, email)
 	sess.Set(srv.SessionEmailVerifiedKey, verified)
 	delay, replaced := srv.scheduleSessionAuthTimerLocked(sess, expiry)
@@ -335,11 +335,11 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 	}
 }
 
-func clearSessionOAuthFlow(sess *jaws.Session) {
-	sess.Set(oauth2StateKey, nil)
-	sess.Set(oauth2PKCEVerifierKey, nil)
-	sess.Set(oauth2NonceKey, nil)
-	sess.Set(oauth2ReferrerKey, nil)
+func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
+	sess.Set(srv.sessionKey(oauth2StateKey), nil)
+	sess.Set(srv.sessionKey(oauth2PKCEVerifierKey), nil)
+	sess.Set(srv.sessionKey(oauth2NonceKey), nil)
+	sess.Set(srv.sessionKey(oauth2ReferrerKey), nil)
 }
 
 // Logout clears all authentication state for sess.
@@ -364,10 +364,10 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 	cleared = srv.stopSessionAuthTimerLocked(sess, entry)
 	var requests []*jaws.Request
 	if cleared {
-		clearSessionOAuthFlow(sess)
+		srv.clearSessionOAuthFlow(sess)
 		sess.Set(srv.SessionKey, nil)
 		sess.Set(srv.SessionTokenKey, nil)
-		sess.Set(oauth2IDTokenExpiryKey, nil)
+		sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), nil)
 		sess.Set(srv.SessionEmailKey, nil)
 		sess.Set(srv.SessionEmailVerifiedKey, nil)
 		requests = sess.Requests()

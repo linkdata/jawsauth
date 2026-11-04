@@ -100,14 +100,14 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 			}
 			authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
 			state := randomHexString()
-			sess.Set(oauth2StateKey, state)
+			sess.Set(srv.sessionKey(oauth2StateKey), state)
 			nonce := randomHexString()
-			sess.Set(oauth2NonceKey, nonce)
+			sess.Set(srv.sessionKey(oauth2NonceKey), nonce)
 			authOptions = append(authOptions, oidc.Nonce(nonce))
 			verifier := oauth2.GenerateVerifier()
-			sess.Set(oauth2PKCEVerifierKey, verifier)
+			sess.Set(srv.sessionKey(oauth2PKCEVerifierKey), verifier)
 			authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-			sess.Set(oauth2ReferrerKey, location)
+			sess.Set(srv.sessionKey(oauth2ReferrerKey), location)
 			location = oauth2cfg.AuthCodeURL(state, authOptions...)
 		}
 		hw.Header().Set("Location", location)
@@ -306,12 +306,12 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			statusCode = http.StatusBadRequest
 			if sess != nil {
 				gotState := hr.FormValue("state") // #nosec G120
-				wantState, _ := sess.Get(oauth2StateKey).(string)
-				verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
-				wantNonce, _ := sess.Get(oauth2NonceKey).(string)
-				sess.Set(oauth2StateKey, nil)
-				sess.Set(oauth2PKCEVerifierKey, nil)
-				sess.Set(oauth2NonceKey, nil)
+				wantState, _ := sess.Get(srv.sessionKey(oauth2StateKey)).(string)
+				verifier, _ := sess.Get(srv.sessionKey(oauth2PKCEVerifierKey)).(string)
+				wantNonce, _ := sess.Get(srv.sessionKey(oauth2NonceKey)).(string)
+				sess.Set(srv.sessionKey(oauth2StateKey), nil)
+				sess.Set(srv.sessionKey(oauth2PKCEVerifierKey), nil)
+				sess.Set(srv.sessionKey(oauth2NonceKey), nil)
 				err = ErrOAuth2MissingState
 				if wantState != "" {
 					err = ErrOAuth2WrongState
@@ -343,7 +343,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 															tokenSource := oauth2Config.TokenSource(srv.oauth2Context(context.Background()), token)
 															// Finish network work before starting the new session's idle lifetime.
 															srv.addUserInfoClaims(authctx, claims, tokenSource)
-															referrer := sess.Get(oauth2ReferrerKey)
+															referrer := sess.Get(srv.sessionKey(oauth2ReferrerKey))
 															requests := sess.Requests()
 															_, hadAuth := srv.sessionAuthStatus(sess, nil)
 															err = ErrOAuth2MissingSession
@@ -358,7 +358,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 																	srv.LogoutEvent(sess, hr)
 																}
 																sess = rotated
-																sess.Set(oauth2ReferrerKey, referrer)
+																sess.Set(srv.sessionKey(oauth2ReferrerKey), referrer)
 																err = srv.storeSessionAuthClaims(sess, claims, tokenSource, idToken.Expiry, nil)
 															} else {
 																hw.Header().Set("Retry-After", "60")
@@ -366,10 +366,10 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 															if err == nil {
 																sessValue = claims
 																sessEmail, _ = sess.Get(srv.SessionEmailKey).(string)
-																if s, ok := sess.Get(oauth2ReferrerKey).(string); ok {
+																if s, ok := sess.Get(srv.sessionKey(oauth2ReferrerKey)).(string); ok {
 																	location = sanitizeRedirectTarget(hr.Host, s)
 																}
-																sess.Set(oauth2ReferrerKey, nil)
+																sess.Set(srv.sessionKey(oauth2ReferrerKey), nil)
 																hw.Header().Set("Location", location)
 																statusCode = http.StatusFound
 															}
@@ -388,7 +388,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		}
 		if sess != nil {
 			if sessValue == nil {
-				clearSessionOAuthFlow(sess)
+				srv.clearSessionOAuthFlow(sess)
 				srv.Jaws.Dirty(sess)
 			} else if srv.LoginEvent != nil {
 				srv.LoginEvent(sess, hr)

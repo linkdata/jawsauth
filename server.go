@@ -104,6 +104,7 @@ type Server struct {
 	handle403          http.Handler        // handler for 403 Forbidden
 	authTimers         map[uint64]*authTimerState
 	authTimerAfterFunc authTimerAfterFunc
+	namespace          string
 }
 
 // NewDebug behaves like New but can override the scheme and host of cfg.RedirectURL.
@@ -133,6 +134,15 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		authTimers:              make(map[uint64]*authTimerState),
 		authTimerAfterFunc:      realAuthTimerAfterFunc,
 	} // #nosec G101
+	if cfg != nil {
+		srv.namespace = cfg.Namespace
+		if cfg.Namespace != "" {
+			srv.SessionKey = srv.sessionKey(srv.SessionKey)
+			srv.SessionTokenKey = srv.sessionKey(srv.SessionTokenKey)
+			srv.SessionEmailKey = srv.sessionKey(srv.SessionEmailKey)
+			srv.SessionEmailVerifiedKey = srv.sessionKey(srv.SessionEmailVerifiedKey)
+		}
+	}
 	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
 		if srv.oauth2cfg, srv.userinfoUrl, srv.idTokenVerifier, err = cfg.buildContext(context.Background(), overrideUrl); err == nil {
 			srv.httpClient = cfg.HTTPClient
@@ -162,6 +172,13 @@ func New(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc) (srv *Server, err erro
 
 func (srv *Server) makeAuth(rq *jaws.Request) jaws.Auth {
 	return &JawsAuth{server: srv, sess: srv.Jaws.GetSession(rq.Initial())}
+}
+
+func (srv *Server) sessionKey(key string) string {
+	if srv.namespace != "" {
+		return key + "." + srv.namespace
+	}
+	return key
 }
 
 func (srv *Server) handlePath(p string, handleFn HandleFunc, h http.Handler) {

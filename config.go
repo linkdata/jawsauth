@@ -21,6 +21,8 @@ import (
 type Config struct {
 	RedirectURL string // required. e.g. "https://application.example.com/oauth2/callback"
 	Issuer      string // required. e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
+	// Namespace isolates this provider's session values when multiple Servers share one JaWS instance.
+	Namespace   string
 	AuthURL     string // optional override for discovered authorization_endpoint
 	TokenURL    string // optional override for discovered token_endpoint
 	UserInfoURL string // optional override for discovered userinfo_endpoint
