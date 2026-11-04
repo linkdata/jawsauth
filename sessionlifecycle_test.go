@@ -301,9 +301,8 @@ func TestSetAdminsUsesSessionPolicy(t *testing.T) {
 	}
 }
 
-func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
-	// UserInfo latency can exceed a new session's one-minute idle lifetime.
-	// synctest covers that interval without a wall-clock delay.
+func TestLoginUserInfoDeadlineKeepsOIDCFallbackOptional(t *testing.T) {
+	// A slow UserInfo fallback must stop at the callback deadline before rotation.
 	synctest.Test(t, func(t *testing.T) {
 		jw, err := jaws.New()
 		if err != nil {
@@ -325,13 +324,20 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 		})).ServeHTTP(httptest.NewRecorder(), hr)
 		raw := makeIDToken(t, map[string]any{"iss": "https://issuer.example", "aud": "client", "sub": "user", "exp": expiry.Unix(), "nonce": "nonce", "email": "user@example.com"})
 		userinfoCalls := 0
+		var userinfoErr error
 		srv.userinfoUrl = "https://provider.example/userinfo"
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(hr *http.Request) (*http.Response, error) {
 			body := `{"access_token":"dummy","token_type":"Bearer","expires_in":3600,"id_token":"` + raw + `"}`
 			if hr.URL.Path == "/userinfo" {
 				userinfoCalls++
-				time.Sleep(61 * time.Second)
-				body = `{"sub":"user","email":"user@example.com","email_verified":true}`
+				select {
+				case <-hr.Context().Done():
+					userinfoErr = hr.Context().Err()
+					return nil, userinfoErr
+				case <-time.After(61 * time.Second):
+					userinfoErr = errors.New("UserInfo missed callback deadline")
+					return nil, userinfoErr
+				}
 			}
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
 		})}
@@ -348,15 +354,16 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 		if current != nil {
 			defer srv.Logout(current, nil)
 		}
-		if hw.Code != http.StatusFound || logins != 1 || logouts != 1 || userinfoCalls != 1 {
+		if hw.Code != http.StatusFound || logins != 1 || logouts != 1 || userinfoCalls != 1 ||
+			!errors.Is(userinfoErr, context.DeadlineExceeded) {
 			t.Fatalf("status=%d logins=%d logouts=%d userinfo=%d", hw.Code, logins, logouts, userinfoCalls)
 		}
 		waitAuthRequestCancelled(t, ctx)
 		if current == nil || current == sess || sess.Cookie().MaxAge >= 0 || !errors.Is(ctx.Err(), context.Canceled) {
 			t.Fatal("login did not retire the old session and request")
 		}
-		if current.Get(srv.SessionEmailVerifiedKey) != true {
-			t.Fatal("login did not store prepared UserInfo claims")
+		if current.Get(srv.SessionEmailVerifiedKey) == true {
+			t.Fatal("expired UserInfo fallback supplied verification")
 		}
 	})
 }

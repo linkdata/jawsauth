@@ -608,6 +608,46 @@ func TestOAuthProfileRejectsTokenExpiredDuringUserInfo(t *testing.T) {
 	}
 }
 
+func TestOAuthProfileUserInfoCallbackDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		jw, err := jaws.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer jw.Close()
+		calls := 0
+		srv := newProfileTestServer(t, jw, &calls)
+		var userinfoErr error
+		srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path == "/token" {
+				return profileTestResponse(`{"access_token":"access","token_type":"Bearer"}`), nil
+			}
+			select {
+			case <-r.Context().Done():
+				userinfoErr = r.Context().Err()
+				return nil, userinfoErr
+			case <-time.After(61 * time.Second):
+				userinfoErr = errors.New("UserInfo missed callback deadline")
+				return nil, userinfoErr
+			}
+		})}
+		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+		response := profileCallback(srv, cookie, state, "code")
+		request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+		request.RemoteAddr = "192.0.2.1:1234"
+		request.AddCookie(cookie)
+		sess := jw.GetSession(request)
+		var claims any
+		if sess != nil {
+			claims = sess.Get(srv.SessionKey)
+		}
+		if response.Code != http.StatusBadGateway || !errors.Is(userinfoErr, context.DeadlineExceeded) ||
+			len(response.Result().Cookies()) != 0 || sess == nil || claims != nil {
+			t.Fatalf("profile deadline: status=%d err=%v cookies=%v claims=%v", response.Code, userinfoErr, response.Result().Cookies(), claims)
+		}
+	})
+}
+
 func TestOAuthProfileAcceptsShortUnexpiredToken(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		jw, err := jaws.New()
@@ -635,6 +675,66 @@ func TestOAuthProfileAcceptsShortUnexpiredToken(t *testing.T) {
 			t.Fatalf("short token: claims=%v source=%v expiry=%v status=%d calls=%d err=%v", claims, source, expiry, status, calls, err)
 		}
 	})
+}
+
+func TestOAuthProfileExplicitZeroExpiryRejectedButOmittedExpiryCapped(t *testing.T) {
+	for _, tc := range []struct {
+		name, expiryField string
+		form              bool
+		wantStatus        int
+	}{
+		{"omitted", "", false, http.StatusFound},
+		{"zero", `,"expires_in":0`, false, http.StatusUnauthorized},
+		{"zero string", `,"expires_in":"0"`, false, http.StatusUnauthorized},
+		{"form omitted", "", true, http.StatusFound},
+		{"form zero", "&expires_in=0", true, http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jw, err := jaws.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer jw.Close()
+			calls := 0
+			srv := newProfileTestServer(t, jw, &calls)
+			srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/token" {
+					if tc.form {
+						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/x-www-form-urlencoded"}},
+							Body: io.NopCloser(strings.NewReader("access_token=access&token_type=Bearer" + tc.expiryField))}, nil
+					}
+					return profileTestResponse(`{"access_token":"access","token_type":"Bearer"` + tc.expiryField + `}`), nil
+				}
+				return profileTestResponse(`{"id":42}`), nil
+			})}
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			response := profileCallback(srv, cookie, state, "code")
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+			if tc.wantStatus == http.StatusUnauthorized {
+				if len(response.Result().Cookies()) != 0 || !strings.Contains(response.Body.String(), ErrOAuth2InvalidProfile.Error()) {
+					t.Fatalf("zero expiry authenticated: cookies=%v body=%q", response.Result().Cookies(), response.Body.String())
+				}
+				return
+			}
+			cookies := response.Result().Cookies()
+			if len(cookies) != 1 {
+				t.Fatalf("rotated cookies: %v", cookies)
+			}
+			r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+			r.RemoteAddr = "192.0.2.1:1234"
+			r.AddCookie(cookies[0])
+			sess := jw.GetSession(r)
+			if sess == nil || sess.Get(srv.SessionKey) == nil {
+				t.Fatal("omitted expiry did not authenticate")
+			}
+			expiry, _ := sess.Get(srv.sessionKey(oauth2IDTokenExpiryKey)).(time.Time)
+			if remaining := time.Until(expiry); remaining < 23*time.Hour || remaining > 24*time.Hour {
+				t.Fatalf("omitted expiry cap = %s", remaining)
+			}
+		})
+	}
 }
 
 func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {

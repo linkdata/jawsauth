@@ -780,6 +780,43 @@ func TestServer_fetchUserInfoStatusError(t *testing.T) {
 	}
 }
 
+func TestServer_fetchUserInfoRespectsRequestCancellation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		case <-release:
+			return nil, errors.New("transport released without cancellation")
+		}
+	})}
+	ctx, cancel := context.WithCancel(context.WithValue(t.Context(), oauth2.HTTPClient, client))
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := (&Server{}).fetchUserInfo(ctx, "https://provider.example/userinfo",
+			oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "access"}))
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("UserInfo request did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled UserInfo request: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("UserInfo request ignored cancellation")
+	}
+}
+
 func TestServer_fetchUserInfoOversizedStatusError(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
 		_ = hr
@@ -1541,6 +1578,25 @@ func Test_handleAuthResponseMissingNonce(t *testing.T) {
 	}
 	if !strings.Contains(string(body), ErrOIDCMissingNonce.Error()) {
 		t.Fatal(string(body))
+	}
+}
+
+func TestHandleLinkWithoutOAuthConfigReturnsError(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := &Server{Jaws: jw, LinkEvent: func(*jaws.Session, *http.Request, map[string]any) (int, error) { return 0, nil }}
+	req := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link/provider", nil)
+	if jw.NewSession(httptest.NewRecorder(), req) == nil {
+		t.Fatal("missing session")
+	}
+	w := httptest.NewRecorder()
+	srv.HandleLink(w, req)
+	if w.Code != http.StatusInternalServerError || w.Header().Get("Location") != "" ||
+		!strings.Contains(w.Body.String(), ErrOAuth2NotConfigured.Error()) {
+		t.Fatalf("unconfigured link: status=%d location=%q body=%q", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 }
 

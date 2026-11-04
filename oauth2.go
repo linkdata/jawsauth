@@ -166,6 +166,10 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link boo
 			return
 		}
 		oauth2cfg, location := srv.begin(hr)
+		if link && oauth2cfg == nil {
+			srv.writeResult(hw, http.StatusInternalServerError, ErrOAuth2NotConfigured, nil)
+			return
+		}
 		if oauth2cfg != nil {
 			sess := srv.Jaws.GetSession(hr)
 			if sess == nil && !link {
@@ -368,8 +372,12 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 	if userinfoURL != "" && tokenSource != nil {
 		client := oauth2.NewClient(ctx, tokenSource)
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		var request *http.Request
+		if request, err = http.NewRequestWithContext(ctx, http.MethodGet, userinfoURL, nil); err != nil {
+			return nil, err
+		}
 		var resp *http.Response
-		if resp, err = client.Get(userinfoURL); /*#nosec G704*/ err == nil {
+		if resp, err = client.Do(request); /*#nosec G704*/ err == nil {
 			defer func() {
 				if closeErr := resp.Body.Close(); err == nil && closeErr != nil {
 					err = closeErr
@@ -475,7 +483,20 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 }
 
 func profileTokenUnexpired(token *oauth2.Token) bool {
-	return token != nil && token.AccessToken != "" && (token.Expiry.IsZero() || token.Expiry.After(time.Now()))
+	if token == nil || token.AccessToken == "" {
+		return false
+	}
+	if token.Expiry.IsZero() {
+		// oauth2 uses zero Expiry for both omitted and explicit zero expires_in.
+		switch expiresIn := token.Extra("expires_in").(type) {
+		case nil:
+			return true
+		case string:
+			return expiresIn == "" // omitted in a form-encoded token response
+		}
+		return false
+	}
+	return token.Expiry.After(time.Now())
 }
 
 // HandleAuthResponse handles the OIDC or OAuth2 profile callback endpoint.
