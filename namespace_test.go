@@ -1,6 +1,7 @@
 package jawsauth
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,7 +21,7 @@ func TestOAuthFlowNamespacesShareSessionWithoutSharingState(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		srv.oauth2cfg = &oauth2.Config{ClientID: namespace, RedirectURL: "https://app.example/auth/callback",
+		srv.oauth2cfg = &oauth2.Config{ClientID: namespace, RedirectURL: "https://app.example/auth/" + namespace + "/callback",
 			Endpoint: oauth2.Endpoint{AuthURL: "https://provider.example/authorize", TokenURL: "https://provider.example/token"}}
 		return srv
 	}
@@ -29,25 +30,65 @@ func TestOAuthFlowNamespacesShareSessionWithoutSharingState(t *testing.T) {
 		github.SessionEmailKey == gitlab.SessionEmailKey || github.SessionEmailVerifiedKey == gitlab.SessionEmailVerifiedKey {
 		t.Fatal("provider auth keys overlap")
 	}
-	r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
-	for _, srv := range []*Server{github, gitlab} {
-		response := httptest.NewRecorder()
-		srv.HandleLogin(response, r)
-		if response.Code != http.StatusFound {
-			t.Fatalf("%s start: %d", srv.namespace, response.Code)
-		}
+	r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/github/login", nil)
+	login := httptest.NewRecorder()
+	github.HandleLogin(login, r)
+	if login.Code != http.StatusFound {
+		t.Fatalf("github start: %d", login.Code)
+	}
+	gitlab.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) { return 0, nil }
+	linkRequest := httptest.NewRequest(http.MethodPost, "https://app.example/auth/gitlab/link", nil)
+	for _, cookie := range login.Result().Cookies() {
+		linkRequest.AddCookie(cookie)
+	}
+	link := httptest.NewRecorder()
+	gitlab.HandleLink(link, linkRequest)
+	if link.Code != http.StatusFound {
+		t.Fatalf("gitlab link start: %d", link.Code)
 	}
 	sess := jw.GetSession(r)
-	if sess == nil {
+	if sess == nil || jw.GetSession(linkRequest) != sess {
 		t.Fatal("shared session missing")
 	}
-	first, _ := sess.Get(github.sessionKey(oauth2StateKey)).(string)
-	second, _ := sess.Get(gitlab.sessionKey(oauth2StateKey)).(string)
-	if first == "" || second == "" || first == second {
-		t.Fatalf("provider states overlap: first=%q second=%q", first, second)
+	type flowState struct {
+		state, verifier, nonce string
+		link                   bool
 	}
-	github.clearSessionOAuthFlow(sess)
-	if sess.Get(github.sessionKey(oauth2StateKey)) != nil || sess.Get(gitlab.sessionKey(oauth2StateKey)) != second {
-		t.Fatal("clearing one provider's flow cleared the other")
+	read := func(srv *Server) flowState {
+		state, _ := sess.Get(srv.sessionKey(oauth2StateKey)).(string)
+		verifier, _ := sess.Get(srv.sessionKey(oauth2PKCEVerifierKey)).(string)
+		nonce, _ := sess.Get(srv.sessionKey(oauth2NonceKey)).(string)
+		link, _ := sess.Get(srv.sessionKey(oauth2LinkKey)).(bool)
+		return flowState{state, verifier, nonce, link}
+	}
+	githubState, gitlabState := read(github), read(gitlab)
+	if githubState.state == "" || githubState.verifier == "" || githubState.nonce == "" ||
+		gitlabState.state == "" || gitlabState.verifier == "" || gitlabState.nonce == "" ||
+		githubState.state == gitlabState.state || githubState.verifier == gitlabState.verifier || githubState.nonce == gitlabState.nonce ||
+		githubState.link || !gitlabState.link {
+		t.Fatal("provider flows overlap or lack proof")
+	}
+	if _, err := github.takeOAuthFlow(sess, gitlabState.state); !errors.Is(err, ErrOAuth2WrongState) {
+		t.Fatalf("github accepted gitlab state: %v", err)
+	}
+	if _, err := gitlab.takeOAuthFlow(sess, githubState.state); !errors.Is(err, ErrOAuth2WrongState) {
+		t.Fatalf("gitlab accepted github state: %v", err)
+	}
+	if read(github) != githubState || read(gitlab) != gitlabState {
+		t.Fatal("wrong-provider state changed a pending flow")
+	}
+	gotGitlab, err := gitlab.takeOAuthFlow(sess, gitlabState.state)
+	if err != nil || gotGitlab.verifier != gitlabState.verifier || gotGitlab.nonce != gitlabState.nonce || !gotGitlab.link {
+		t.Fatalf("gitlab link flow mismatch: %v", err)
+	}
+	if read(github) != githubState || read(gitlab).state != "" {
+		t.Fatal("consuming gitlab flow changed github flow")
+	}
+	gotGithub, err := github.takeOAuthFlow(sess, githubState.state)
+	if err != nil || gotGithub.verifier != githubState.verifier || gotGithub.nonce != githubState.nonce || gotGithub.link {
+		t.Fatalf("github login flow mismatch: %v", err)
+	}
+	if read(github).state != "" {
+		t.Fatal("github flow remained after consumption")
 	}
 }
