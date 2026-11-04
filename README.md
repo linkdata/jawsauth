@@ -4,19 +4,29 @@
 
 # jawsauth
 
-OIDC-verified authentication for [JaWS](https://github.com/linkdata/jaws) sessions.
+Verified OIDC or OAuth2 profile authentication for [JaWS](https://github.com/linkdata/jaws) sessions.
 
-- Requires an OIDC-compliant provider.
-- Uses OIDC discovery from the configured issuer.
-- Verifies `id_token` and stores identity claims in session data.
-- Adds PKCE (S256) and OIDC nonce verification to the authorization-code flow.
-- Automatically refreshes the `id_token` in the background before it expires.
+- OIDC mode discovers the issuer, verifies `id_token` and nonce, and refreshes before expiry.
+- Profile mode accepts explicit HTTPS endpoints and a `Config.ProfileSubject` verifier for providers without ID tokens. Its authenticated profile response must contain a stable subject; email and names are not identity proof. JSON numbers arrive as `json.Number` so large numeric IDs remain exact.
+- Both modes use authorization-code state and PKCE (S256). Pending flows expire after ten minutes; jawsauth extends only that JaWS session's grace while the user visits the provider.
+- Profile authentication expires after 24 hours or the provider token's earlier expiry; it does not attempt OIDC refresh.
 - Supports admin-only handlers: `Wrap`/`Handler` for any authenticated user, `WrapAdmin`/`HandlerAdmin` gated by `SetAdmins`.
 
 Protected routes create JaWS sessions for unauthenticated visitors. Set
 `Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound session counts. When a
 session cannot be created, login returns 503 with `Retry-After: 60`.
 Post-login return targets longer than 8192 bytes fall back to `/`.
+Login callback token/profile calls and startup discovery have a 15-second deadline;
+profile responses are capped at 32 KiB.
+
+For multiple providers on one JaWS instance, give each `Config` a distinct
+`Namespace` and callback path. `New` sets `Jaws.MakeAuth` for its own Server, so
+install a composite `MakeAuth` after creating all provider Servers if pages need
+to recognize more than one provider. `HandleLink` is an opt-in POST handler:
+authorize the existing session before calling it, then set `Server.LinkEvent` to
+recheck the original identity and accept the newly verified subject. A successful
+link keeps the original session; ordinary login still rotates it. Link callbacks
+run only while the original JaWS session and one-use flow state remain valid.
 
 Admin allowlists match parsed addresses with ASCII case ignored; non-ASCII
 characters are matched exactly. Session email values use the same case rules.

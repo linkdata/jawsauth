@@ -9,7 +9,7 @@ type JawsAuth struct {
 	sess   *jaws.Session
 }
 
-// Data returns the verified OIDC claims stored in the session, or nil.
+// Data returns the verified OIDC or OAuth2 profile claims stored in the session, or nil.
 // It is safe to call on a nil or zero-value JawsAuth.
 func (a *JawsAuth) Data() (x map[string]any) {
 	if a != nil && a.server != nil && a.sess != nil {

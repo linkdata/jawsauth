@@ -173,6 +173,7 @@ func TestLoginRotationExistingAuth(t *testing.T) {
 			}
 		}
 		sess.Set(oauth2StateKey, "state")
+		sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
 		sess.Set(oauth2NonceKey, "nonce")
 		sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
 		rec := httptest.NewRecorder()
@@ -338,6 +339,7 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 		srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
 		srv.LogoutEvent = func(*jaws.Session, *http.Request) { logouts++ }
 		sess.Set(oauth2StateKey, "state")
+		sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
 		sess.Set(oauth2NonceKey, "nonce")
 		sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
 		hw := httptest.NewRecorder()

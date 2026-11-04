@@ -232,6 +232,9 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
 // Caller holds srv.mu across the auth writes and timer replacement.
 func (srv *Server) scheduleSessionAuthTimerLocked(sess *jaws.Session, expiry time.Time) (delay time.Duration, replaced bool) {
 	delay = max(time.Until(expiry.Add(-authRefreshSkew)), 0)
+	if srv.profileSubject != nil {
+		delay = max(time.Until(expiry), 0)
+	}
 	entry := &authTimerState{expiry: expiry}
 	if srv.authTimers == nil {
 		srv.authTimers = make(map[uint64]*authTimerState)
@@ -273,6 +276,10 @@ func (srv *Server) stopSessionAuthTimerLocked(sess *jaws.Session, entry *authTim
 
 func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerState) {
 	if srv.sessionAuthTimerCurrent(sess, entry) {
+		if srv.profileSubject != nil {
+			srv.clearSessionAuth(sess, nil, entry)
+			return
+		}
 		if !sessionAlive(sess) {
 			srv.clearSessionAuth(sess, nil, entry)
 			return
@@ -337,6 +344,8 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 
 func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
 	sess.Set(srv.sessionKey(oauth2StateKey), nil)
+	sess.Set(srv.sessionKey(oauth2FlowExpiryKey), nil)
+	sess.Set(srv.sessionKey(oauth2LinkKey), nil)
 	sess.Set(srv.sessionKey(oauth2PKCEVerifierKey), nil)
 	sess.Set(srv.sessionKey(oauth2NonceKey), nil)
 	sess.Set(srv.sessionKey(oauth2ReferrerKey), nil)
@@ -344,7 +353,7 @@ func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
 
 // Logout clears all authentication state for sess.
 //
-// It stops the auth-refresh timer, clears the OIDC claims, token source, email, expiry
+// It stops the auth timer, clears verified claims, token source, email, expiry
 // and any in-flight OAuth flow keys, then reloads its pages with [jaws.Request.Reload],
 // calls [Server.LogoutEvent] (if set), and marks the session dirty. It returns false for a
 // nil receiver or nil session, and true otherwise. The hr argument may be nil.

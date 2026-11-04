@@ -19,6 +19,9 @@ var ErrConfigURLMissingHost = errors.New("url host is missing")
 // ErrConfigIssuerMustBeHTTPS means Issuer must use the https scheme unless AllowInsecureIssuer is enabled.
 var ErrConfigIssuerMustBeHTTPS = errors.New("issuer url must use https")
 
+// ErrConfigProfileEndpointMustBeHTTPS means a profile-flow endpoint must use HTTPS.
+var ErrConfigProfileEndpointMustBeHTTPS = errors.New("profile endpoint must use https")
+
 type errConfig struct {
 	field string
 	cause error

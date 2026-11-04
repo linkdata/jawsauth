@@ -15,26 +15,30 @@ import (
 
 // Config holds the OIDC/OAuth2 settings used by New and NewDebug to construct a Server.
 //
-// RedirectURL, Issuer and ClientID are required; AuthURL, TokenURL and UserInfoURL
-// override values otherwise obtained via OIDC discovery, and the remaining fields
-// are optional.
+// RedirectURL, Issuer and ClientID are required. OIDC mode discovers endpoints;
+// URL fields may override them. Profile mode requires explicit AuthURL, TokenURL,
+// UserInfoURL and ProfileSubject.
 type Config struct {
 	RedirectURL string // required. e.g. "https://application.example.com/oauth2/callback"
 	Issuer      string // required. e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
 	// Namespace isolates this provider's session values when multiple Servers share one JaWS instance.
 	Namespace   string
-	AuthURL     string // optional override for discovered authorization_endpoint
-	TokenURL    string // optional override for discovered token_endpoint
-	UserInfoURL string // optional override for discovered userinfo_endpoint
-	// AllowInsecureIssuer permits "http://" Issuer URLs and should only be used for tests/dev.
+	AuthURL     string // OIDC override; required in profile mode
+	TokenURL    string // OIDC override; required in profile mode
+	UserInfoURL string // OIDC override; required in profile mode
+	// AllowInsecureIssuer permits HTTP issuer/profile URLs and is only for tests/dev.
 	AllowInsecureIssuer bool
 	// HTTPClient is used for OIDC discovery at startup and, unless a per-request
 	// oauth2.HTTPClient is supplied via the request context, as the default client
 	// for token exchange/refresh and UserInfo requests.
 	HTTPClient   *http.Client
-	Scopes       []string // optional additional scopes, "openid" and "email" are always ensured
+	Scopes       []string // optional; OIDC adds "openid" and "email", profile mode uses only these scopes
 	ClientID     string
 	ClientSecret string
+	// ProfileSubject enables OAuth2 profile authentication without an OIDC ID token.
+	// AuthURL, TokenURL and UserInfoURL are required in this mode. It must return
+	// a stable, non-empty provider subject from the authenticated profile response.
+	ProfileSubject func(map[string]any) (string, error)
 }
 
 func requireLen(k string, n int) (err error) {
@@ -79,9 +83,9 @@ func validateUrl(k, u, defaultURL string, optional bool) (value string, err erro
 // Validate checks whether cfg contains usable OIDC/OAuth2 settings.
 //
 // RedirectURL, Issuer and ClientID must be present. URL fields must be absolute
-// and include a host; AuthURL, TokenURL and UserInfoURL are optional and
-// validated only when set. Issuer must use https unless AllowInsecureIssuer is
-// true. Returned validation failures match [ErrConfig].
+// and include a host. OIDC endpoint overrides are optional; profile endpoints
+// are required and must use HTTPS. Issuer must use HTTPS unless
+// AllowInsecureIssuer is true. Returned failures match [ErrConfig].
 func (cfg *Config) Validate() (err error) {
 	if _, err = validateUrl("RedirectURL", cfg.RedirectURL, "", false); err == nil {
 		if _, err = validateUrl("Issuer", cfg.Issuer, "", false); err == nil {
@@ -94,6 +98,22 @@ func (cfg *Config) Validate() (err error) {
 				}
 			}
 			if err == nil {
+				if cfg.ProfileSubject != nil {
+					for _, field := range []struct{ name, value string }{
+						{"AuthURL", cfg.AuthURL}, {"TokenURL", cfg.TokenURL}, {"UserInfoURL", cfg.UserInfoURL},
+					} {
+						if _, err = validateUrl(field.name, field.value, "", false); err != nil {
+							return err
+						}
+						if !cfg.AllowInsecureIssuer {
+							parsed, _ := url.Parse(field.value)
+							if parsed.Scheme != "https" {
+								return errConfig{field: field.name, cause: ErrConfigProfileEndpointMustBeHTTPS}
+							}
+						}
+					}
+					return requireStr("ClientID", cfg.ClientID)
+				}
 				if _, err = validateUrl("AuthURL", cfg.AuthURL, "", true); err == nil {
 					if _, err = validateUrl("TokenURL", cfg.TokenURL, "", true); err == nil {
 						if _, err = validateUrl("UserInfoURL", cfg.UserInfoURL, "", true); err == nil {
@@ -128,6 +148,28 @@ func ensureScopes(rawScopes []string) (scopes []string) {
 
 func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2cfg *oauth2.Config, userInfoURL string, verifier *oidc.IDTokenVerifier, err error) {
 	if err = cfg.Validate(); err == nil {
+		if cfg.ProfileSubject != nil {
+			var scopes []string
+			for _, set := range cfg.Scopes {
+				scopes = append(scopes, strings.Fields(set)...)
+			}
+			slices.Sort(scopes)
+			scopes = slices.Compact(scopes)
+			var redir *url.URL
+			if redir, err = url.Parse(cfg.RedirectURL); err != nil {
+				return
+			}
+			if u, parseErr := url.Parse(overrideUrl); parseErr == nil {
+				overrideStr(&redir.Scheme, u.Scheme)
+				overrideStr(&redir.Host, u.Host)
+			}
+			oauth2cfg = &oauth2.Config{
+				ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
+				Endpoint:    oauth2.Endpoint{AuthURL: cfg.AuthURL, TokenURL: cfg.TokenURL},
+				RedirectURL: redir.String(), Scopes: scopes,
+			}
+			return oauth2cfg, cfg.UserInfoURL, nil, nil
+		}
 		if cfg.HTTPClient != nil {
 			ctx = context.WithValue(ctx, oauth2.HTTPClient, cfg.HTTPClient)
 		}

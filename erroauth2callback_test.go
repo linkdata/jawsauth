@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/linkdata/jaws"
 	"golang.org/x/oauth2"
@@ -128,6 +129,7 @@ func Test_handleAuthResponseOAuthErrorCallback(t *testing.T) {
 	)
 	sess := jw.NewSession(rec, req)
 	sess.Set(oauth2StateKey, "state123")
+	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
 	srv.HandleAuthResponse(rec, req)
 	if callbackStatus != http.StatusForbidden {
 		t.Fatal(callbackStatus)
@@ -203,6 +205,7 @@ func Test_handleAuthResponseOAuthErrorCallbackReceivesSessionEmail(t *testing.T)
 	)
 	sess := jw.NewSession(rec, req)
 	sess.Set(oauth2StateKey, "state123")
+	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
 	sess.Set(srv.SessionKey, map[string]any{"email": "user@example.com"})
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 
