@@ -134,7 +134,7 @@ func (srv *Server) verifyIDToken(ctx context.Context, raw string) (idToken *oidc
 		return nil, nil, errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCMissingSubject}
 	}
 	err = idToken.Claims(&claims)
-	wrapOIDC(ErrOIDCInvalidIDToken, &err)
+	_ = wrapOIDC(ErrOIDCInvalidIDToken, &err)
 	return
 }
 

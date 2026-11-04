@@ -104,3 +104,95 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 		t.Fatalf("callbacks: success=%d rejected=%d sessions=%d", success, rejected, jw.SessionCount())
 	}
 }
+
+// holdFirstRotationLock lets logout acquire the lock before a callback that
+// reached Lock first, so the callback must recheck its flow after acquisition.
+type holdFirstRotationLock struct {
+	mu           sync.Mutex
+	attempts     atomic.Int32
+	first        chan struct{}
+	releaseFirst chan struct{}
+}
+
+func (l *holdFirstRotationLock) Lock() {
+	if l.attempts.Add(1) == 1 {
+		close(l.first)
+		<-l.releaseFirst
+	}
+	l.mu.Lock()
+}
+
+func (l *holdFirstRotationLock) Unlock() { l.mu.Unlock() }
+
+func TestLinkedProviderLogoutBeforeLinkWrite(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/token" {
+			return profileTestResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
+		}
+		return profileTestResponse(`{"id":42}`), nil
+	})}
+	mk := func(ns string) *Server {
+		srv, err := New(jw, &Config{Namespace: ns, RedirectURL: "https://app.example/auth/" + ns + "/callback", Issuer: "https://provider.example", AuthURL: "https://provider.example/authorize", TokenURL: "https://provider.example/token", UserInfoURL: "https://provider.example/user", ClientID: "app", HTTPClient: client, ProfileSubject: func(m map[string]any) (string, error) { return string(m["id"].(json.Number)), nil }}, func(string, http.Handler) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return srv
+	}
+	a, b := mk("a"), mk("b")
+	cookie, state := profileStart(t, a, http.MethodGet, "/auth/a/login", nil)
+	login := profileCallback(a, cookie, state, "proof")
+	if login.Code != http.StatusFound || len(login.Result().Cookies()) != 1 {
+		t.Fatalf("initial login: status=%d cookies=%v", login.Code, login.Result().Cookies())
+	}
+	cookie = login.Result().Cookies()[0]
+	req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	req.AddCookie(cookie)
+	sess := jw.GetSession(req)
+	if a.CurrentClaims(sess) == nil {
+		t.Fatal("missing first provider authentication")
+	}
+	lock := &holdFirstRotationLock{first: make(chan struct{}), releaseFirst: make(chan struct{})}
+	a.SessionRotationLock, b.SessionRotationLock = lock, lock
+	var writes atomic.Int32
+	b.LinkEvent = func(current *jaws.Session, _ *http.Request, _ map[string]any) (int, error) {
+		if a.CurrentClaims(current) == nil {
+			return http.StatusForbidden, ErrOAuth2MissingSession
+		}
+		writes.Add(1)
+		return 0, nil
+	}
+	_, linkState := profileStart(t, b, http.MethodPost, "/auth/b/link", cookie)
+	callbackDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		callbackRequest := httptest.NewRequest(http.MethodGet, "https://app.example/auth/b/callback?state="+url.QueryEscape(linkState)+"&code=proof", nil)
+		callbackRequest.RemoteAddr = "192.0.2.1:1234"
+		callbackRequest.AddCookie(cookie)
+		callback := httptest.NewRecorder()
+		b.HandleAuthResponse(callback, callbackRequest)
+		callbackDone <- callback
+	}()
+	release := sync.OnceFunc(func() { close(lock.releaseFirst) })
+	defer release()
+	waitFor(t, lock.first, "link callback did not reach shared lock")
+	b.mu.Lock()
+	flow := b.oauthCallbacks[sess]
+	b.mu.Unlock()
+	if flow.canceled == nil || flow.revoked() {
+		t.Fatal("link callback was not active before logout")
+	}
+	logout := httptest.NewRecorder()
+	b.HandleLogout(logout, req)
+	if logout.Code != http.StatusFound || !flow.revoked() || a.CurrentClaims(sess) == nil {
+		t.Fatalf("second provider logout: status=%d revoked=%t first provider valid=%t", logout.Code, flow.revoked(), a.CurrentClaims(sess) != nil)
+	}
+	release()
+	callback := waitFor(t, callbackDone, "revoked link callback did not finish")
+	if callback.Code != http.StatusForbidden || writes.Load() != 0 || len(callback.Result().Cookies()) != 0 {
+		t.Fatalf("revoked link: status=%d writes=%d cookies=%v", callback.Code, writes.Load(), callback.Result().Cookies())
+	}
+}

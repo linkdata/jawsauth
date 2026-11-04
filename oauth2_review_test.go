@@ -36,6 +36,28 @@ func TestLinkWithoutEventDoesNotStartFlow(t *testing.T) {
 	}
 }
 
+func TestLinkRejectsGETBeforeStartingFlow(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	calls := 0
+	srv := newProfileTestServer(t, jw, &calls)
+	srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) { return 0, nil }
+	r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/link/github", nil)
+	r.RemoteAddr = "192.0.2.1:1234"
+	sess := jw.NewSession(httptest.NewRecorder(), r)
+	if sess == nil {
+		t.Fatal("missing session")
+	}
+	w := httptest.NewRecorder()
+	srv.HandleLink(w, r)
+	if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Location") != "" || sess.Get(srv.sessionKey(oauth2FlowKey)) != nil || calls != 0 {
+		t.Fatalf("GET link: status=%d location=%q flow=%v calls=%d", w.Code, w.Header().Get("Location"), sess.Get(srv.sessionKey(oauth2FlowKey)), calls)
+	}
+}
+
 func TestLinkRejectsInvalidEventResults(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

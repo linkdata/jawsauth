@@ -7,7 +7,13 @@
 Verified OIDC or OAuth2 profile authentication for [JaWS](https://github.com/linkdata/jaws) sessions.
 
 - OIDC mode discovers the issuer, verifies `id_token` and nonce, and refreshes before expiry.
-- Profile mode accepts explicit HTTPS endpoints and a `Config.ProfileSubject` verifier for providers without ID tokens. Its authenticated profile response must contain a stable subject; email and names are not identity proof. JSON numbers arrive as `json.Number` so large numeric IDs remain exact.
+- Profile mode accepts explicit HTTPS endpoints and a `Config.ProfileSubject`
+  verifier for providers without ID tokens. Its authenticated profile response
+  must contain a stable subject; email and names are not identity proof. JSON
+  numbers arrive as `json.Number` so large numeric IDs remain exact. Profile
+  email feeds `SetAdmins`; if the provider allows unverified email, set
+  `RequireVerifiedAdminEmail = true` and map its verification signal to
+  `email_verified` in `ProfileSubject`.
 - Both modes use authorization-code state and PKCE (S256). Pending flows expire after ten minutes; jawsauth extends only that JaWS session's grace while the user visits the provider.
 - For OIDC providers that require an offline-access request to issue refresh tokens, set `Server.Options = []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}` before serving. This adds `access_type=offline` to the authorization redirect, not the token request.
 - Profile authentication expires after 24 hours or the provider token's earlier expiry; it does not attempt OIDC refresh.
@@ -16,6 +22,9 @@ Verified OIDC or OAuth2 profile authentication for [JaWS](https://github.com/lin
 Protected routes create JaWS sessions for unauthenticated visitors. Set
 `Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound session counts. When a
 session cannot be created, login returns 503 with `Retry-After: 60`.
+Each login attempt can retain an anonymous session for about ten minutes while
+the user visits the provider. Limit requests to login and protected routes when
+serving untrusted traffic.
 Post-login return targets longer than 8192 bytes fall back to `/`.
 Login callback token/profile calls and startup discovery have a 15-second deadline;
 OIDC background refresh requests have the same maximum timeout.
@@ -32,13 +41,13 @@ For multiple providers on one JaWS instance:
   calling it. Set `Server.LinkEvent` to recheck that identity and accept the
   newly verified subject. A link keeps the original session; login rotates it.
   A link callback requires the original live JaWS session and one-use flow state.
-- Serialize `LinkEvent`'s final current-auth check and durable write with logout
-  and other provider auth revocation. Give each provider's `SessionRotationLock`
-  the same lock. This serializes login rotation, timer and wrapper revocation,
-  and built-in `HandleLogout` with the write. Hold that lock around direct calls
-  to `Server.Logout` when linking writes are durable. Provider requests run
-  outside the lock. A stale callback is rejected, but an application link write
-  cannot be rolled back after revocation.
+- Give each provider's `SessionRotationLock` the same lock. jawsauth holds it
+  across `LinkEvent`'s current-auth check and durable write, as well as login
+  rotation, timer and wrapper revocation, and built-in `HandleLogout`. Do not
+  acquire it again inside `LinkEvent`. Hold it around direct calls to
+  `Server.Logout` when linking writes are durable. Provider requests run
+  outside the lock. A callback canceled before the write is rejected; a
+  completed write succeeds even if logout follows it.
 
 The provider visit extends the original session's idle grace. A successful
 link can retain that grace even with no connected pages until its deadline.

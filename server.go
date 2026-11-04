@@ -71,10 +71,10 @@ type EventFunc func(sess *jaws.Session, hr *http.Request)
 // when logging them and escape them for the output format when rendering them.
 type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
-// LinkFunc receives the current session and a newly verified identity. Serialize
-// the final current-auth check and durable link
-// write with logout and other provider auth revocation. Return zero and nil on
-// success, or an HTTP error status.
+// LinkFunc receives the current session and a newly verified identity. Recheck
+// the current authentication before a durable link write. When configured,
+// jawsauth holds SessionRotationLock while calling LinkFunc; do not acquire it
+// again in the callback. Return zero and nil on success, or an HTTP error status.
 type LinkFunc func(sess *jaws.Session, hr *http.Request, claims map[string]any) (statusCode int, err error)
 
 // Server provides OIDC or verified OAuth2 profile authentication for JaWS sessions.
@@ -92,7 +92,7 @@ type Server struct {
 	LogoutEvent             EventFunc               // if not nil, called after auth is cleared; hr may be nil
 	LoginFailed             FailedFunc              // if not nil, called on failed login
 	LinkEvent               LinkFunc                // if not nil, enables HandleLink
-	SessionRotationLock     sync.Locker             // optional; serializes session rotation and internal auth revocation with application link writes
+	SessionRotationLock     sync.Locker             // optional; held during rotation, internal revocation, and LinkEvent
 	Options                 []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
 
 	// RequireVerifiedAdminEmail requires email_verified for a non-empty admin list.

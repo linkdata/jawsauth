@@ -184,8 +184,7 @@ func TestOAuthLogoutDuringLoginEventClosesRotatedSession(t *testing.T) {
 	}
 	result := make(chan *httptest.ResponseRecorder, 1)
 	go func() { result <- profileCallback(srv, cookie, state, "first") }()
-	var rotated *jaws.Session
-	rotated = waitFor(t, entered, "LoginEvent was not reached")
+	rotated := waitFor(t, entered, "LoginEvent was not reached")
 	if rotated == preauth || rotated.Get(srv.SessionKey) == nil {
 		t.Fatal("LoginEvent did not receive an authenticated rotated session")
 	}
@@ -193,8 +192,7 @@ func TestOAuthLogoutDuringLoginEventClosesRotatedSession(t *testing.T) {
 		t.Fatal("logout failed")
 	}
 	releaseOnce.Do(func() { close(release) })
-	var w *httptest.ResponseRecorder
-	w = waitFor(t, result, "canceled callback did not finish")
+	w := waitFor(t, result, "canceled callback did not finish")
 	cookies := w.Result().Cookies()
 	if w.Code != http.StatusForbidden || w.Header().Get("Location") != "" || len(cookies) != 2 || cookies[1].MaxAge >= 0 ||
 		cookies[1].Name != cookies[0].Name || cookies[1].Value != cookies[0].Value ||

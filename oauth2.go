@@ -139,7 +139,7 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location s
 
 // HandleLogin begins the configured OIDC or OAuth2 profile login flow.
 //
-// For GET requests it generates and stores the state, nonce and PKCE verifier in the
+// For GET requests it stores the state, PKCE verifier and, for OIDC, nonce in the
 // session, then responds with a 302 redirect to the provider's authorization URL.
 // If no session can be created, it returns 503 with Retry-After instead.
 // Non-GET requests receive 405.
@@ -181,50 +181,42 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 				srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
 				return
 			}
-			flowExpiry := time.Now().Add(oauth2FlowLifetime)
-			authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
-			state := randomHexString()
-			var nonce string
-			if srv.profileSubject == nil {
-				nonce = randomHexString()
-				authOptions = append(authOptions, oidc.Nonce(nonce))
-			}
-			verifier := oauth2.GenerateVerifier()
-			authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
 			if link && strings.TrimSpace(hr.Referer()) == "" {
 				location = "/"
 			}
+			var flow pendingOAuthFlow
 			srv.mu.Lock()
 			if preservePendingLogin && srv.pendingOrdinaryLoginLocked(sess) {
-				stored, _ := sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
-				srv.mu.Unlock()
-				if stored.state != "" && stored.verifier != "" {
-					options := append([]oauth2.AuthCodeOption{}, srv.Options...)
-					if stored.nonce != "" {
-						options = append(options, oidc.Nonce(stored.nonce))
-					}
-					options = append(options, oauth2.S256ChallengeOption(stored.verifier))
-					hw.Header().Set("Location", oauth2cfg.AuthCodeURL(stored.state, options...))
-					SetHeaders(hw, srv.ishttps)
-					hw.WriteHeader(http.StatusFound)
-				} else {
+				flow, _ = sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
+				if flow.state == "" || flow.verifier == "" {
+					srv.mu.Unlock()
 					srv.writeResult(hw, http.StatusConflict, ErrOAuth2LoginInProgress, nil)
+					return
 				}
-				return
+			} else {
+				flow = pendingOAuthFlow{
+					state: randomHexString(), expiry: time.Now().Add(oauth2FlowLifetime),
+					link: link, verifier: oauth2.GenerateVerifier(), referrer: location,
+				}
+				if srv.profileSubject == nil {
+					flow.nonce = randomHexString()
+				}
+				if !sess.ExtendGrace(oauth2FlowGrace) {
+					srv.mu.Unlock()
+					hw.Header().Set("Retry-After", "60")
+					srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
+					return
+				}
+				srv.clearSessionOAuthFlow(sess)
+				sess.Set(srv.sessionKey(oauth2FlowKey), flow)
 			}
-			if !sess.ExtendGrace(oauth2FlowGrace) {
-				srv.mu.Unlock()
-				hw.Header().Set("Retry-After", "60")
-				srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
-				return
-			}
-			srv.clearSessionOAuthFlow(sess)
-			sess.Set(srv.sessionKey(oauth2FlowKey), pendingOAuthFlow{
-				state: state, expiry: flowExpiry, link: link, nonce: nonce,
-				verifier: verifier, referrer: location,
-			})
 			srv.mu.Unlock()
-			location = oauth2cfg.AuthCodeURL(state, authOptions...)
+			authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
+			if flow.nonce != "" {
+				authOptions = append(authOptions, oidc.Nonce(flow.nonce))
+			}
+			authOptions = append(authOptions, oauth2.S256ChallengeOption(flow.verifier))
+			location = oauth2cfg.AuthCodeURL(flow.state, authOptions...)
 		}
 		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
@@ -479,7 +471,7 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 	}
 	var subject string
 	subject, err = srv.profileSubject(claims)
-	if err != nil && srv.Jaws != nil {
+	if err != nil {
 		_ = srv.Jaws.Log(err)
 	}
 	if err != nil || subject == "" {
@@ -526,6 +518,10 @@ func (srv *Server) rotateOAuthSession(hw http.ResponseWriter, hr *http.Request, 
 }
 
 func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map[string]any, flow pendingOAuthFlow) (status int, err error) {
+	if srv.SessionRotationLock != nil {
+		srv.SessionRotationLock.Lock()
+		defer srv.SessionRotationLock.Unlock()
+	}
 	if srv.LinkEvent == nil || flow.revoked() || srv.Jaws.GetSession(hr) != sess {
 		return http.StatusForbidden, ErrOAuth2MissingSession
 	}
@@ -536,9 +532,6 @@ func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map
 			status = http.StatusForbidden
 		}
 		return status, ErrOAuth2LinkRejected
-	}
-	if flow.revoked() || srv.Jaws.GetSession(hr) != sess || !sessionAlive(sess) {
-		return http.StatusForbidden, ErrOAuth2MissingSession
 	}
 	return http.StatusFound, nil
 }
@@ -629,9 +622,6 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 								if err == nil {
 									if err = srv.identityExpiryError(expiry); err != nil {
 										statusCode = http.StatusUnauthorized
-									} else if flow.revoked() || srv.Jaws.GetSession(hr) != sess {
-										err = ErrOAuth2MissingSession
-										statusCode = http.StatusForbidden
 									} else if flow.link {
 										statusCode, err = srv.completeLink(sess, hr, claims, flow)
 									} else {

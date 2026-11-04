@@ -316,8 +316,7 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 			}
 
 			releaseOnce.Do(func() { close(release) })
-			var w *httptest.ResponseRecorder
-			w = waitFor(t, result, "canceled callback did not finish")
+			w := waitFor(t, result, "canceled callback did not finish")
 			if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || logins != 0 {
 				t.Fatalf("canceled callback: status=%d cookies=%v logins=%d", w.Code, w.Result().Cookies(), logins)
 			}
@@ -380,72 +379,9 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 		t.Fatal("logout did not clear linked session")
 	}
 	releaseOnce.Do(func() { close(release) })
-	var w *httptest.ResponseRecorder
-	w = waitFor(t, result, "canceled link callback did not finish")
+	w := waitFor(t, result, "canceled link callback did not finish")
 	if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || links != 0 || sess.Get(srv.SessionKey) != nil {
 		t.Fatalf("canceled link: status=%d cookies=%v links=%d claims=%v", w.Code, w.Result().Cookies(), links, sess.Get(srv.SessionKey))
-	}
-}
-
-func TestOAuthProfileLinkRevokedDuringEventRejectsCallback(t *testing.T) {
-	for _, action := range []string{"logout", "auth expiry"} {
-		t.Run(action, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
-			calls := 0
-			srv := newProfileTestServer(t, jw, &calls)
-			factory := &testAuthTimerFactory{}
-			srv.authTimerAfterFunc = factory.after
-			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-			first := profileCallback(srv, cookie, state, "first")
-			if first.Code != http.StatusFound {
-				t.Fatalf("initial login: %d", first.Code)
-			}
-			cookie = first.Result().Cookies()[0]
-			r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-			r.RemoteAddr = "192.0.2.1:1234"
-			r.AddCookie(cookie)
-			sess := jw.GetSession(r)
-			if sess == nil || sess.Get(srv.SessionKey) == nil {
-				t.Fatal("missing original authentication")
-			}
-			entered := make(chan struct{})
-			release := make(chan struct{})
-			var releaseOnce sync.Once
-			defer releaseOnce.Do(func() { close(release) })
-			links := 0
-			srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) {
-				links++
-				close(entered)
-				<-release
-				return 0, nil
-			}
-			_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
-			result := make(chan *httptest.ResponseRecorder, 1)
-			go func() { result <- profileCallback(srv, cookie, linkState, "second") }()
-			waitFor(t, entered, "LinkEvent was not reached")
-			if action == "logout" {
-				if !srv.Logout(sess, nil) {
-					t.Fatal("logout failed")
-				}
-			} else {
-				srv.mu.Lock()
-				srv.authTimers[sess.ID()].expiry = time.Now().Add(-time.Second)
-				srv.mu.Unlock()
-				factory.timer(0).fire()
-			}
-			releaseOnce.Do(func() { close(release) })
-			var response *httptest.ResponseRecorder
-			response = waitFor(t, result, "revoked link callback did not finish")
-			if response.Code != http.StatusForbidden || response.Header().Get("Location") != "" ||
-				len(response.Result().Cookies()) != 0 || links != 1 || sess.Get(srv.SessionKey) != nil {
-				t.Fatalf("revoked link: status=%d location=%q cookies=%v links=%d claims=%v",
-					response.Code, response.Header().Get("Location"), response.Result().Cookies(), links, sess.Get(srv.SessionKey))
-			}
-		})
 	}
 }
 
@@ -503,8 +439,6 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 				defer releaseEvent()
 				writes := 0
 				srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) {
-					lock.Lock()
-					defer lock.Unlock()
 					if current, _ := srv.sessionAuthStatus(sess, time.Now); !current {
 						return http.StatusForbidden, ErrOAuth2MissingSession
 					}
@@ -549,9 +483,9 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 				}
 				releaseEvent()
 				waitFor(t, revoked, "revocation did not finish after link write")
-				waitFor(t, callbackDone, "link callback did not finish")
-				if writes != 1 || logoutEvents.Load() != 1 {
-					t.Fatalf("durable link writes = %d, logout events = %d", writes, logoutEvents.Load())
+				response := waitFor(t, callbackDone, "link callback did not finish")
+				if response.Code != http.StatusFound || writes != 1 || logoutEvents.Load() != 1 {
+					t.Fatalf("callback status = %d, durable link writes = %d, logout events = %d", response.Code, writes, logoutEvents.Load())
 				}
 			})
 		}

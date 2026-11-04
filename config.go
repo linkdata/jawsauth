@@ -32,7 +32,8 @@ type Config struct {
 	AllowInsecureIssuer bool
 	// HTTPClient is used for OIDC discovery and JWKS requests and, unless a per-request
 	// oauth2.HTTPClient is supplied via the request context, as the default client
-	// for token exchange/refresh and UserInfo requests.
+	// for token exchange/refresh and UserInfo requests. Those requests cap its
+	// timeout at 15 seconds and do not follow redirects.
 	HTTPClient   *http.Client
 	Scopes       []string // optional; OIDC adds "openid" and "email", profile mode uses only these scopes
 	ClientID     string
