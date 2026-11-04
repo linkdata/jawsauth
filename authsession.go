@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -96,7 +95,7 @@ func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) 
 
 func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (current, present bool) {
 	if srv != nil && sess != nil {
-		expiryValue := sess.Get(srv.sessionKey(oauth2IDTokenExpiryKey))
+		expiryValue := sess.Get(srv.sessionKey(oauth2AuthExpiryKey))
 		authValue := sess.Get(srv.SessionKey)
 		present = authValue != nil || expiryValue != nil
 		if authValue != nil && now != nil {
@@ -121,6 +120,22 @@ func (srv *Server) identityExpiryError(expiry time.Time) error {
 		return ErrOAuth2InvalidProfile
 	}
 	return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
+}
+
+func (srv *Server) verifyIDToken(ctx context.Context, raw string) (idToken *oidc.IDToken, claims map[string]any, err error) {
+	if raw == "" {
+		return nil, nil, ErrOIDCMissingIDToken
+	}
+	idToken, err = srv.idTokenVerifier.Verify(ctx, raw)
+	if wrapOIDC(ErrOIDCInvalidIDToken, &err) != nil {
+		return
+	}
+	if idToken.Subject == "" {
+		return nil, nil, errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCMissingSubject}
+	}
+	err = idToken.Claims(&claims)
+	wrapOIDC(ErrOIDCInvalidIDToken, &err)
+	return
 }
 
 func (srv *Server) storeSessionAuthClaims(sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState) error {
@@ -161,12 +176,12 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 		if entry == nil {
 			return ErrOAuth2MissingSession
 		}
-		srv.clearSessionAuth(sess, nil, entry, true, srv.SessionRotationLock)
+		srv.clearSessionAuth(sess, nil, entry, true, true)
 		return errAuthTimerStale
 	}
 	sess.Set(srv.SessionKey, claims)
 	sess.Set(srv.SessionTokenKey, tokenSource)
-	sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), expiry)
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), expiry)
 	sess.Set(srv.SessionEmailKey, email)
 	sess.Set(srv.SessionEmailVerifiedKey, verified)
 	delay, replaced := srv.scheduleSessionAuthTimerLocked(sess, expiry)
@@ -186,36 +201,29 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 	return nil
 }
 
-func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Session, tokenSource oauth2.TokenSource, token *oauth2.Token, minExpiry time.Time, entry *authTimerState) (err error) {
-	err = ErrOAuth2NotConfigured
-	if srv != nil && srv.idTokenVerifier != nil {
-		err = ErrOIDCMissingIDToken
-		if token != nil {
-			rawIDToken, _ := token.Extra("id_token").(string)
-			if rawIDToken != "" {
-				var idToken *oidc.IDToken
-				if idToken, err = srv.idTokenVerifier.Verify(ctx, rawIDToken); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
-					if idToken.Subject == "" {
-						return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCMissingSubject}
-					}
-					var claims map[string]any
-					if err = idToken.Claims(&claims); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
-						if idToken.Expiry.IsZero() {
-							err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
-						} else if !minExpiry.IsZero() && !idToken.Expiry.After(minExpiry) {
-							err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCStaleIDToken}
-						} else {
-							srv.addUserInfoClaims(ctx, claims, tokenSource)
-							if err = srv.identityExpiryError(idToken.Expiry); err == nil {
-								err = srv.storeSessionAuthClaims(sess, claims, tokenSource, idToken.Expiry, entry)
-							}
-						}
-					}
-				}
-			}
-		}
+func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Session, tokenSource oauth2.TokenSource, token *oauth2.Token, minExpiry time.Time, entry *authTimerState) error {
+	if srv == nil || srv.idTokenVerifier == nil {
+		return ErrOAuth2NotConfigured
 	}
-	return
+	var raw string
+	if token != nil {
+		raw, _ = token.Extra("id_token").(string)
+	}
+	idToken, claims, err := srv.verifyIDToken(ctx, raw)
+	if err != nil {
+		return err
+	}
+	if idToken.Expiry.IsZero() {
+		return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
+	}
+	if !minExpiry.IsZero() && !idToken.Expiry.After(minExpiry) {
+		return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCStaleIDToken}
+	}
+	srv.addUserInfoClaims(ctx, claims, tokenSource)
+	if err := srv.identityExpiryError(idToken.Expiry); err != nil {
+		return err
+	}
+	return srv.storeSessionAuthClaims(sess, claims, tokenSource, idToken.Expiry, entry)
 }
 
 func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, minExpiry time.Time, entry *authTimerState) (err error) {
@@ -279,11 +287,7 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
 
 // Caller holds srv.mu across the auth writes and timer replacement.
 func (srv *Server) scheduleSessionAuthTimerLocked(sess *jaws.Session, expiry time.Time) (delay time.Duration, replaced bool) {
-	delay = max(time.Until(expiry.Add(-authRefreshSkew)), 0)
-	if srv.profileSubject != nil {
-		delay = max(time.Until(expiry), 0)
-	}
-	delay = min(delay, authSessionCheckInterval)
+	delay = min(max(time.Until(srv.authTimerDue(expiry)), 0), authSessionCheckInterval)
 	entry := &authTimerState{expiry: expiry}
 	if srv.authTimers == nil {
 		srv.authTimers = make(map[uint64]*authTimerState)
@@ -325,25 +329,12 @@ func (srv *Server) stopSessionAuthTimerLocked(sess *jaws.Session, entry *authTim
 
 func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerState) {
 	if srv.sessionAuthTimerCurrent(sess, entry) {
-		if srv.profileSubject != nil {
-			if !sessionAlive(sess) || !time.Now().Before(entry.expiry) {
-				srv.clearSessionAuth(sess, nil, entry, true, srv.SessionRotationLock)
-				return
-			}
-			srv.mu.Lock()
-			if srv.authTimers[sess.ID()] == entry {
-				entry.timer = srv.authTimerAfterFunc(min(time.Until(entry.expiry), authSessionCheckInterval), func() {
-					srv.handleSessionAuthTimer(sess, entry)
-				})
-			}
-			srv.mu.Unlock()
+		remaining := time.Until(srv.authTimerDue(entry.expiry))
+		if !sessionAlive(sess) || (srv.profileSubject != nil && remaining <= 0) {
+			srv.clearSessionAuth(sess, nil, entry, true, true)
 			return
 		}
-		if !sessionAlive(sess) {
-			srv.clearSessionAuth(sess, nil, entry, true, srv.SessionRotationLock)
-			return
-		}
-		if remaining := time.Until(entry.expiry.Add(-authRefreshSkew)); remaining > 0 {
+		if remaining > 0 {
 			srv.mu.Lock()
 			if srv.authTimers[sess.ID()] == entry {
 				entry.timer = srv.authTimerAfterFunc(min(remaining, authSessionCheckInterval), func() {
@@ -399,7 +390,7 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 				"session_present", present,
 			)
 			_ = srv.Jaws.Log(err)
-			srv.clearSessionAuth(sess, nil, entry, true, srv.SessionRotationLock)
+			srv.clearSessionAuth(sess, nil, entry, true, true)
 		} else {
 			srv.debugLog("jawsauth: auth refresh timer completed", "session_prefix", debugSessionPrefix(sess))
 		}
@@ -411,15 +402,20 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 	}
 }
 
+func (srv *Server) authTimerDue(expiry time.Time) time.Time {
+	if srv.profileSubject != nil {
+		return expiry
+	}
+	return expiry.Add(-authRefreshSkew)
+}
+
 // pendingOrdinaryLoginLocked requires srv.mu.
 func (srv *Server) pendingOrdinaryLoginLocked(sess *jaws.Session) bool {
 	if flow := srv.oauthCallbacks[sess]; flow.canceled != nil {
 		return !flow.link && !flow.revoked()
 	}
-	state, _ := sess.Get(srv.sessionKey(oauth2StateKey)).(string)
-	link, _ := sess.Get(srv.sessionKey(oauth2LinkKey)).(bool)
-	expiry, _ := sess.Get(srv.sessionKey(oauth2FlowExpiryKey)).(time.Time)
-	return state != "" && !link && time.Now().Before(expiry)
+	flow, _ := sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
+	return flow.state != "" && !flow.link && time.Now().Before(flow.expiry)
 }
 
 func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
@@ -427,12 +423,7 @@ func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
 		close(flow.canceled)
 		delete(srv.oauthCallbacks, sess)
 	}
-	sess.Set(srv.sessionKey(oauth2StateKey), nil)
-	sess.Set(srv.sessionKey(oauth2FlowExpiryKey), nil)
-	sess.Set(srv.sessionKey(oauth2LinkKey), nil)
-	sess.Set(srv.sessionKey(oauth2PKCEVerifierKey), nil)
-	sess.Set(srv.sessionKey(oauth2NonceKey), nil)
-	sess.Set(srv.sessionKey(oauth2ReferrerKey), nil)
+	sess.Set(srv.sessionKey(oauth2FlowKey), nil)
 }
 
 // Logout clears all authentication state for sess.
@@ -446,16 +437,16 @@ func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
 // response. A JaWS event handler cannot use [jaws.Request.Redirect] after Logout
 // queues Reload, which closes the connection; use an HTTP logout endpoint instead.
 func (srv *Server) Logout(sess *jaws.Session, hr *http.Request) (cleared bool) {
-	return srv.clearSessionAuth(sess, hr, nil, false, nil)
+	return srv.clearSessionAuth(sess, hr, nil, false, false)
 }
 
-// Public logout may already hold SessionRotationLock; internal revocation passes it here.
-func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry *authTimerState, preservePendingLogin bool, rotationLock sync.Locker) (cleared bool) {
+// Public logout may already hold SessionRotationLock; internal revocation takes it here.
+func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry *authTimerState, preservePendingLogin, lockRotation bool) (cleared bool) {
 	if srv == nil || sess == nil {
 		return
 	}
-	if rotationLock != nil {
-		rotationLock.Lock()
+	if lockRotation && srv.SessionRotationLock != nil {
+		srv.SessionRotationLock.Lock()
 	}
 	srv.mu.Lock()
 	cleared = srv.stopSessionAuthTimerLocked(sess, entry)
@@ -468,14 +459,14 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 		}
 		sess.Set(srv.SessionKey, nil)
 		sess.Set(srv.SessionTokenKey, nil)
-		sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), nil)
+		sess.Set(srv.sessionKey(oauth2AuthExpiryKey), nil)
 		sess.Set(srv.SessionEmailKey, nil)
 		sess.Set(srv.SessionEmailVerifiedKey, nil)
 		requests = sess.Requests()
 	}
 	srv.mu.Unlock()
-	if rotationLock != nil {
-		rotationLock.Unlock()
+	if lockRotation && srv.SessionRotationLock != nil {
+		srv.SessionRotationLock.Unlock()
 	}
 	if cleared {
 		reloadAuthRequests(requests)

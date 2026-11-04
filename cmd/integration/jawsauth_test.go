@@ -107,6 +107,16 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	var logincount int
 	asrv.LoginEvent = func(sess *jaws.Session, hr *http.Request) { logincount++ }
 	asrv.LogoutEvent = func(sess *jaws.Session, hr *http.Request) { logincount-- }
+	var linkcount int
+	asrv.LinkEvent = func(sess *jaws.Session, _ *http.Request, claims map[string]any) (int, error) {
+		current := asrv.CurrentClaims(sess)
+		if current == nil || current["sub"] != claims["sub"] {
+			return http.StatusForbidden, nil
+		}
+		linkcount++
+		return 0, nil
+	}
+	mux.Handle(http.MethodPost+" /oauth2/link", asrv.Wrap(http.HandlerFunc(asrv.HandleLink)))
 
 	if !asrv.Valid() {
 		t.Fatal()
@@ -199,6 +209,15 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	}
 	if !strings.Contains(resphtml, "sub:") {
 		t.Fatal(resphtml)
+	}
+
+	resp, err = client.Post(hsrv.URL+"/oauth2/link", "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Request.URL.Path != "/" || linkcount != 1 || logincount != 1 {
+		t.Fatalf("OIDC link: status=%s path=%q links=%d logins=%d", resp.Status, resp.Request.URL.Path, linkcount, logincount)
 	}
 
 	resp, err = client.Get(hsrv.URL + "/needauth")

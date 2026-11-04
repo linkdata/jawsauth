@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/linkdata/jaws"
 )
@@ -78,20 +77,11 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 	out := make(chan *httptest.ResponseRecorder, 2)
 	go func() { out <- callback(a, "a", stateA) }()
 	go func() { out <- callback(b, "b", stateB) }()
-	select {
-	case <-gate.both:
-	case <-time.After(5 * time.Second):
-		t.Fatal("provider callbacks did not reach rotation")
-	}
+	waitFor(t, gate.both, "provider callbacks did not reach rotation")
 	release()
 	responses := make([]*httptest.ResponseRecorder, 0, 2)
 	for range 2 {
-		select {
-		case response := <-out:
-			responses = append(responses, response)
-		case <-time.After(5 * time.Second):
-			t.Fatal("provider callback did not finish")
-		}
+		responses = append(responses, waitFor(t, out, "provider callback did not finish"))
 	}
 	success, rejected := 0, 0
 	for _, response := range responses {

@@ -255,10 +255,7 @@ func TestLoginRotationExistingAuth(t *testing.T) {
 				t.Fatal("login reused old session")
 			}
 		}
-		sess.Set(oauth2StateKey, "state")
-		sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-		sess.Set(oauth2NonceKey, "nonce")
-		sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+		setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce", verifier: oauth2.GenerateVerifier()})
 		rec := httptest.NewRecorder()
 		srv.HandleAuthResponse(rec, req)
 		if limit == 1 {
@@ -427,10 +424,7 @@ func TestLoginUserInfoDeadlineKeepsOIDCFallbackOptional(t *testing.T) {
 		logins, logouts := 0, 0
 		srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
 		srv.LogoutEvent = func(*jaws.Session, *http.Request) { logouts++ }
-		sess.Set(oauth2StateKey, "state")
-		sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-		sess.Set(oauth2NonceKey, "nonce")
-		sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+		setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce", verifier: oauth2.GenerateVerifier()})
 		hw := httptest.NewRecorder()
 		srv.HandleAuthResponse(hw, hr)
 		current := jw.GetSession(hr)

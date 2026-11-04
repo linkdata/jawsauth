@@ -128,8 +128,7 @@ func Test_handleAuthResponseOAuthErrorCallback(t *testing.T) {
 		nil,
 	)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime)})
 	srv.HandleAuthResponse(rec, req)
 	if callbackStatus != http.StatusForbidden {
 		t.Fatal(callbackStatus)
@@ -160,9 +159,8 @@ func Test_handleAuthResponseOAuthErrorCallback(t *testing.T) {
 	if !strings.Contains(string(body), "oauth2 callback error: access_denied") {
 		t.Fatal(string(body))
 	}
-	state, _ := sess.Get(oauth2StateKey).(string)
-	if state != "" {
-		t.Fatal(state)
+	if flow := sess.Get(oauth2FlowKey); flow != nil {
+		t.Fatal(flow)
 	}
 }
 
@@ -187,10 +185,7 @@ func Test_handleAuthResponseOAuthErrorCallbackReceivesSessionEmail(t *testing.T)
 		userinfoUrl: "https://provider.example/userinfo",
 	}
 	var callbackEmail string
-	srv.LoginFailed = func(hw http.ResponseWriter, hr *http.Request, httpCode int, callErr error, email string) bool {
-		_ = hw
-		_ = hr
-		_ = httpCode
+	srv.LoginFailed = func(_ http.ResponseWriter, _ *http.Request, _ int, callErr error, email string) bool {
 		if !errors.Is(callErr, ErrOAuth2Callback) {
 			t.Fatal(callErr)
 		}
@@ -204,8 +199,7 @@ func Test_handleAuthResponseOAuthErrorCallbackReceivesSessionEmail(t *testing.T)
 		nil,
 	)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime)})
 	sess.Set(srv.SessionKey, map[string]any{"email": "user@example.com"})
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 

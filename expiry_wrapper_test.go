@@ -38,16 +38,19 @@ func TestProtectedRequestPreservesPendingLoginOnAuthExpiry(t *testing.T) {
 	if sess == nil || pendingState == "" {
 		t.Fatal("missing pending flow")
 	}
-	sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), time.Now().Add(-time.Second))
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(-time.Second))
 	protected := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
 	protected.RemoteAddr = "192.0.2.1:1234"
 	protected.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("expired auth reached protected handler") })).ServeHTTP(response, protected)
-	if response.Code != http.StatusConflict || len(response.Result().Cookies()) != 0 {
+	if response.Code != http.StatusFound || len(response.Result().Cookies()) != 0 {
 		t.Fatalf("protected request during login: status=%d cookies=%v", response.Code, response.Result().Cookies())
 	}
-	gotState, _ := sess.Get(srv.sessionKey(oauth2StateKey)).(string)
+	if location, err := url.Parse(response.Header().Get("Location")); err != nil || location.Query().Get("state") != pendingState {
+		t.Fatalf("pending redirect: location=%q err=%v", response.Header().Get("Location"), err)
+	}
+	gotState := testOAuthFlow(sess, srv).state
 	if gotState != pendingState {
 		t.Fatalf("protected request replaced pending login state: want %q got %q", pendingState, gotState)
 	}

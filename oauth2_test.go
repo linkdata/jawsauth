@@ -209,14 +209,15 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	if sess == nil {
 		t.Fatal("missing session")
 	}
-	state, _ := sess.Get(oauth2StateKey).(string)
+	flow := testOAuthFlow(sess, nil)
+	state := flow.state
 	if len(state) != 64 {
 		t.Fatal(state)
 	}
 	if _, err = hex.DecodeString(state); err != nil {
 		t.Fatal(err)
 	}
-	verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
+	verifier := flow.verifier
 	if verifier == "" {
 		t.Fatal("missing pkce verifier")
 	}
@@ -231,14 +232,14 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	if gotMethod := values.Get("code_challenge_method"); gotMethod != "S256" {
 		t.Fatal(gotMethod)
 	}
-	nonce, _ := sess.Get(oauth2NonceKey).(string)
+	nonce := flow.nonce
 	if len(nonce) != 64 {
 		t.Fatal(nonce)
 	}
 	if gotNonce := values.Get("nonce"); gotNonce != nonce {
 		t.Fatal(gotNonce)
 	}
-	referrer, _ := sess.Get(oauth2ReferrerKey).(string)
+	referrer := flow.referrer
 	if referrer != "/secure" {
 		t.Fatal(referrer)
 	}
@@ -278,14 +279,14 @@ func Test_handleLoginCreatesSessionAndRotatesState(t *testing.T) {
 	if sess == nil {
 		t.Fatal("missing session")
 	}
-	firstState, _ := sess.Get(oauth2StateKey).(string)
+	firstState := testOAuthFlow(sess, nil).state
 	if firstState == "" {
 		t.Fatal("missing state")
 	}
 
 	rec = httptest.NewRecorder()
 	srv.HandleLogin(rec, req)
-	secondState, _ := sess.Get(oauth2StateKey).(string)
+	secondState := testOAuthFlow(sess, nil).state
 	if secondState == "" {
 		t.Fatal("missing replacement state")
 	}
@@ -310,14 +311,10 @@ func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/logout", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2PKCEVerifierKey, "verifier123")
-	sess.Set(oauth2NonceKey, "nonce123")
-	sess.Set(oauth2ReferrerKey, "/protected")
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: "verifier123", nonce: "nonce123", referrer: "/protected"})
 	sess.Set(srv.SessionKey, map[string]any{"email": "user@example.com"})
 	sess.Set(srv.SessionTokenKey, oauth2.StaticTokenSource(makeOAuth2Token("access", "", "")))
-	sess.Set(oauth2IDTokenExpiryKey, time.Now().Add(time.Hour))
+	sess.Set(oauth2AuthExpiryKey, time.Now().Add(time.Hour))
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 	sess.Set(srv.SessionEmailVerifiedKey, true)
 
@@ -330,19 +327,10 @@ func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
 		t.Fatal(resp.Status)
 	}
 	closeResponseBody(t, resp)
-	if value := sess.Get(oauth2StateKey); value != nil {
+	if value := sess.Get(oauth2FlowKey); value != nil {
 		t.Fatal(value)
 	}
-	if value := sess.Get(oauth2PKCEVerifierKey); value != nil {
-		t.Fatal(value)
-	}
-	if value := sess.Get(oauth2NonceKey); value != nil {
-		t.Fatal(value)
-	}
-	if value := sess.Get(oauth2ReferrerKey); value != nil {
-		t.Fatal(value)
-	}
-	if value := sess.Get(oauth2IDTokenExpiryKey); value != nil {
+	if value := sess.Get(oauth2AuthExpiryKey); value != nil {
 		t.Fatal(value)
 	}
 }
@@ -441,11 +429,7 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state="+wantState+"&code="+wantCode, nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, wantState)
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2PKCEVerifierKey, verifier)
-	sess.Set(oauth2NonceKey, wantNonce)
-	sess.Set(oauth2ReferrerKey, "/secure")
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: wantState, expiry: time.Now().Add(oauth2FlowLifetime), verifier: verifier, nonce: wantNonce, referrer: "/secure"})
 
 	oldSession := sess
 	srv.HandleAuthResponse(rec, req)
@@ -487,14 +471,8 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	if receivedProviderErr != nil {
 		t.Fatal(receivedProviderErr)
 	}
-	if gotState, _ := sess.Get(oauth2StateKey).(string); gotState != "" {
-		t.Fatal(gotState)
-	}
-	if gotVerifier, _ := sess.Get(oauth2PKCEVerifierKey).(string); gotVerifier != "" {
-		t.Fatal(gotVerifier)
-	}
-	if gotNonce, _ := sess.Get(oauth2NonceKey).(string); gotNonce != "" {
-		t.Fatal(gotNonce)
+	if value := sess.Get(oauth2FlowKey); value != nil {
+		t.Fatal(value)
 	}
 	if gotEmail, _ := sess.Get(srv.SessionEmailKey).(string); gotEmail != "idtoken@example.com" {
 		t.Fatal(gotEmail)
@@ -572,10 +550,7 @@ func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state&code=code", nil).WithContext(ctx)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, wantNonce)
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: wantNonce})
 
 	oldSession := sess
 	srv.HandleAuthResponse(rec, req)
@@ -640,9 +615,7 @@ func Test_handleAuthResponseMissingPKCEVerifier(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -681,14 +654,10 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 	expiry := time.Now().Add(time.Hour).Truncate(time.Second)
 	sess.Set(srv.SessionKey, claims)
 	sess.Set(srv.SessionTokenKey, tokenSource)
-	sess.Set(oauth2IDTokenExpiryKey, expiry)
+	sess.Set(oauth2AuthExpiryKey, expiry)
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 	sess.Set(srv.SessionEmailVerifiedKey, true)
-	sess.Set(oauth2StateKey, "legit")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce")
-	sess.Set(oauth2ReferrerKey, "/secure")
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "legit", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce", referrer: "/secure"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -710,7 +679,7 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 	if got := sess.Get(srv.SessionTokenKey); got != tokenSource {
 		t.Fatal(got)
 	}
-	if got, _ := sess.Get(oauth2IDTokenExpiryKey).(time.Time); !got.Equal(expiry) {
+	if got, _ := sess.Get(oauth2AuthExpiryKey).(time.Time); !got.Equal(expiry) {
 		t.Fatal(got)
 	}
 	if got, _ := sess.Get(srv.SessionEmailKey).(string); got != "user@example.com" {
@@ -719,16 +688,17 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 	if got, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool); !got {
 		t.Fatal(got)
 	}
-	if got := sess.Get(oauth2StateKey); got != "legit" {
+	flow := testOAuthFlow(sess, nil)
+	if got := flow.state; got != "legit" {
 		t.Fatal(got)
 	}
-	if got := sess.Get(oauth2PKCEVerifierKey); got == nil {
+	if got := flow.verifier; got == "" {
 		t.Fatal(got)
 	}
-	if got := sess.Get(oauth2NonceKey); got != "nonce" {
+	if got := flow.nonce; got != "nonce" {
 		t.Fatal(got)
 	}
-	if got := sess.Get(oauth2ReferrerKey); got != "/secure" {
+	if got := flow.referrer; got != "/secure" {
 		t.Fatal(got)
 	}
 }
@@ -771,8 +741,7 @@ func Test_extractEmailVerified(t *testing.T) {
 }
 
 func TestServer_fetchUserInfoStatusError(t *testing.T) {
-	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
-		_ = hr
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
 		hw.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer provider.Close()
@@ -833,8 +802,7 @@ func TestServer_fetchUserInfoRespectsRequestCancellation(t *testing.T) {
 }
 
 func TestServer_fetchUserInfoOversizedStatusError(t *testing.T) {
-	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
-		_ = hr
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
 		hw.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = io.WriteString(hw, strings.Repeat("x", 32769))
 	}))
@@ -1013,10 +981,7 @@ func Test_handleAuthResponseMissingIDToken(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -1080,10 +1045,7 @@ func Test_handleAuthResponseInvalidIDToken(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -1147,10 +1109,7 @@ func Test_handleAuthResponseAudienceMismatch(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -1214,10 +1173,7 @@ func Test_handleAuthResponseNonceMismatch(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -1575,10 +1531,8 @@ func Test_handleAuthResponseMissingNonce(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	// deliberately leave oauth2NonceKey unset to exercise the missing-nonce branch
+	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier()})
+	// deliberately leave nonce unset to exercise the missing-nonce branch
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -1650,10 +1604,7 @@ func Test_handlersRejectNonGet(t *testing.T) {
 				rec := httptest.NewRecorder()
 				req := httptest.NewRequest(method, "http://example.com/oauth2/callback", nil)
 				sess := jw.NewSession(rec, req)
-				sess.Set(oauth2StateKey, "state123")
-				sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-				sess.Set(oauth2PKCEVerifierKey, "verifier123")
-				sess.Set(oauth2NonceKey, "nonce123")
+				setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: "verifier123", nonce: "nonce123"})
 
 				h.handler(srv)(rec, req)
 
@@ -1665,13 +1616,14 @@ func Test_handlersRejectNonGet(t *testing.T) {
 				if loc := resp.Header.Get("Location"); loc != "" {
 					t.Fatalf("unexpected Location header: %q", loc)
 				}
-				if got, _ := sess.Get(oauth2StateKey).(string); got != "state123" {
+				flow := testOAuthFlow(sess, nil)
+				if got := flow.state; got != "state123" {
 					t.Fatal(got)
 				}
-				if got, _ := sess.Get(oauth2PKCEVerifierKey).(string); got != "verifier123" {
+				if got := flow.verifier; got != "verifier123" {
 					t.Fatal(got)
 				}
-				if got, _ := sess.Get(oauth2NonceKey).(string); got != "nonce123" {
+				if got := flow.nonce; got != "nonce123" {
 					t.Fatal(got)
 				}
 			})
@@ -1729,7 +1681,7 @@ func TestRedirectTargetBounds(t *testing.T) {
 			if !tc.accepted {
 				want = "/"
 			}
-			if got := jw.GetSession(req).Get(oauth2ReferrerKey); got != want {
+			if got := testOAuthFlow(jw.GetSession(req), nil).referrer; got != want {
 				t.Errorf("referer=%v length=%d: unexpected stored target", referer, tc.length)
 			}
 			jw.Close()

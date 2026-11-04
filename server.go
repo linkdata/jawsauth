@@ -71,8 +71,8 @@ type EventFunc func(sess *jaws.Session, hr *http.Request)
 // when logging them and escape them for the output format when rendering them.
 type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
-// LinkFunc receives the current session and a newly verified identity before
-// any session rotation. Serialize the final current-auth check and durable link
+// LinkFunc receives the current session and a newly verified identity. Serialize
+// the final current-auth check and durable link
 // write with logout and other provider auth revocation. Return zero and nil on
 // success, or an HTTP error status.
 type LinkFunc func(sess *jaws.Session, hr *http.Request, claims map[string]any) (statusCode int, err error)
@@ -148,12 +148,10 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 	if cfg != nil {
 		srv.namespace = cfg.Namespace
 		srv.issuer = cfg.Issuer
-		if cfg.Namespace != "" {
-			srv.SessionKey = srv.sessionKey(srv.SessionKey)
-			srv.SessionTokenKey = srv.sessionKey(srv.SessionTokenKey)
-			srv.SessionEmailKey = srv.sessionKey(srv.SessionEmailKey)
-			srv.SessionEmailVerifiedKey = srv.sessionKey(srv.SessionEmailVerifiedKey)
-		}
+		srv.SessionKey = srv.sessionKey(srv.SessionKey)
+		srv.SessionTokenKey = srv.sessionKey(srv.SessionTokenKey)
+		srv.SessionEmailKey = srv.sessionKey(srv.SessionEmailKey)
+		srv.SessionEmailVerifiedKey = srv.sessionKey(srv.SessionEmailVerifiedKey)
 	}
 	if cfg != nil && handleFn != nil && cfg.RedirectURL != "" {
 		setupCtx, cancel := context.WithTimeout(context.Background(), oauth2ProviderTimeout)

@@ -21,29 +21,27 @@ Login callback token/profile calls and startup discovery have a 15-second deadli
 OIDC background refresh requests have the same maximum timeout.
 Profile responses are capped at 32 KiB.
 
-For multiple providers on one JaWS instance, give each `Config` a distinct
-`Namespace` and callback directory (for example, `/oauth/github/callback` and
-`/oauth/gitlab/callback`). `New` sets `Jaws.MakeAuth` for its own Server, so
-install a composite `MakeAuth` after creating all provider Servers if pages need
-to recognize more than one provider. Use `Server.CurrentClaims` to check each
-provider's live session auth there. `HandleLink` is an opt-in POST handler:
-authorize the existing session before calling it, then set `Server.LinkEvent` to
-recheck the original identity and accept the newly verified subject. A successful
-link keeps the original session; ordinary login still rotates it. Link callbacks
-run only while the original JaWS session and one-use flow state remain valid.
-Successful linking keeps the session whose idle grace was extended for the
-provider visit. With no connected pages, that authenticated session can retain
-that grace until the original flow's grace deadline, about ten minutes plus
-the callback allowance after link start. `LinkEvent` must serialize its final
-current-auth check and durable link write with logout and any other provider's
-auth revocation. Set each provider's `SessionRotationLock` to the same lock so
-ordinary login callbacks, timer or wrapper auth revocation, and the built-in
-`HandleLogout` serialize with that write. Applications calling `Server.Logout`
-must take the shared lock around that call when they use `LinkEvent` for durable writes.
-The original session is rechecked inside that lock, and the lock is not held
-during provider requests. Without this serialization, jawsauth cannot roll back
-an application write if revocation finishes while `LinkEvent` is running; it
-rejects the stale callback response.
+For multiple providers on one JaWS instance:
+
+- Give each `Config` a distinct `Namespace` and callback directory, such as
+  `/oauth/github/callback` and `/oauth/gitlab/callback`.
+- `New` sets `Jaws.MakeAuth` for one provider. Install a composite `MakeAuth`
+  after creating the servers if pages need both. Use `Server.CurrentClaims`
+  to check each provider's live authentication.
+- `HandleLink` is an opt-in POST handler. Authorize the existing session before
+  calling it. Set `Server.LinkEvent` to recheck that identity and accept the
+  newly verified subject. A link keeps the original session; login rotates it.
+  A link callback requires the original live JaWS session and one-use flow state.
+- Serialize `LinkEvent`'s final current-auth check and durable write with logout
+  and other provider auth revocation. Give each provider's `SessionRotationLock`
+  the same lock. This serializes login rotation, timer and wrapper revocation,
+  and built-in `HandleLogout` with the write. Hold that lock around direct calls
+  to `Server.Logout` when linking writes are durable. Provider requests run
+  outside the lock. A stale callback is rejected, but an application link write
+  cannot be rolled back after revocation.
+
+The provider visit extends the original session's idle grace. A successful
+link can retain that grace even with no connected pages until its deadline.
 
 Admin allowlists match parsed addresses with ASCII case ignored; non-ASCII
 characters are matched exactly. Session email values use the same case rules.
@@ -78,7 +76,9 @@ explicit logout cancels either flow.
 For a successful ordinary callback, this cancellation applies until its final
 revocation check. Logout of the old session after that check cannot sign out
 the rotated successor session.
-Protected requests during a pending login return 409 instead of replacing that flow.
+Protected requests during a pending login return to that provider flow without
+replacing its state or renewing its session grace. A request during the callback
+returns 409 until it finishes.
 Connected pages receive the reload command before their sockets close; pending
 pages reload when they connect. Protected renders also recheck authorization when
 the HTTP handler returns, retiring requests attached during a concurrent revocation.

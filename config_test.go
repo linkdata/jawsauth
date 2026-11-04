@@ -19,8 +19,7 @@ func newOIDCDiscoveryServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	var server *httptest.Server
 	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/openid-configuration", func(hw http.ResponseWriter, hr *http.Request) {
-		_ = hr
+	mux.HandleFunc("/.well-known/openid-configuration", func(hw http.ResponseWriter, _ *http.Request) {
 		data := map[string]any{
 			"issuer":                 server.URL,
 			"authorization_endpoint": server.URL + "/oauth2/auth",
@@ -31,8 +30,7 @@ func newOIDCDiscoveryServer(t *testing.T) *httptest.Server {
 		hw.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(hw).Encode(data)
 	})
-	mux.HandleFunc("/oauth2/jwks", func(hw http.ResponseWriter, hr *http.Request) {
-		_ = hr
+	mux.HandleFunc("/oauth2/jwks", func(hw http.ResponseWriter, _ *http.Request) {
 		hw.Header().Set("Content-Type", "application/json")
 		_, _ = hw.Write([]byte(`{"keys":[]}`))
 	})
@@ -270,7 +268,7 @@ func TestConfigValidateRejectsInsecureOIDCOverrides(t *testing.T) {
 			*endpoint = "http://provider.example/endpoint"
 			err := cfg.Validate()
 			var configErr errConfig
-			if !errors.Is(err, ErrConfigOIDCEndpointMustBeHTTPS) || !errors.As(err, &configErr) || configErr.field != field {
+			if !errors.Is(err, ErrConfigEndpointMustBeHTTPS) || !errors.As(err, &configErr) || configErr.field != field {
 				t.Fatalf("%s override validation: %v", field, err)
 			}
 			cfg.AllowInsecureIssuer = true
@@ -278,7 +276,7 @@ func TestConfigValidateRejectsInsecureOIDCOverrides(t *testing.T) {
 				t.Fatalf("dev override validation: %v", err)
 			}
 			*endpoint = "ftp://provider.example/endpoint"
-			if err := cfg.Validate(); !errors.Is(err, ErrConfigOIDCEndpointMustBeHTTPS) {
+			if err := cfg.Validate(); !errors.Is(err, ErrConfigEndpointMustBeHTTPS) {
 				t.Fatalf("non-HTTP dev override validation: %v", err)
 			}
 		})
@@ -317,10 +315,29 @@ func TestConfigBuildContextRejectsInsecureOIDCMetadata(t *testing.T) {
 			if !errors.Is(err, ErrOIDCProviderMetadata) || !errors.As(err, &configErr) || configErr.field != tc.field {
 				t.Fatalf("%s metadata validation: %v", tc.key, err)
 			}
-			if tc.value != "" && !errors.Is(err, ErrConfigOIDCEndpointMustBeHTTPS) {
+			if tc.value != "" && !errors.Is(err, ErrConfigEndpointMustBeHTTPS) {
 				t.Fatalf("%s did not reject HTTP: %v", tc.key, err)
 			}
 		})
+	}
+}
+
+func TestConfigBuildContextUsesSecureOverridesForInsecureMetadata(t *testing.T) {
+	var issuer string
+	provider := httptest.NewTLSServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(hw).Encode(map[string]string{
+			"issuer": issuer, "authorization_endpoint": "http://provider.example/auth",
+			"token_endpoint":    "http://provider.example/token",
+			"userinfo_endpoint": "http://provider.example/userinfo", "jwks_uri": issuer + "/jwks",
+		})
+	}))
+	defer provider.Close()
+	issuer = provider.URL
+	cfg := Config{RedirectURL: "https://app.example/callback", Issuer: issuer, ClientID: "client", HTTPClient: provider.Client(),
+		AuthURL: "https://override.example/auth", TokenURL: "https://override.example/token", UserInfoURL: "https://override.example/userinfo"}
+	got, userInfoURL, _, err := cfg.buildContext(t.Context(), "")
+	if err != nil || got == nil || got.Endpoint.AuthURL != cfg.AuthURL || got.Endpoint.TokenURL != cfg.TokenURL || userInfoURL != cfg.UserInfoURL {
+		t.Fatalf("secure overrides: config=%v userInfoURL=%q err=%v", got, userInfoURL, err)
 	}
 }
 

@@ -28,7 +28,7 @@ func TestServerCurrentClaimsChecksExpiryAndJaWSSession(t *testing.T) {
 	if srv.CurrentClaims(sess) != nil {
 		t.Fatal("claims without verified expiry were accepted")
 	}
-	sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), time.Now().Add(time.Hour))
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
 	if got := srv.CurrentClaims(sess); got["sub"] != "42" {
 		t.Fatalf("live claims: %v", got)
 	}
@@ -40,11 +40,11 @@ func TestServerCurrentClaimsChecksExpiryAndJaWSSession(t *testing.T) {
 	if (&Server{Jaws: other, SessionKey: srv.SessionKey, namespace: srv.namespace}).CurrentClaims(sess) != nil {
 		t.Fatal("another JaWS instance accepted session")
 	}
-	sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), time.Now().Add(-time.Second))
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(-time.Second))
 	if srv.CurrentClaims(sess) != nil {
 		t.Fatal("expired authentication returned claims")
 	}
-	sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), time.Now().Add(time.Hour))
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
 	sess.Close()
 	if srv.CurrentClaims(sess) != nil {
 		t.Fatal("closed session returned claims")

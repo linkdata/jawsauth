@@ -24,18 +24,20 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const oauth2ReferrerKey = "oauth2referrer"
-const oauth2StateKey = "oauth2state"
-const oauth2PKCEVerifierKey = "oauth2pkceverifier"
-const oauth2NonceKey = "oauth2nonce"
-const oauth2IDTokenExpiryKey = "oauth2idtokenexpiry" // #nosec G101
-const oauth2FlowExpiryKey = "oauth2flowexpiry"
-const oauth2LinkKey = "oauth2link"
+const oauth2FlowKey = "oauth2flow"
+const oauth2AuthExpiryKey = "oauth2idtokenexpiry" // #nosec G101
 
 const oauth2FlowLifetime = 10 * time.Minute
 const oauth2ProviderTimeout = 15 * time.Second
+const profileAuthLifetime = 24 * time.Hour
+const maxUserInfoBytes = 32 << 10
+
+// Leave one second after the provider deadline for the callback to finish.
+const oauth2FlowGrace = oauth2FlowLifetime + oauth2ProviderTimeout + time.Second
 
 type pendingOAuthFlow struct {
+	state    string
+	expiry   time.Time
 	verifier string
 	nonce    string
 	referrer string
@@ -55,20 +57,15 @@ func (flow pendingOAuthFlow) revoked() bool {
 func (srv *Server) takeOAuthFlow(sess *jaws.Session, gotState string) (flow pendingOAuthFlow, err error) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	wantState, _ := sess.Get(srv.sessionKey(oauth2StateKey)).(string)
-	if wantState == "" {
+	flow, _ = sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
+	if flow.state == "" {
 		return flow, ErrOAuth2MissingState
 	}
-	if gotState != wantState {
+	if gotState != flow.state {
 		return flow, ErrOAuth2WrongState
 	}
-	flow.verifier, _ = sess.Get(srv.sessionKey(oauth2PKCEVerifierKey)).(string)
-	flow.nonce, _ = sess.Get(srv.sessionKey(oauth2NonceKey)).(string)
-	flow.referrer, _ = sess.Get(srv.sessionKey(oauth2ReferrerKey)).(string)
-	flow.link, _ = sess.Get(srv.sessionKey(oauth2LinkKey)).(bool)
-	expiry, _ := sess.Get(srv.sessionKey(oauth2FlowExpiryKey)).(time.Time)
 	srv.clearSessionOAuthFlow(sess)
-	if !time.Now().Before(expiry) {
+	if !time.Now().Before(flow.expiry) {
 		return flow, ErrOAuth2ExpiredState
 	}
 	flow.canceled = make(chan struct{})
@@ -80,9 +77,6 @@ func (srv *Server) takeOAuthFlow(sess *jaws.Session, gotState string) (flow pend
 }
 
 func (srv *Server) finishOAuthFlow(sess *jaws.Session, flow pendingOAuthFlow) {
-	if flow.canceled == nil {
-		return
-	}
 	srv.mu.Lock()
 	if srv.oauthCallbacks[sess].canceled == flow.canceled {
 		delete(srv.oauthCallbacks, sess)
@@ -157,33 +151,30 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 // identity. The application must authorize this POST before calling it and
 // recheck that identity in LinkEvent when the provider returns.
 func (srv *Server) HandleLink(hw http.ResponseWriter, hr *http.Request) {
-	srv.startOAuth(hw, hr, true, false)
+	switch {
+	case hr.Method != http.MethodPost:
+		srv.writeResult(hw, http.StatusMethodNotAllowed, nil, nil)
+	case linkOriginCheck.Check(hr) != nil:
+		srv.writeResult(hw, http.StatusForbidden, ErrOAuth2InvalidOrigin, nil)
+	case srv.oauth2cfg == nil || srv.LinkEvent == nil:
+		srv.writeResult(hw, http.StatusInternalServerError, ErrOAuth2NotConfigured, nil)
+	case srv.Jaws.GetSession(hr) == nil:
+		srv.writeResult(hw, http.StatusForbidden, ErrOAuth2MissingSession, nil)
+	default:
+		srv.startOAuth(hw, hr, true, false)
+	}
 }
+
+var linkOriginCheck = http.NewCrossOriginProtection()
 
 func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, preservePendingLogin bool) {
 	statusCode := http.StatusMethodNotAllowed
-	if (!link && hr.Method == http.MethodGet) || (link && hr.Method == http.MethodPost) {
-		if link && http.NewCrossOriginProtection().Check(hr) != nil {
-			srv.writeResult(hw, http.StatusForbidden, ErrOAuth2LinkRejected, nil)
-			return
-		}
+	if link || hr.Method == http.MethodGet {
 		oauth2cfg, location := srv.begin(hr)
-		if link && oauth2cfg == nil {
-			srv.writeResult(hw, http.StatusInternalServerError, ErrOAuth2NotConfigured, nil)
-			return
-		}
 		if oauth2cfg != nil {
 			sess := srv.Jaws.GetSession(hr)
 			if sess == nil && !link {
 				sess = srv.Jaws.NewSession(hw, hr)
-			}
-			if link && sess == nil {
-				srv.writeResult(hw, http.StatusForbidden, ErrOAuth2MissingSession, nil)
-				return
-			}
-			if link && srv.LinkEvent == nil {
-				srv.writeResult(hw, http.StatusInternalServerError, ErrOAuth2NotConfigured, nil)
-				return
 			}
 			if sess == nil {
 				hw.Header().Set("Retry-After", "60")
@@ -200,27 +191,38 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 			}
 			verifier := oauth2.GenerateVerifier()
 			authOptions = append(authOptions, oauth2.S256ChallengeOption(verifier))
-			if link && location == hr.RequestURI {
+			if link && strings.TrimSpace(hr.Referer()) == "" {
 				location = "/"
 			}
 			srv.mu.Lock()
 			if preservePendingLogin && srv.pendingOrdinaryLoginLocked(sess) {
+				stored, _ := sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
 				srv.mu.Unlock()
-				srv.writeResult(hw, http.StatusConflict, errors.New("oauth2 login already in progress"), nil)
+				if stored.state != "" && stored.verifier != "" {
+					options := append([]oauth2.AuthCodeOption{}, srv.Options...)
+					if stored.nonce != "" {
+						options = append(options, oidc.Nonce(stored.nonce))
+					}
+					options = append(options, oauth2.S256ChallengeOption(stored.verifier))
+					hw.Header().Set("Location", oauth2cfg.AuthCodeURL(stored.state, options...))
+					SetHeaders(hw, srv.ishttps)
+					hw.WriteHeader(http.StatusFound)
+				} else {
+					srv.writeResult(hw, http.StatusConflict, ErrOAuth2LoginInProgress, nil)
+				}
 				return
 			}
-			if !sess.ExtendGrace(oauth2FlowLifetime + oauth2ProviderTimeout + time.Second) {
+			if !sess.ExtendGrace(oauth2FlowGrace) {
 				srv.mu.Unlock()
+				hw.Header().Set("Retry-After", "60")
 				srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
 				return
 			}
 			srv.clearSessionOAuthFlow(sess)
-			sess.Set(srv.sessionKey(oauth2StateKey), state)
-			sess.Set(srv.sessionKey(oauth2FlowExpiryKey), flowExpiry)
-			sess.Set(srv.sessionKey(oauth2LinkKey), link)
-			sess.Set(srv.sessionKey(oauth2NonceKey), nonce)
-			sess.Set(srv.sessionKey(oauth2PKCEVerifierKey), verifier)
-			sess.Set(srv.sessionKey(oauth2ReferrerKey), location)
+			sess.Set(srv.sessionKey(oauth2FlowKey), pendingOAuthFlow{
+				state: state, expiry: flowExpiry, link: link, nonce: nonce,
+				verifier: verifier, referrer: location,
+			})
 			srv.mu.Unlock()
 			location = oauth2cfg.AuthCodeURL(state, authOptions...)
 		}
@@ -240,7 +242,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method == http.MethodGet {
 		_, location := srv.begin(hr)
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			srv.clearSessionAuth(sess, hr, nil, false, srv.SessionRotationLock)
+			srv.clearSessionAuth(sess, hr, nil, false, true)
 		}
 		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
@@ -295,11 +297,20 @@ var ErrOAuth2ExpiredState = errors.New("oauth2 expired state")
 // ErrOAuth2MissingPKCEVerifier means the callback session did not contain the required PKCE verifier.
 var ErrOAuth2MissingPKCEVerifier = errors.New("oauth2 missing pkce verifier")
 
+// ErrOAuth2LoginInProgress means a callback has consumed the pending login state.
+var ErrOAuth2LoginInProgress = errors.New("oauth2 login already in progress")
+
+// ErrOAuth2InvalidOrigin means a link start request failed the same-origin check.
+var ErrOAuth2InvalidOrigin = errors.New("oauth2 invalid origin")
+
 // ErrUserInfoStatus means the UserInfo endpoint returned a non-200 HTTP status.
 var ErrUserInfoStatus = errors.New("userinfo status")
 
 // ErrUserInfoTooLarge means the authenticated profile exceeded the response limit.
 var ErrUserInfoTooLarge = errors.New("userinfo response too large")
+
+// ErrUserInfoInvalidResponse means the UserInfo response contained trailing JSON data.
+var ErrUserInfoInvalidResponse = errors.New("userinfo invalid response")
 
 // ErrOAuth2InvalidProfile means an authenticated profile lacked a stable subject.
 var ErrOAuth2InvalidProfile = errors.New("oauth2 invalid profile")
@@ -395,8 +406,8 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 				return nil, fmt.Errorf("%w %s", ErrUserInfoStatus, resp.Status)
 			}
 			var body []byte
-			if body, err = io.ReadAll(io.LimitReader(resp.Body, 32769)); err == nil {
-				if len(body) > 32768 {
+			if body, err = io.ReadAll(io.LimitReader(resp.Body, maxUserInfoBytes+1)); err == nil {
+				if len(body) > maxUserInfoBytes {
 					err = ErrUserInfoTooLarge
 				} else {
 					decoder := json.NewDecoder(bytes.NewReader(body))
@@ -407,7 +418,8 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 					if err == nil {
 						var extra any
 						if trailingErr := decoder.Decode(&extra); trailingErr != io.EOF {
-							err = ErrOAuth2InvalidProfile
+							err = ErrUserInfoInvalidResponse
+							userinfo = nil
 						}
 					}
 				}
@@ -426,18 +438,13 @@ func (srv *Server) addUserInfoClaims(ctx context.Context, claims map[string]any,
 func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token, nonce string) (claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, status int, err error) {
 	status = http.StatusUnauthorized
 	if srv.idTokenVerifier != nil {
-		err = ErrOIDCMissingIDToken
-		raw, _ := token.Extra("id_token").(string)
-		if raw == "" {
-			return
+		var raw string
+		if token != nil {
+			raw, _ = token.Extra("id_token").(string)
 		}
-		var idToken *oidc.IDToken
-		idToken, err = srv.idTokenVerifier.Verify(ctx, raw)
-		if wrapOIDC(ErrOIDCInvalidIDToken, &err) != nil {
-			return
-		}
-		if idToken.Subject == "" {
-			return nil, nil, time.Time{}, status, errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCMissingSubject}
+		idToken, verifiedClaims, verifyErr := srv.verifyIDToken(ctx, raw)
+		if verifyErr != nil {
+			return nil, nil, time.Time{}, status, verifyErr
 		}
 		err = ErrOIDCMissingNonce
 		if nonce == "" {
@@ -447,10 +454,7 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 		if idToken.Nonce != nonce {
 			return
 		}
-		err = idToken.Claims(&claims)
-		if wrapOIDC(ErrOIDCInvalidIDToken, &err) != nil {
-			return
-		}
+		claims = verifiedClaims
 		tokenSource = srv.oauth2cfg.TokenSource(srv.oauth2Context(context.Background()), token)
 		srv.addUserInfoClaims(ctx, claims, oauth2.StaticTokenSource(token))
 		if err = srv.identityExpiryError(idToken.Expiry); err != nil {
@@ -475,12 +479,15 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 	}
 	var subject string
 	subject, err = srv.profileSubject(claims)
+	if err != nil && srv.Jaws != nil {
+		_ = srv.Jaws.Log(err)
+	}
 	if err != nil || subject == "" {
 		return nil, nil, time.Time{}, status, ErrOAuth2InvalidProfile
 	}
 	claims["iss"] = srv.issuer
 	claims["sub"] = subject
-	expiry = time.Now().Add(24 * time.Hour)
+	expiry = time.Now().Add(profileAuthLifetime)
 	if !token.Expiry.IsZero() && token.Expiry.Before(expiry) {
 		expiry = token.Expiry
 	}
@@ -518,12 +525,67 @@ func (srv *Server) rotateOAuthSession(hw http.ResponseWriter, hr *http.Request, 
 	return srv.Jaws.NewSession(hw, hr), false
 }
 
+func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map[string]any, flow pendingOAuthFlow) (status int, err error) {
+	if srv.LinkEvent == nil || flow.revoked() || srv.Jaws.GetSession(hr) != sess {
+		return http.StatusForbidden, ErrOAuth2MissingSession
+	}
+	status, linkErr := srv.LinkEvent(sess, hr, claims)
+	if linkErr != nil || status != 0 {
+		_ = srv.Jaws.Log(linkErr)
+		if status < 400 || status > 599 {
+			status = http.StatusForbidden
+		}
+		return status, ErrOAuth2LinkRejected
+	}
+	if flow.revoked() || srv.Jaws.GetSession(hr) != sess || !sessionAlive(sess) {
+		return http.StatusForbidden, ErrOAuth2MissingSession
+	}
+	return http.StatusFound, nil
+}
+
+func (srv *Server) completeLogin(hw http.ResponseWriter, hr *http.Request, old *jaws.Session, flow pendingOAuthFlow, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time) (sess *jaws.Session, status int, err error) {
+	sess, status, err = old, http.StatusServiceUnavailable, ErrOAuth2MissingSession
+	_, hadAuth := srv.sessionAuthStatus(old, nil)
+	rotated, stale := srv.rotateOAuthSession(hw, hr, old, flow)
+	if rotated == nil {
+		if stale {
+			status = http.StatusForbidden
+		} else {
+			hw.Header().Set("Retry-After", "60")
+		}
+		return
+	}
+	if flow.revoked() {
+		http.SetCookie(hw, rotated.Close())
+		return old, http.StatusForbidden, ErrOAuth2MissingSession
+	}
+	srv.mu.Lock()
+	hadTimer := srv.authTimers[old.ID()] != nil
+	srv.stopSessionAuthTimerLocked(old, nil)
+	srv.mu.Unlock()
+	if hadAuth && hadTimer && srv.LogoutEvent != nil {
+		srv.LogoutEvent(old, hr)
+	}
+	sess = rotated
+	err = srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, nil, flow.canceled)
+	if err != nil {
+		http.SetCookie(hw, rotated.Close())
+		if errors.Is(err, ErrOAuth2MissingSession) {
+			status = http.StatusForbidden
+		} else {
+			status = http.StatusUnauthorized
+		}
+		return
+	}
+	return sess, http.StatusFound, nil
+}
+
 // HandleAuthResponse handles the OIDC or OAuth2 profile callback endpoint.
 //
 // For GET requests it validates the state, exchanges the authorization code using the
 // stored PKCE verifier, verifies the ID token or authenticated profile, and stores
-// claims in a new session. A link flow instead invokes [Server.LinkEvent] before
-// rotation and keeps the original session. It invokes [Server.LoginEvent] after a
+// claims in a new session. A link flow instead invokes [Server.LinkEvent]
+// and keeps the original session. It invokes [Server.LoginEvent] after a
 // new sign-in or [Server.LoginFailed] on failure. Non-GET requests receive 405.
 //
 // Rotation discards pre-login application data and requires a free JaWS session slot.
@@ -535,9 +597,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 
 	if hr.Method == http.MethodGet {
 		oauth2Config, location := srv.begin(hr)
-		var sessValue any
 		var sessEmail string
-		var linked bool
 		var flow pendingOAuthFlow
 		providerCtx, cancel := context.WithTimeout(hr.Context(), oauth2ProviderTimeout)
 		defer cancel()
@@ -573,77 +633,18 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 										err = ErrOAuth2MissingSession
 										statusCode = http.StatusForbidden
 									} else if flow.link {
-										statusCode = http.StatusForbidden
-										err = ErrOAuth2MissingSession
-										if srv.LinkEvent != nil && !flow.revoked() && srv.Jaws.GetSession(hr) == sess {
-											var linkErr error
-											statusCode, linkErr = srv.LinkEvent(sess, hr, claims)
-											if linkErr == nil && statusCode == 0 {
-												if flow.revoked() || srv.Jaws.GetSession(hr) != sess || !sessionAlive(sess) {
-													err = ErrOAuth2MissingSession
-													statusCode = http.StatusForbidden
-												} else {
-													err = nil
-													sessValue = claims
-													linked = true
-												}
-											} else {
-												_ = srv.Jaws.Log(linkErr)
-												err = ErrOAuth2LinkRejected
-											}
-										}
-										if err != nil && (statusCode < 400 || statusCode > 599) {
-											statusCode = http.StatusForbidden
-										}
-										if err == nil {
-											if flow.referrer != "" {
-												location = sanitizeRedirectTarget(hr.Host, flow.referrer)
-											}
-											hw.Header().Set("Location", location)
-											statusCode = http.StatusFound
-										}
+										statusCode, err = srv.completeLink(sess, hr, claims, flow)
 									} else {
-										_, hadAuth := srv.sessionAuthStatus(sess, nil)
-										err = ErrOAuth2MissingSession
-										statusCode = http.StatusServiceUnavailable
-										if rotated, stale := srv.rotateOAuthSession(hw, hr, sess, flow); rotated != nil {
-											if flow.revoked() {
-												http.SetCookie(hw, rotated.Close())
-												err = ErrOAuth2MissingSession
-												statusCode = http.StatusForbidden
-											} else {
-												srv.mu.Lock()
-												hadTimer := srv.authTimers[sess.ID()] != nil
-												srv.stopSessionAuthTimerLocked(sess, nil)
-												srv.mu.Unlock()
-												if hadAuth && hadTimer && srv.LogoutEvent != nil {
-													srv.LogoutEvent(sess, hr)
-												}
-												sess = rotated
-												err = srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, nil, flow.canceled)
-												if err != nil {
-													http.SetCookie(hw, rotated.Close())
-													if errors.Is(err, ErrOAuth2MissingSession) {
-														statusCode = http.StatusForbidden
-													} else {
-														statusCode = http.StatusUnauthorized
-													}
-												}
-											}
-										} else if stale {
-											statusCode = http.StatusForbidden
-										} else {
-											hw.Header().Set("Retry-After", "60")
-										}
+										sess, statusCode, err = srv.completeLogin(hw, hr, sess, flow, claims, tokenSource, expiry)
 										if err == nil {
-											sessValue = claims
 											sessEmail, _ = sess.Get(srv.SessionEmailKey).(string)
-											if flow.referrer != "" {
-												location = sanitizeRedirectTarget(hr.Host, flow.referrer)
-											}
-											hw.Header().Set("Location", location)
-											statusCode = http.StatusFound
 										}
+									}
+									if err == nil {
+										if flow.referrer != "" {
+											location = sanitizeRedirectTarget(hr.Host, flow.referrer)
+										}
+										hw.Header().Set("Location", location)
 									}
 								}
 							}
@@ -653,16 +654,16 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			}
 		}
 		if sess != nil {
-			if sessValue == nil {
+			if err != nil {
 				srv.Jaws.Dirty(sess)
-			} else if !linked {
+			} else if !flow.link {
 				if srv.LoginEvent != nil && !flow.revoked() {
 					srv.LoginEvent(sess, hr)
 				}
 				current, present := srv.sessionAuthStatus(sess, time.Now)
 				if flow.revoked() || !current || !sessionAlive(sess) {
 					if present {
-						srv.Logout(sess, hr)
+						srv.clearSessionAuth(sess, hr, nil, false, true)
 					}
 					http.SetCookie(hw, sess.Close())
 					hw.Header().Del("Location")

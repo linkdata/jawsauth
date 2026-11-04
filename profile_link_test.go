@@ -37,7 +37,7 @@ func TestOAuthProfileConfigRequiresExplicitSecureEndpoints(t *testing.T) {
 		t.Fatalf("missing profile URL: %v", err)
 	}
 	cfg.UserInfoURL = "http://provider.example/user"
-	if err := cfg.Validate(); !errors.Is(err, ErrConfigProfileEndpointMustBeHTTPS) {
+	if err := cfg.Validate(); !errors.Is(err, ErrConfigEndpointMustBeHTTPS) {
 		t.Fatalf("insecure profile URL: %v", err)
 	}
 }
@@ -53,9 +53,9 @@ func TestOAuthProfileConfigInsecureModeAllowsHTTPOnly(t *testing.T) {
 		want error
 	}{
 		{"issuer", func(c *Config) { c.Issuer = "ftp://provider.example" }, ErrConfigIssuerMustBeHTTPS},
-		{"authorize", func(c *Config) { c.AuthURL = "ftp://provider.example/authorize" }, ErrConfigProfileEndpointMustBeHTTPS},
-		{"token", func(c *Config) { c.TokenURL = "ftp://provider.example/token" }, ErrConfigProfileEndpointMustBeHTTPS},
-		{"userinfo", func(c *Config) { c.UserInfoURL = "ftp://provider.example/user" }, ErrConfigProfileEndpointMustBeHTTPS},
+		{"authorize", func(c *Config) { c.AuthURL = "ftp://provider.example/authorize" }, ErrConfigEndpointMustBeHTTPS},
+		{"token", func(c *Config) { c.TokenURL = "ftp://provider.example/token" }, ErrConfigEndpointMustBeHTTPS},
+		{"userinfo", func(c *Config) { c.UserInfoURL = "ftp://provider.example/user" }, ErrConfigEndpointMustBeHTTPS},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base
@@ -176,27 +176,15 @@ func TestOAuthProfileRotationLockDoesNotBlockProvider(t *testing.T) {
 	defer release()
 	result := make(chan *httptest.ResponseRecorder, 1)
 	go func() { result <- profileCallback(srv, cookie, state, "proof") }()
-	select {
-	case <-providerReached:
-	case <-time.After(5 * time.Second):
-		t.Fatal("provider request blocked by session rotation lock")
-	}
-	select {
-	case <-lock.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("callback did not reach session rotation")
-	}
+	waitFor(t, providerReached, "provider request blocked by session rotation lock")
+	waitFor(t, lock.entered, "callback did not reach session rotation")
 	if jw.GetSession(oldRequest) != old {
 		t.Fatal("session rotated before acquiring lock")
 	}
 	release()
-	select {
-	case response := <-result:
-		if response.Code != http.StatusFound || len(response.Result().Cookies()) != 1 || jw.GetSession(oldRequest) != nil {
-			t.Fatalf("callback after rotation lock: status=%d cookies=%v", response.Code, response.Result().Cookies())
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("callback did not finish after rotation lock released")
+	response := waitFor(t, result, "callback did not finish after rotation lock released")
+	if response.Code != http.StatusFound || len(response.Result().Cookies()) != 1 || jw.GetSession(oldRequest) != nil {
+		t.Fatalf("callback after rotation lock: status=%d cookies=%v", response.Code, response.Result().Cookies())
 	}
 }
 
@@ -237,11 +225,7 @@ func TestOAuthFailedCallbackDoesNotEraseNewFlow(t *testing.T) {
 	cookie, firstState := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	firstResult := make(chan int, 1)
 	go func() { firstResult <- profileCallback(srv, cookie, firstState, "first").Code }()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("first callback did not reach provider")
-	}
+	waitFor(t, entered, "first callback did not reach provider")
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
 	r.RemoteAddr = "192.0.2.1:1234"
 	r.Header.Set("Referer", "https://app.example/second")
@@ -257,17 +241,12 @@ func TestOAuthFailedCallbackDoesNotEraseNewFlow(t *testing.T) {
 	}
 	secondState := location.Query().Get("state")
 	releaseCallback()
-	select {
-	case code := <-firstResult:
-		if code == http.StatusFound {
-			t.Fatal("failed callback signed in")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("failed callback did not finish")
+	if code := waitFor(t, firstResult, "failed callback did not finish"); code == http.StatusFound {
+		t.Fatal("failed callback signed in")
 	}
 	sess := jw.GetSession(r)
-	if sess == nil || sess.Get(srv.sessionKey(oauth2StateKey)) != secondState ||
-		sess.Get(srv.sessionKey(oauth2ReferrerKey)) != "/second" {
+	if sess == nil || testOAuthFlow(sess, srv).state != secondState ||
+		testOAuthFlow(sess, srv).referrer != "/second" {
 		t.Fatal("failed callback erased the newer flow")
 	}
 	second := profileCallback(srv, cookie, secondState, "second")
@@ -310,11 +289,7 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 			}
 			result := make(chan *httptest.ResponseRecorder, 1)
 			go func() { result <- profileCallback(srv, cookie, state, "first") }()
-			select {
-			case <-entered:
-			case <-time.After(5 * time.Second):
-				t.Fatal("callback did not reach provider")
-			}
+			waitFor(t, entered, "callback did not reach provider")
 
 			var nextState string
 			if action == "logout" {
@@ -342,17 +317,13 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 
 			releaseOnce.Do(func() { close(release) })
 			var w *httptest.ResponseRecorder
-			select {
-			case w = <-result:
-			case <-time.After(5 * time.Second):
-				t.Fatal("canceled callback did not finish")
-			}
+			w = waitFor(t, result, "canceled callback did not finish")
 			if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || logins != 0 {
 				t.Fatalf("canceled callback: status=%d cookies=%v logins=%d", w.Code, w.Result().Cookies(), logins)
 			}
-			storedState, _ := sess.Get(srv.sessionKey(oauth2StateKey)).(string)
+			storedState := testOAuthFlow(sess, srv).state
 			if sess.Get(srv.SessionKey) != nil || storedState != nextState {
-				t.Fatalf("canceled callback changed session or new flow: claims=%v state=%v", sess.Get(srv.SessionKey), sess.Get(srv.sessionKey(oauth2StateKey)))
+				t.Fatalf("canceled callback changed session or new flow: claims=%v state=%v", sess.Get(srv.SessionKey), storedState)
 			}
 		})
 	}
@@ -404,21 +375,13 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 	_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
 	result := make(chan *httptest.ResponseRecorder, 1)
 	go func() { result <- profileCallback(srv, cookie, linkState, "second") }()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("link callback did not reach provider")
-	}
+	waitFor(t, entered, "link callback did not reach provider")
 	if !srv.Logout(sess, nil) {
 		t.Fatal("logout did not clear linked session")
 	}
 	releaseOnce.Do(func() { close(release) })
 	var w *httptest.ResponseRecorder
-	select {
-	case w = <-result:
-	case <-time.After(5 * time.Second):
-		t.Fatal("canceled link callback did not finish")
-	}
+	w = waitFor(t, result, "canceled link callback did not finish")
 	if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || links != 0 || sess.Get(srv.SessionKey) != nil {
 		t.Fatalf("canceled link: status=%d cookies=%v links=%d claims=%v", w.Code, w.Result().Cookies(), links, sess.Get(srv.SessionKey))
 	}
@@ -463,11 +426,7 @@ func TestOAuthProfileLinkRevokedDuringEventRejectsCallback(t *testing.T) {
 			_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
 			result := make(chan *httptest.ResponseRecorder, 1)
 			go func() { result <- profileCallback(srv, cookie, linkState, "second") }()
-			select {
-			case <-entered:
-			case <-time.After(5 * time.Second):
-				t.Fatal("LinkEvent was not reached")
-			}
+			waitFor(t, entered, "LinkEvent was not reached")
 			if action == "logout" {
 				if !srv.Logout(sess, nil) {
 					t.Fatal("logout failed")
@@ -480,11 +439,7 @@ func TestOAuthProfileLinkRevokedDuringEventRejectsCallback(t *testing.T) {
 			}
 			releaseOnce.Do(func() { close(release) })
 			var response *httptest.ResponseRecorder
-			select {
-			case response = <-result:
-			case <-time.After(5 * time.Second):
-				t.Fatal("revoked link callback did not finish")
-			}
+			response = waitFor(t, result, "revoked link callback did not finish")
 			if response.Code != http.StatusForbidden || response.Header().Get("Location") != "" ||
 				len(response.Result().Cookies()) != 0 || links != 1 || sess.Get(srv.SessionKey) != nil {
 				t.Fatalf("revoked link: status=%d location=%q cookies=%v links=%d claims=%v",
@@ -567,7 +522,7 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 						srv.mu.Unlock()
 						factory.timer(0).fire()
 					case "wrapper":
-						sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), time.Now().Add(-time.Second))
+						sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(-time.Second))
 						wrapper{server: srv}.ServeHTTP(httptest.NewRecorder(), req)
 					case "handler logout":
 						srv.HandleLogout(httptest.NewRecorder(), req)
@@ -583,34 +538,18 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 				}
 				callbackDone := make(chan *httptest.ResponseRecorder, 1)
 				go func() { callbackDone <- profileCallback(srv, cookie, linkState, "second") }()
-				select {
-				case <-checked:
-				case <-time.After(5 * time.Second):
-					t.Fatal("link did not check current auth")
-				}
+				waitFor(t, checked, "link did not check current auth")
 				revoked := make(chan struct{})
 				go func() { revoke(); close(revoked) }()
-				select {
-				case <-lock.second:
-				case <-time.After(5 * time.Second):
-					t.Fatal("revocation did not reach rotation lock")
-				}
+				waitFor(t, lock.second, "revocation did not reach rotation lock")
 				select {
 				case <-revoked:
 					t.Fatal("revocation completed before durable link write")
 				default:
 				}
 				releaseEvent()
-				select {
-				case <-revoked:
-				case <-time.After(5 * time.Second):
-					t.Fatal("revocation did not finish after link write")
-				}
-				select {
-				case <-callbackDone:
-				case <-time.After(5 * time.Second):
-					t.Fatal("link callback did not finish")
-				}
+				waitFor(t, revoked, "revocation did not finish after link write")
+				waitFor(t, callbackDone, "link callback did not finish")
 				if writes != 1 || logoutEvents.Load() != 1 {
 					t.Fatalf("durable link writes = %d, logout events = %d", writes, logoutEvents.Load())
 				}
@@ -679,11 +618,7 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 				})}
 				result = make(chan *httptest.ResponseRecorder, 1)
 				go func() { result <- profileCallback(srv, cookie, state, "second") }()
-				select {
-				case <-entered:
-				case <-time.After(5 * time.Second):
-					t.Fatal("new login callback did not reach token exchange")
-				}
+				waitFor(t, entered, "new login callback did not reach token exchange")
 			}
 			srv.mu.Lock()
 			srv.authTimers[sess.ID()].expiry = time.Now().Add(-time.Second)
@@ -692,17 +627,25 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 			if sess.Get(srv.SessionKey) != nil {
 				t.Fatal("expired original auth remained")
 			}
-			if phase == "pending" && sess.Get(srv.sessionKey(oauth2StateKey)) != state {
+			if phase == "pending" && testOAuthFlow(sess, srv).state != state {
 				t.Fatal("auth expiry erased pending login state")
+			}
+			if phase == "callback" {
+				protected := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+				protected.RemoteAddr = start.RemoteAddr
+				protected.AddCookie(cookie)
+				conflict := httptest.NewRecorder()
+				srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					t.Fatal("pending callback reached protected handler")
+				})).ServeHTTP(conflict, protected)
+				if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), ErrOAuth2LoginInProgress.Error()) {
+					t.Fatalf("pending callback: status=%d body=%q", conflict.Code, conflict.Body.String())
+				}
 			}
 			var response *httptest.ResponseRecorder
 			if phase == "callback" {
 				releaseOnce.Do(func() { close(release) })
-				select {
-				case response = <-result:
-				case <-time.After(5 * time.Second):
-					t.Fatal("new login callback did not finish")
-				}
+				response = waitFor(t, result, "new login callback did not finish")
 			} else {
 				response = profileCallback(srv, cookie, state, "second")
 			}
@@ -885,7 +828,9 @@ func TestOAuthProfileExpiredLinkStateNeverCallsProvider(t *testing.T) {
 	r.RemoteAddr = "192.0.2.1:1234"
 	r.AddCookie(cookie)
 	sess := jw.GetSession(r)
-	sess.Set(srv.sessionKey(oauth2FlowExpiryKey), time.Now().Add(-time.Second))
+	flow := testOAuthFlow(sess, srv)
+	flow.expiry = time.Now().Add(-time.Second)
+	setTestOAuthFlow(sess, srv, flow)
 	before := calls
 	response := profileCallback(srv, cookie, linkState, "second")
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), ErrOAuth2ExpiredState.Error()) || calls != before {
@@ -1119,7 +1064,7 @@ func TestOAuthProfileExplicitZeroExpiryRejectedButOmittedExpiryCapped(t *testing
 			if sess == nil || sess.Get(srv.SessionKey) == nil {
 				t.Fatal("omitted expiry did not authenticate")
 			}
-			expiry, _ := sess.Get(srv.sessionKey(oauth2IDTokenExpiryKey)).(time.Time)
+			expiry, _ := sess.Get(srv.sessionKey(oauth2AuthExpiryKey)).(time.Time)
 			if remaining := time.Until(expiry); remaining < 23*time.Hour || remaining > 24*time.Hour {
 				t.Fatalf("omitted expiry cap = %s", remaining)
 			}
@@ -1159,45 +1104,6 @@ func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
 	factory.timer(1).fire()
 	if sess.Get(srv.SessionKey) != nil || !factory.timer(1).isStopped() {
 		t.Fatal("profile auth remained after expiry timer")
-	}
-}
-
-func TestOAuthProfileAuthTimerLogIsModeSpecific(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
-	logger := &testAuthDebugLogger{}
-	jw.Debug = true
-	jw.Logger = logger
-	calls := 0
-	srv := newProfileTestServer(t, jw, &calls)
-	factory := &testAuthTimerFactory{}
-	srv.authTimerAfterFunc = factory.after
-	req := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
-	sess := jw.NewSession(httptest.NewRecorder(), req)
-	if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "42"}, nil, time.Now().Add(time.Hour), nil); err != nil {
-		t.Fatal(err)
-	}
-	record, ok := logger.info("jawsauth: scheduled auth timer")
-	if !ok {
-		t.Fatal("missing neutral auth timer log")
-	}
-	foundMode := false
-	for i := 0; i+1 < len(record.args); i += 2 {
-		if record.args[i] == "mode" {
-			foundMode = true
-			if record.args[i+1] != "profile" {
-				t.Fatalf("timer mode = %v", record.args[i+1])
-			}
-		}
-		if record.args[i] == "refresh_skew" {
-			t.Fatal("profile timer log claims refresh skew")
-		}
-	}
-	if !foundMode {
-		t.Fatal("profile timer mode missing")
 	}
 }
 

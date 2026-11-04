@@ -10,6 +10,23 @@ import (
 	"golang.org/x/oauth2"
 )
 
+func testOAuthFlow(sess *jaws.Session, srv *Server) pendingOAuthFlow {
+	key := oauth2FlowKey
+	if srv != nil {
+		key = srv.sessionKey(key)
+	}
+	flow, _ := sess.Get(key).(pendingOAuthFlow)
+	return flow
+}
+
+func setTestOAuthFlow(sess *jaws.Session, srv *Server, flow pendingOAuthFlow) {
+	key := oauth2FlowKey
+	if srv != nil {
+		key = srv.sessionKey(key)
+	}
+	sess.Set(key, flow)
+}
+
 func TestOAuthFlowNamespacesShareSessionWithoutSharingState(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {
@@ -50,17 +67,7 @@ func TestOAuthFlowNamespacesShareSessionWithoutSharingState(t *testing.T) {
 	if sess == nil || jw.GetSession(linkRequest) != sess {
 		t.Fatal("shared session missing")
 	}
-	type flowState struct {
-		state, verifier, nonce string
-		link                   bool
-	}
-	read := func(srv *Server) flowState {
-		state, _ := sess.Get(srv.sessionKey(oauth2StateKey)).(string)
-		verifier, _ := sess.Get(srv.sessionKey(oauth2PKCEVerifierKey)).(string)
-		nonce, _ := sess.Get(srv.sessionKey(oauth2NonceKey)).(string)
-		link, _ := sess.Get(srv.sessionKey(oauth2LinkKey)).(bool)
-		return flowState{state, verifier, nonce, link}
-	}
+	read := func(srv *Server) pendingOAuthFlow { return testOAuthFlow(sess, srv) }
 	githubState, gitlabState := read(github), read(gitlab)
 	if githubState.state == "" || githubState.verifier == "" || githubState.nonce == "" ||
 		gitlabState.state == "" || gitlabState.verifier == "" || gitlabState.nonce == "" ||

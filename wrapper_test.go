@@ -45,7 +45,7 @@ func TestWrapperServeHTTPSet403HandlerConcurrent(t *testing.T) {
 		"exp": time.Now().Add(time.Hour).Unix(),
 		"ok":  true,
 	})
-	sess.Set(oauth2IDTokenExpiryKey, time.Now().Add(time.Hour))
+	sess.Set(oauth2AuthExpiryKey, time.Now().Add(time.Hour))
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 
 	w := wrapper{
@@ -92,7 +92,7 @@ func TestWrapperServeHTTPAllowsPresentAuthData(t *testing.T) {
 		"exp":   time.Now().Add(time.Hour).Unix(),
 		"email": "user@example.com",
 	})
-	sess.Set(oauth2IDTokenExpiryKey, time.Now().Add(time.Hour))
+	sess.Set(oauth2AuthExpiryKey, time.Now().Add(time.Hour))
 
 	w := wrapper{
 		server:  srv,
@@ -140,7 +140,7 @@ func TestWrapperServeHTTPClearsInvalidAuthData(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
 			sess.Set(srv.SessionKey, tc.authValue)
-			sess.Set(oauth2IDTokenExpiryKey, tc.expiry)
+			sess.Set(oauth2AuthExpiryKey, tc.expiry)
 
 			w := wrapper{
 				server:  srv,
@@ -222,7 +222,7 @@ func TestSessionAuthStatus(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
 			sess.Set(srv.SessionKey, tc.authValue)
-			sess.Set(oauth2IDTokenExpiryKey, tc.expiryValue)
+			sess.Set(oauth2AuthExpiryKey, tc.expiryValue)
 
 			gotCurrent, gotPresent := srv.sessionAuthStatus(sess, func() time.Time { return now })
 			if gotCurrent != tc.wantCurrent {
@@ -333,7 +333,7 @@ func assertWrapperAuthCleared(t *testing.T, srv *Server, sess *jaws.Session) {
 	if value := sess.Get(srv.SessionTokenKey); value != nil {
 		t.Fatal(value)
 	}
-	if value := sess.Get(oauth2IDTokenExpiryKey); value != nil {
+	if value := sess.Get(oauth2AuthExpiryKey); value != nil {
 		t.Fatal(value)
 	}
 	if value := sess.Get(srv.SessionEmailKey); value != nil {

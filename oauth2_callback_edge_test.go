@@ -44,11 +44,10 @@ func TestOIDCCallbackRejectsEmptySubject(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state&code=code", nil)
 			w := httptest.NewRecorder()
 			sess := jw.NewSession(w, req)
-			sess.Set(oauth2StateKey, "state")
-			sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-			sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-			sess.Set(oauth2NonceKey, "nonce")
-			sess.Set(oauth2LinkKey, link)
+			setTestOAuthFlow(sess, nil, pendingOAuthFlow{
+				state: "state", expiry: time.Now().Add(oauth2FlowLifetime),
+				verifier: oauth2.GenerateVerifier(), nonce: "nonce", link: link,
+			})
 			if link {
 				sess.Set(srv.SessionKey, map[string]any{"sub": "existing"})
 			}
@@ -99,10 +98,10 @@ func TestOIDCExpiryDuringUserInfoRejected(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state&code=code", nil)
 		w := httptest.NewRecorder()
 		sess := jw.NewSession(w, req)
-		sess.Set(oauth2StateKey, "state")
-		sess.Set(oauth2FlowExpiryKey, time.Now().Add(oauth2FlowLifetime))
-		sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-		sess.Set(oauth2NonceKey, "nonce")
+		setTestOAuthFlow(sess, nil, pendingOAuthFlow{
+			state: "state", expiry: time.Now().Add(oauth2FlowLifetime),
+			verifier: oauth2.GenerateVerifier(), nonce: "nonce",
+		})
 
 		srv.HandleAuthResponse(w, req)
 		if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), ErrOIDCInvalidIDToken.Error()) ||
@@ -186,11 +185,7 @@ func TestOAuthLogoutDuringLoginEventClosesRotatedSession(t *testing.T) {
 	result := make(chan *httptest.ResponseRecorder, 1)
 	go func() { result <- profileCallback(srv, cookie, state, "first") }()
 	var rotated *jaws.Session
-	select {
-	case rotated = <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("LoginEvent was not reached")
-	}
+	rotated = waitFor(t, entered, "LoginEvent was not reached")
 	if rotated == preauth || rotated.Get(srv.SessionKey) == nil {
 		t.Fatal("LoginEvent did not receive an authenticated rotated session")
 	}
@@ -199,11 +194,7 @@ func TestOAuthLogoutDuringLoginEventClosesRotatedSession(t *testing.T) {
 	}
 	releaseOnce.Do(func() { close(release) })
 	var w *httptest.ResponseRecorder
-	select {
-	case w = <-result:
-	case <-time.After(5 * time.Second):
-		t.Fatal("canceled callback did not finish")
-	}
+	w = waitFor(t, result, "canceled callback did not finish")
 	cookies := w.Result().Cookies()
 	if w.Code != http.StatusForbidden || w.Header().Get("Location") != "" || len(cookies) != 2 || cookies[1].MaxAge >= 0 ||
 		cookies[1].Name != cookies[0].Name || cookies[1].Value != cookies[0].Value ||
