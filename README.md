@@ -35,8 +35,11 @@ provider visit. With no connected pages, that authenticated session can retain
 that grace until the original flow's grace deadline, about ten minutes plus
 the callback allowance after link start. `LinkEvent` must serialize its final
 current-auth check and durable link write with logout and any other provider's
-auth revocation. jawsauth cannot roll back an application write if revocation
-finishes while `LinkEvent` is running; it rejects the stale callback response.
+auth revocation. Set each provider's `SessionRotationLock` to the same lock so
+ordinary login callbacks serialize JaWS session replacement with that write;
+the lock is not held during provider requests. jawsauth cannot roll back an
+application write if revocation finishes while `LinkEvent` is running; it
+rejects the stale callback response.
 
 Admin allowlists match parsed addresses with ASCII case ignored; non-ASCII
 characters are matched exactly. Session email values use the same case rules.

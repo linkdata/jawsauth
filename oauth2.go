@@ -499,6 +499,14 @@ func profileTokenUnexpired(token *oauth2.Token) bool {
 	return token.Expiry.After(time.Now())
 }
 
+func (srv *Server) rotateOAuthSession(hw http.ResponseWriter, hr *http.Request) *jaws.Session {
+	if srv.SessionRotationLock != nil {
+		srv.SessionRotationLock.Lock()
+		defer srv.SessionRotationLock.Unlock()
+	}
+	return srv.Jaws.NewSession(hw, hr)
+}
+
 // HandleAuthResponse handles the OIDC or OAuth2 profile callback endpoint.
 //
 // For GET requests it validates the state, exchanges the authorization code using the
@@ -587,7 +595,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 										_, hadAuth := srv.sessionAuthStatus(sess, nil)
 										err = ErrOAuth2MissingSession
 										statusCode = http.StatusServiceUnavailable
-										if rotated := srv.Jaws.NewSession(hw, hr); rotated != nil {
+										if rotated := srv.rotateOAuthSession(hw, hr); rotated != nil {
 											if flow.revoked() {
 												http.SetCookie(hw, rotated.Close())
 												err = ErrOAuth2MissingSession

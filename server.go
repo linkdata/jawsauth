@@ -92,6 +92,7 @@ type Server struct {
 	LogoutEvent             EventFunc               // if not nil, called after auth is cleared; hr may be nil
 	LoginFailed             FailedFunc              // if not nil, called on failed login
 	LinkEvent               LinkFunc                // if not nil, enables HandleLink
+	SessionRotationLock     sync.Locker             // optional; held only while an ordinary callback replaces its JaWS session
 	Options                 []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
 
 	// RequireVerifiedAdminEmail requires email_verified for a non-empty admin list.

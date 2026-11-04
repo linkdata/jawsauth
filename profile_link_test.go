@@ -136,6 +136,70 @@ func TestOAuthProfileCallbackStateIsSingleUseConcurrently(t *testing.T) {
 	}
 }
 
+type rotationNoticeLock struct {
+	mu      sync.Mutex
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (l *rotationNoticeLock) Lock() {
+	l.once.Do(func() { close(l.entered) })
+	l.mu.Lock()
+}
+
+func (l *rotationNoticeLock) Unlock() { l.mu.Unlock() }
+
+func TestOAuthProfileRotationLockDoesNotBlockProvider(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	calls := 0
+	srv := newProfileTestServer(t, jw, &calls)
+	providerReached := make(chan struct{})
+	srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/token" {
+			close(providerReached)
+			return profileTestResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
+		}
+		return profileTestResponse(`{"id":42}`), nil
+	})}
+	lock := &rotationNoticeLock{entered: make(chan struct{})}
+	srv.SessionRotationLock = lock
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	oldRequest := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
+	oldRequest.AddCookie(cookie)
+	old := jw.GetSession(oldRequest)
+	lock.mu.Lock()
+	release := sync.OnceFunc(func() { lock.mu.Unlock() })
+	defer release()
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() { result <- profileCallback(srv, cookie, state, "proof") }()
+	select {
+	case <-providerReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider request blocked by session rotation lock")
+	}
+	select {
+	case <-lock.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback did not reach session rotation")
+	}
+	if jw.GetSession(oldRequest) != old {
+		t.Fatal("session rotated before acquiring lock")
+	}
+	release()
+	select {
+	case response := <-result:
+		if response.Code != http.StatusFound || len(response.Result().Cookies()) != 1 || jw.GetSession(oldRequest) != nil {
+			t.Fatalf("callback after rotation lock: status=%d cookies=%v", response.Code, response.Result().Cookies())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback did not finish after rotation lock released")
+	}
+}
+
 func TestOAuthFailedCallbackDoesNotEraseNewFlow(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {
