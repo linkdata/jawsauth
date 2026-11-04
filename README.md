@@ -9,6 +9,7 @@ Verified OIDC or OAuth2 profile authentication for [JaWS](https://github.com/lin
 - OIDC mode discovers the issuer, verifies `id_token` and nonce, and refreshes before expiry.
 - Profile mode accepts explicit HTTPS endpoints and a `Config.ProfileSubject` verifier for providers without ID tokens. Its authenticated profile response must contain a stable subject; email and names are not identity proof. JSON numbers arrive as `json.Number` so large numeric IDs remain exact.
 - Both modes use authorization-code state and PKCE (S256). Pending flows expire after ten minutes; jawsauth extends only that JaWS session's grace while the user visits the provider.
+- For providers that require an offline-access request to issue refresh tokens, set `Server.Options = []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}` before serving. This adds `access_type=offline` to the authorization redirect, not the token request.
 - Profile authentication expires after 24 hours or the provider token's earlier expiry; it does not attempt OIDC refresh.
 - Supports admin-only handlers: `Wrap`/`Handler` for any authenticated user, `WrapAdmin`/`HandlerAdmin` gated by `SetAdmins`.
 
@@ -29,6 +30,10 @@ authorize the existing session before calling it, then set `Server.LinkEvent` to
 recheck the original identity and accept the newly verified subject. A successful
 link keeps the original session; ordinary login still rotates it. Link callbacks
 run only while the original JaWS session and one-use flow state remain valid.
+Successful linking keeps the session whose idle grace was extended for the
+provider visit. With no connected pages, that authenticated session can retain
+that grace until the original flow's grace deadline, about ten minutes plus
+the callback allowance after link start.
 
 Admin allowlists match parsed addresses with ASCII case ignored; non-ASCII
 characters are matched exactly. Session email values use the same case rules.

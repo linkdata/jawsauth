@@ -442,7 +442,7 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 		}
 		return claims, tokenSource, idToken.Expiry, status, nil
 	}
-	if srv.profileSubject == nil || token.AccessToken == "" || !token.Valid() {
+	if srv.profileSubject == nil || !profileTokenUnexpired(token) {
 		return nil, nil, time.Time{}, status, ErrOAuth2InvalidProfile
 	}
 	status = http.StatusBadGateway
@@ -450,7 +450,7 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 	if err != nil {
 		return
 	}
-	if !token.Valid() {
+	if !profileTokenUnexpired(token) {
 		return nil, nil, time.Time{}, http.StatusUnauthorized, ErrOAuth2InvalidProfile
 	}
 	status = http.StatusUnauthorized
@@ -472,6 +472,10 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 		return nil, nil, time.Time{}, status, err
 	}
 	return claims, nil, expiry, status, nil
+}
+
+func profileTokenUnexpired(token *oauth2.Token) bool {
+	return token != nil && token.AccessToken != "" && (token.Expiry.IsZero() || token.Expiry.After(time.Now()))
 }
 
 // HandleAuthResponse handles the OIDC or OAuth2 profile callback endpoint.
@@ -517,13 +521,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 						err = ErrOAuth2MissingPKCEVerifier
 						if flow.verifier != "" {
 							var token *oauth2.Token
-							exchangeOptions := []oauth2.AuthCodeOption{
-								oauth2.VerifierOption(flow.verifier),
-							}
-							if srv.profileSubject == nil {
-								exchangeOptions = append(exchangeOptions, oauth2.AccessTypeOffline)
-							}
-							if token, err = oauth2Config.Exchange(authctx, hr.FormValue("code") /* #nosec G120 */, exchangeOptions...); srv.Jaws.Log(err) == nil {
+							if token, err = oauth2Config.Exchange(authctx, hr.FormValue("code") /* #nosec G120 */, oauth2.VerifierOption(flow.verifier)); srv.Jaws.Log(err) == nil {
 								var claims map[string]any
 								var tokenSource oauth2.TokenSource
 								var expiry time.Time
@@ -560,7 +558,6 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 											statusCode = http.StatusFound
 										}
 									} else {
-										requests := sess.Requests()
 										_, hadAuth := srv.sessionAuthStatus(sess, nil)
 										err = ErrOAuth2MissingSession
 										statusCode = http.StatusServiceUnavailable
@@ -574,7 +571,6 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 												hadTimer := srv.authTimers[sess.ID()] != nil
 												srv.stopSessionAuthTimerLocked(sess, nil)
 												srv.mu.Unlock()
-												reloadAuthRequests(requests)
 												if hadAuth && hadTimer && srv.LogoutEvent != nil {
 													srv.LogoutEvent(sess, hr)
 												}

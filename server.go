@@ -90,7 +90,7 @@ type Server struct {
 	LogoutEvent             EventFunc               // if not nil, called after auth is cleared; hr may be nil
 	LoginFailed             FailedFunc              // if not nil, called on failed login
 	LinkEvent               LinkFunc                // if not nil, enables HandleLink
-	Options                 []oauth2.AuthCodeOption // options to use, see https://pkg.go.dev/golang.org/x/oauth2#AuthCodeOption
+	Options                 []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
 
 	// RequireVerifiedAdminEmail requires email_verified for a non-empty admin list.
 	//

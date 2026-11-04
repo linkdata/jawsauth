@@ -815,6 +815,55 @@ func TestServer_fetchUserInfoDoesNotFollowBearerRedirect(t *testing.T) {
 	}
 }
 
+func TestOAuthOfflineOptionUsesAuthorizationOnly(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := newWrapperTestServer(jw, "https://issuer.example")
+	srv.Options = []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
+	var idToken string
+	var tokenAccessType, tokenVerifier, tokenCode string
+	srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/token" {
+			t.Fatalf("unexpected provider request %s", r.URL)
+		}
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		tokenAccessType = r.PostForm.Get("access_type")
+		tokenVerifier = r.PostForm.Get("code_verifier")
+		tokenCode = r.PostForm.Get("code")
+		return profileTestResponse(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`), nil
+	})}
+	start := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
+	startResult := httptest.NewRecorder()
+	srv.HandleLogin(startResult, start)
+	if startResult.Code != http.StatusFound || len(startResult.Result().Cookies()) != 1 {
+		t.Fatalf("login start: status=%d cookies=%v", startResult.Code, startResult.Result().Cookies())
+	}
+	location, err := url.Parse(startResult.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if location.Query().Get("access_type") != "offline" || location.Query().Get("state") == "" || location.Query().Get("nonce") == "" {
+		t.Fatalf("authorization location = %s", location)
+	}
+	idToken = makeIDToken(t, map[string]any{
+		"iss": "https://issuer.example", "aud": "client", "sub": "person", "nonce": location.Query().Get("nonce"),
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	callback := httptest.NewRequest(http.MethodGet,
+		"http://example.com/oauth2/callback?state="+url.QueryEscape(location.Query().Get("state"))+"&code=example-code", nil)
+	callback.AddCookie(startResult.Result().Cookies()[0])
+	result := httptest.NewRecorder()
+	srv.HandleAuthResponse(result, callback)
+	if result.Code != http.StatusFound || tokenAccessType != "" || tokenVerifier == "" || tokenCode != "example-code" {
+		t.Fatalf("exchange: status=%d access_type=%q verifier=%q code=%q body=%q", result.Code, tokenAccessType, tokenVerifier, tokenCode, result.Body.String())
+	}
+}
+
 func TestVerifyOIDCUserInfoDoesNotRefreshDuringCallback(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {

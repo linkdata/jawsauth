@@ -608,6 +608,35 @@ func TestOAuthProfileRejectsTokenExpiredDuringUserInfo(t *testing.T) {
 	}
 }
 
+func TestOAuthProfileAcceptsShortUnexpiredToken(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		jw, err := jaws.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer jw.Close()
+		srv := &Server{Jaws: jw, issuer: "https://provider.example", userinfoUrl: "https://provider.example/user",
+			profileSubject: func(map[string]any) (string, error) { return "42", nil }}
+		calls := 0
+		ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			calls++
+			if got := r.Header.Get("Authorization"); got != "Bearer access" {
+				t.Fatalf("userinfo authorization = %q", got)
+			}
+			return profileTestResponse(`{"id":42}`), nil
+		})})
+		token := &oauth2.Token{AccessToken: "access", TokenType: "Bearer", Expiry: time.Now().Add(5 * time.Second)}
+		if token.Valid() {
+			t.Fatal("test token should be inside oauth2's refresh skew")
+		}
+		claims, source, expiry, status, err := srv.verifyOAuthIdentity(ctx, token, "")
+		if err != nil || status != http.StatusUnauthorized || calls != 1 || source != nil || claims["sub"] != "42" ||
+			!expiry.Equal(token.Expiry) {
+			t.Fatalf("short token: claims=%v source=%v expiry=%v status=%d calls=%d err=%v", claims, source, expiry, status, calls, err)
+		}
+	})
+}
+
 func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {
