@@ -536,8 +536,10 @@ func TestOAuthProfileLinkSerializesInternalRevocation(t *testing.T) {
 				sess := jw.GetSession(req)
 				lock := &observedRotationLock{second: make(chan struct{})}
 				srv.SessionRotationLock = lock
+				var logoutEvents atomic.Int32
 				srv.LogoutEvent = func(*jaws.Session, *http.Request) {
 					lock.Lock()
+					logoutEvents.Add(1)
 					lock.Unlock()
 				}
 				checked := make(chan struct{})
@@ -571,8 +573,8 @@ func TestOAuthProfileLinkSerializesInternalRevocation(t *testing.T) {
 				if revocationFirst {
 					revoke()
 					response := profileCallback(srv, cookie, linkState, "second")
-					if response.Code < http.StatusBadRequest || writes != 0 {
-						t.Fatalf("revocation won: status=%d writes=%d", response.Code, writes)
+					if response.Code < http.StatusBadRequest || writes != 0 || logoutEvents.Load() != 1 {
+						t.Fatalf("revocation won: status=%d writes=%d logout events=%d", response.Code, writes, logoutEvents.Load())
 					}
 					return
 				}
@@ -606,8 +608,8 @@ func TestOAuthProfileLinkSerializesInternalRevocation(t *testing.T) {
 				case <-time.After(5 * time.Second):
 					t.Fatal("link callback did not finish")
 				}
-				if writes != 1 {
-					t.Fatalf("durable link writes = %d", writes)
+				if writes != 1 || logoutEvents.Load() != 1 {
+					t.Fatalf("durable link writes = %d, logout events = %d", writes, logoutEvents.Load())
 				}
 			})
 		}
