@@ -117,14 +117,21 @@ func TestOAuthProfileCallbackStateIsSingleUseConcurrently(t *testing.T) {
 	}
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	responses := make(chan int, 2)
+	ready := make(chan struct{}, 2)
+	start := make(chan struct{})
 	var workers sync.WaitGroup
 	for range 2 {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
+			ready <- struct{}{}
+			<-start
 			responses <- profileCallback(srv, cookie, state, "first").Code
 		}()
 	}
+	<-ready
+	<-ready
+	close(start)
 	workers.Wait()
 	close(responses)
 	seen := map[int]int{}
@@ -325,6 +332,51 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 				t.Fatalf("canceled callback changed session or new flow: claims=%v state=%v", sess.Get(srv.SessionKey), storedState)
 			}
 		})
+	}
+}
+
+func TestOAuthProfileCallbackCanceledBeforeFinalStore(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	calls := 0
+	srv := newProfileTestServer(t, jw, &calls)
+	factory := &testAuthTimerFactory{}
+	srv.authTimerAfterFunc = factory.after
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	first := profileCallback(srv, cookie, state, "first")
+	if first.Code != http.StatusFound {
+		t.Fatalf("first login: %d", first.Code)
+	}
+	cookie = first.Result().Cookies()[0]
+	request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	request.AddCookie(cookie)
+	old := jw.GetSession(request)
+	if old == nil {
+		t.Fatal("missing original session")
+	}
+	state = startProfileLoginWithCookie(t, srv, cookie)
+	canceled := false
+	srv.LogoutEvent = func(sess *jaws.Session, _ *http.Request) {
+		if sess == old && !canceled {
+			canceled = true
+			srv.Logout(old, nil)
+		}
+	}
+	w := profileCallback(srv, cookie, state, "second")
+	cookies := w.Result().Cookies()
+	if !canceled || w.Code != http.StatusForbidden || w.Header().Get("Location") != "" ||
+		len(cookies) != 2 || cookies[1].MaxAge >= 0 || cookies[1].Value != cookies[0].Value {
+		t.Fatalf("canceled before store: canceled=%t status=%d location=%q cookies=%v", canceled, w.Code, w.Header().Get("Location"), cookies)
+	}
+	request = httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	request.AddCookie(cookies[0])
+	if jw.GetSession(request) != nil || old.Get(srv.SessionKey) != nil || len(srv.authTimers) != 0 {
+		t.Fatalf("canceled login retained auth or timer: old=%v timers=%d", old.Get(srv.SessionKey), len(srv.authTimers))
 	}
 }
 

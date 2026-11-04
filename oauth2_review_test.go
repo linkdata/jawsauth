@@ -9,10 +9,101 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/linkdata/jaws"
 	"golang.org/x/oauth2"
 )
+
+type infoHookLogger func(string)
+
+func (hook infoHookLogger) Info(msg string, _ ...any) { hook(msg) }
+func (infoHookLogger) Warn(string, ...any)            {}
+func (infoHookLogger) Error(string, ...any)           {}
+
+func TestCallbackRevokedAfterStoreBalancesEvents(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	calls := 0
+	srv := newProfileTestServer(t, jw, &calls)
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	r.RemoteAddr = "192.0.2.1:1234"
+	r.AddCookie(cookie)
+	old := jw.GetSession(r)
+	if old == nil {
+		t.Fatal("pending session missing")
+	}
+	var rotated *jaws.Session
+	logins, logouts := 0, 0
+	srv.LoginEvent = func(sess *jaws.Session, _ *http.Request) { rotated = sess; logins++ }
+	srv.LogoutEvent = func(sess *jaws.Session, _ *http.Request) {
+		if sess != old {
+			logouts++
+		}
+	}
+	revoked := false
+	jw.Debug = true
+	jw.Logger = infoHookLogger(func(msg string) {
+		if msg == "jawsauth: scheduled auth timer" {
+			revoked = srv.Logout(old, nil)
+		}
+	})
+	w := profileCallback(srv, cookie, state, "proof")
+	if !revoked || w.Code != http.StatusForbidden || logins != 1 || logouts != 1 || rotated == nil || sessionAlive(rotated) || len(srv.authTimers) != 0 {
+		t.Fatalf("post-store revocation: revoked=%t status=%d logins=%d logouts=%d rotated=%v timers=%d", revoked, w.Code, logins, logouts, rotated, len(srv.authTimers))
+	}
+}
+
+func TestProfileTokenExpiresBetweenRotationAndStore(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		jw, err := jaws.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer jw.Close()
+		calls := 0
+		srv := newProfileTestServer(t, jw, &calls)
+		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+		first := profileCallback(srv, cookie, state, "first")
+		if first.Code != http.StatusFound {
+			t.Fatalf("initial login: %d", first.Code)
+		}
+		cookie = first.Result().Cookies()[0]
+		r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+		r.RemoteAddr = "192.0.2.1:1234"
+		r.AddCookie(cookie)
+		old := jw.GetSession(r)
+		if old == nil {
+			t.Fatal("old session missing")
+		}
+		state = startProfileLoginWithCookie(t, srv, cookie)
+		srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path == "/token" {
+				return profileTestResponse(`{"access_token":"short","token_type":"Bearer","expires_in":30}`), nil
+			}
+			return profileTestResponse(`{"id":42}`), nil
+		})}
+		logins := 0
+		srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
+		srv.LogoutEvent = func(sess *jaws.Session, _ *http.Request) {
+			if sess == old {
+				time.Sleep(31 * time.Second)
+			}
+		}
+		w := profileCallback(srv, cookie, state, "second")
+		cookies := w.Result().Cookies()
+		if w.Code != http.StatusUnauthorized || w.Header().Get("Location") != "" ||
+			len(cookies) != 2 || cookies[1].MaxAge >= 0 || cookies[1].Value != cookies[0].Value ||
+			logins != 0 || len(srv.authTimers) != 0 {
+			t.Fatalf("expired before store: status=%d location=%q cookies=%v logins=%d timers=%d", w.Code, w.Header().Get("Location"), cookies, logins, len(srv.authTimers))
+		}
+	})
+}
 
 func TestLinkWithoutEventDoesNotStartFlow(t *testing.T) {
 	jw, err := jaws.New()
@@ -53,8 +144,8 @@ func TestLinkRejectsGETBeforeStartingFlow(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	srv.HandleLink(w, r)
-	if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Location") != "" || sess.Get(srv.sessionKey(oauth2FlowKey)) != nil || calls != 0 {
-		t.Fatalf("GET link: status=%d location=%q flow=%v calls=%d", w.Code, w.Header().Get("Location"), sess.Get(srv.sessionKey(oauth2FlowKey)), calls)
+	if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != http.MethodPost || w.Header().Get("Location") != "" || sess.Get(srv.sessionKey(oauth2FlowKey)) != nil || calls != 0 {
+		t.Fatalf("GET link: status=%d allow=%q location=%q flow=%v calls=%d", w.Code, w.Header().Get("Allow"), w.Header().Get("Location"), sess.Get(srv.sessionKey(oauth2FlowKey)), calls)
 	}
 }
 

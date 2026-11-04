@@ -38,7 +38,7 @@ func TestOAuthProviderVisitKeepsOnlyPendingSessionAlive(t *testing.T) {
 		if len(cookies) != 1 {
 			t.Fatalf("cookies: %d", len(cookies))
 		}
-		callback := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback?state=wrong&code=unused", nil)
+		callback := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback", nil)
 		callback.RemoteAddr = start.RemoteAddr
 		callback.AddCookie(cookies[0])
 		unrelated := httptest.NewRequest(http.MethodGet, "https://app.example/other", nil)
@@ -118,7 +118,7 @@ func TestOAuthFlowExpiresEvenWithLiveSession(t *testing.T) {
 			t.Fatalf("start: %d", response.Code)
 		}
 		cookies := response.Result().Cookies()
-		callback := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback?state=wrong&code=unused", nil)
+		callback := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback", nil)
 		callback.RemoteAddr = start.RemoteAddr
 		callback.AddCookie(cookies[0])
 		sess := jw.GetSession(callback)

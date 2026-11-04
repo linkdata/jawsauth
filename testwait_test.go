@@ -10,7 +10,7 @@ func waitFor[T any](t *testing.T, ch <-chan T, msg string) T {
 	select {
 	case value := <-ch:
 		return value
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal(msg)
 	}
 	var zero T

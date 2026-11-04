@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -153,13 +152,12 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 func (srv *Server) HandleLink(hw http.ResponseWriter, hr *http.Request) {
 	switch {
 	case hr.Method != http.MethodPost:
+		hw.Header().Set("Allow", http.MethodPost)
 		srv.writeResult(hw, http.StatusMethodNotAllowed, nil, nil)
 	case linkOriginCheck.Check(hr) != nil:
 		srv.writeResult(hw, http.StatusForbidden, ErrOAuth2InvalidOrigin, nil)
 	case srv.oauth2cfg == nil || srv.LinkEvent == nil:
 		srv.writeResult(hw, http.StatusInternalServerError, ErrOAuth2NotConfigured, nil)
-	case srv.Jaws.GetSession(hr) == nil:
-		srv.writeResult(hw, http.StatusForbidden, ErrOAuth2MissingSession, nil)
 	default:
 		srv.startOAuth(hw, hr, true, false)
 	}
@@ -177,6 +175,10 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 				sess = srv.Jaws.NewSession(hw, hr)
 			}
 			if sess == nil {
+				if link {
+					srv.writeResult(hw, http.StatusForbidden, ErrOAuth2MissingSession, nil)
+					return
+				}
 				hw.Header().Set("Retry-After", "60")
 				srv.writeResult(hw, http.StatusServiceUnavailable, ErrOAuth2MissingSession, nil)
 				return
@@ -188,18 +190,18 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 			srv.mu.Lock()
 			if preservePendingLogin && srv.pendingOrdinaryLoginLocked(sess) {
 				flow, _ = sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
-				if flow.state == "" || flow.verifier == "" {
+				if flow.state == "" {
 					srv.mu.Unlock()
 					srv.writeResult(hw, http.StatusConflict, ErrOAuth2LoginInProgress, nil)
 					return
 				}
 			} else {
 				flow = pendingOAuthFlow{
-					state: randomHexString(), expiry: time.Now().Add(oauth2FlowLifetime),
+					state: rand.Text(), expiry: time.Now().Add(oauth2FlowLifetime),
 					link: link, verifier: oauth2.GenerateVerifier(), referrer: location,
 				}
 				if srv.profileSubject == nil {
-					flow.nonce = randomHexString()
+					flow.nonce = rand.Text()
 				}
 				if !sess.ExtendGrace(oauth2FlowGrace) {
 					srv.mu.Unlock()
@@ -234,7 +236,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method == http.MethodGet {
 		_, location := srv.begin(hr)
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			srv.clearSessionAuth(sess, hr, nil, false, true)
+			srv.clearSessionAuth(sess, hr, nil, false)
 		}
 		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
@@ -274,7 +276,7 @@ func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error
 // ErrOAuth2NotConfigured means OAuth2/OIDC is not configured on the Server.
 var ErrOAuth2NotConfigured = errors.New("oauth2 not configured")
 
-// ErrOAuth2MissingSession means no jaws session was available to carry the OAuth2 flow state.
+// ErrOAuth2MissingSession means the session or its pending flow is no longer usable.
 var ErrOAuth2MissingSession = errors.New("oauth2 missing session")
 
 // ErrOAuth2MissingState means the callback session did not contain the expected state value.
@@ -304,17 +306,11 @@ var ErrUserInfoTooLarge = errors.New("userinfo response too large")
 // ErrUserInfoInvalidResponse means the UserInfo response contained trailing JSON data.
 var ErrUserInfoInvalidResponse = errors.New("userinfo invalid response")
 
-// ErrOAuth2InvalidProfile means an authenticated profile lacked a stable subject.
+// ErrOAuth2InvalidProfile means the profile or access token could not prove a stable subject.
 var ErrOAuth2InvalidProfile = errors.New("oauth2 invalid profile")
 
 // ErrOAuth2LinkRejected means the application did not accept a proven link.
 var ErrOAuth2LinkRejected = errors.New("oauth2 link rejected")
-
-func randomHexString() string {
-	b := [32]byte{}
-	_, _ = rand.Read(b[:]) // never returns an error, always fills all of b
-	return hex.EncodeToString(b[:])
-}
 
 // mergeUserInfoClaims accepts fallback claims only for the verified subject.
 // Email verification stays paired with the email from the same response.
@@ -579,7 +575,7 @@ func (srv *Server) completeLogin(hw http.ResponseWriter, hr *http.Request, old *
 // stored PKCE verifier, verifies the ID token or authenticated profile, and stores
 // claims in a new session. A link flow instead invokes [Server.LinkEvent]
 // and keeps the original session. It invokes [Server.LoginEvent] after a
-// new sign-in or [Server.LoginFailed] on failure. Non-GET requests receive 405.
+// new sign-in or [Server.LoginFailed] on login or link failure. Non-GET requests receive 405.
 //
 // Rotation discards pre-login application data and requires a free JaWS session slot.
 // If no slot is available, existing authentication is preserved and the default
@@ -632,7 +628,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 									}
 									if err == nil {
 										if flow.referrer != "" {
-											location = sanitizeRedirectTarget(hr.Host, flow.referrer)
+											location = flow.referrer
 										}
 										hw.Header().Set("Location", location)
 									}
@@ -647,13 +643,13 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			if err != nil {
 				srv.Jaws.Dirty(sess)
 			} else if !flow.link {
-				if srv.LoginEvent != nil && !flow.revoked() {
+				if srv.LoginEvent != nil {
 					srv.LoginEvent(sess, hr)
 				}
 				current, present := srv.sessionAuthStatus(sess, time.Now)
 				if flow.revoked() || !current || !sessionAlive(sess) {
 					if present {
-						srv.clearSessionAuth(sess, hr, nil, false, true)
+						srv.clearSessionAuth(sess, hr, nil, false)
 					}
 					http.SetCookie(hw, sess.Close())
 					hw.Header().Del("Location")

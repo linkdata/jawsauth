@@ -17,6 +17,7 @@ Verified OIDC or OAuth2 profile authentication for [JaWS](https://github.com/lin
 - Both modes use authorization-code state and PKCE (S256). Pending flows expire after ten minutes; jawsauth extends only that JaWS session's grace while the user visits the provider.
 - For OIDC providers that require an offline-access request to issue refresh tokens, set `Server.Options = []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}` before serving. This adds `access_type=offline` to the authorization redirect, not the token request.
 - Profile authentication expires after 24 hours or the provider token's earlier expiry; it does not attempt OIDC refresh.
+- Profile mode does not store an OIDC token source in `Server.SessionTokenKey`.
 - Supports admin-only handlers: `Wrap`/`Handler` for any authenticated user, `WrapAdmin`/`HandlerAdmin` gated by `SetAdmins`.
 
 Protected routes create JaWS sessions for unauthenticated visitors. Set
@@ -34,20 +35,25 @@ For multiple providers on one JaWS instance:
 
 - Give each `Config` a distinct `Namespace` and callback directory, such as
   `/oauth/github/callback` and `/oauth/gitlab/callback`.
+- Add every provider's registered paths to the other servers' `HandledPaths`
+  before serving requests, so a return target cannot lead to another provider's
+  login, logout or callback endpoint.
 - `New` sets `Jaws.MakeAuth` for one provider. Install a composite `MakeAuth`
   after creating the servers if pages need both. Use `Server.CurrentClaims`
   to check each provider's live authentication.
 - `HandleLink` is an opt-in POST handler. Authorize the existing session before
   calling it. Set `Server.LinkEvent` to recheck that identity and accept the
   newly verified subject. A link keeps the original session; login rotates it.
-  A link callback requires the original live JaWS session and one-use flow state.
+  An ordinary login with another provider signs out the first. A link callback
+  requires the original live JaWS session and one-use flow state.
 - Give each provider's `SessionRotationLock` the same lock. jawsauth holds it
   across `LinkEvent`'s current-auth check and durable write, as well as login
-  rotation, timer and wrapper revocation, and built-in `HandleLogout`. Do not
-  acquire it again inside `LinkEvent`. Hold it around direct calls to
-  `Server.Logout` when linking writes are durable. Provider requests run
-  outside the lock. A callback canceled before the write is rejected; a
-  completed write succeeds even if logout follows it.
+  rotation, timer and wrapper revocation, `HandleLogout`, and `Server.Logout`.
+  Do not acquire it again or call `Server.Logout` inside `LinkEvent`, and do not
+  acquire it around `Server.Logout`.
+  This lock spans all sessions using it; keep `LinkEvent` brief. Provider
+  requests run outside the lock. A callback canceled before the write is
+  rejected; a completed write succeeds even if logout follows it.
 
 The provider visit extends the original session's idle grace. A successful
 link can retain that grace even with no connected pages until its deadline.

@@ -30,10 +30,11 @@ type Config struct {
 	UserInfoURL string // OIDC override; required in profile mode
 	// AllowInsecureIssuer permits HTTP issuer and provider endpoints and is only for tests/dev.
 	AllowInsecureIssuer bool
-	// HTTPClient is used for OIDC discovery and JWKS requests and, unless a per-request
-	// oauth2.HTTPClient is supplied via the request context, as the default client
-	// for token exchange/refresh and UserInfo requests. Those requests cap its
-	// timeout at 15 seconds and do not follow redirects.
+	// HTTPClient is used for OIDC discovery and JWKS, and by default for token
+	// exchange/refresh and UserInfo. All provider requests cap its timeout at 15
+	// seconds. Discovery/JWKS follow only HTTPS redirects unless AllowInsecureIssuer
+	// is set; token and UserInfo requests follow none. A request context may supply
+	// a different oauth2.HTTPClient for token and UserInfo requests.
 	HTTPClient   *http.Client
 	Scopes       []string // optional; OIDC adds "openid" and "email", profile mode uses only these scopes
 	ClientID     string
@@ -79,7 +80,7 @@ func validateUrl(k, value string, optional bool) (err error) {
 	return
 }
 
-func validateOIDCEndpoint(field, value string, optional, allowInsecure bool) error {
+func validateEndpoint(field, value string, optional, allowInsecure bool) error {
 	err := validateUrl(field, value, optional)
 	if err != nil || value == "" {
 		return err
@@ -109,7 +110,7 @@ func (cfg *Config) Validate() (err error) {
 				for _, field := range []struct{ name, value string }{
 					{"AuthURL", cfg.AuthURL}, {"TokenURL", cfg.TokenURL}, {"UserInfoURL", cfg.UserInfoURL},
 				} {
-					if err = validateOIDCEndpoint(field.name, field.value, cfg.ProfileSubject == nil, cfg.AllowInsecureIssuer); err != nil {
+					if err = validateEndpoint(field.name, field.value, cfg.ProfileSubject == nil, cfg.AllowInsecureIssuer); err != nil {
 						return
 					}
 				}
@@ -138,6 +139,17 @@ func ensureScopes(rawScopes []string, required ...string) (scopes []string) {
 	return
 }
 
+func boundedProviderClient(client *http.Client) (bounded http.Client) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	bounded = *client
+	if bounded.Timeout <= 0 || bounded.Timeout > oauth2ProviderTimeout {
+		bounded.Timeout = oauth2ProviderTimeout
+	}
+	return
+}
+
 func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2cfg *oauth2.Config, userInfoURL string, verifier *oidc.IDTokenVerifier, err error) {
 	if err = cfg.Validate(); err == nil {
 		redir, _ := url.Parse(cfg.RedirectURL)
@@ -154,14 +166,7 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 			}
 			return oauth2cfg, cfg.UserInfoURL, nil, nil
 		}
-		client := cfg.HTTPClient
-		if client == nil {
-			client = http.DefaultClient
-		}
-		clientCopy := *client
-		if clientCopy.Timeout <= 0 || clientCopy.Timeout > oauth2ProviderTimeout {
-			clientCopy.Timeout = oauth2ProviderTimeout
-		}
+		clientCopy := boundedProviderClient(cfg.HTTPClient)
 		if !cfg.AllowInsecureIssuer {
 			checkRedirect := clientCopy.CheckRedirect
 			clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -200,7 +205,7 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 					{"UserInfoURL", userInfoURL, true},
 					{"JWKSURI", metadata.JWKSURI, false},
 				} {
-					if err = validateOIDCEndpoint(field.name, field.value, field.optional, cfg.AllowInsecureIssuer); wrapOIDC(ErrOIDCProviderMetadata, &err) != nil {
+					if err = validateEndpoint(field.name, field.value, field.optional, cfg.AllowInsecureIssuer); wrapOIDC(ErrOIDCProviderMetadata, &err) != nil {
 						return
 					}
 				}

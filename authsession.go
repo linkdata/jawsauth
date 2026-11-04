@@ -18,6 +18,7 @@ var errOIDCStaleIDToken = errors.New("oidc stale id_token")
 var errAuthTimerStale = errors.New("auth timer stale")
 var errOIDCInvalidExpiry = errors.New("oidc invalid exp")
 var errOIDCMissingSubject = errors.New("oidc missing sub")
+var errOIDCSubjectMismatch = errors.New("oidc sub changed on refresh")
 
 type authTimer interface {
 	Stop() bool
@@ -74,13 +75,7 @@ func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) 
 		if client == nil {
 			client = srv.httpClient
 		}
-		if client == nil {
-			client = http.DefaultClient
-		}
-		clientCopy := *client
-		if clientCopy.Timeout <= 0 || clientCopy.Timeout > oauth2ProviderTimeout {
-			clientCopy.Timeout = oauth2ProviderTimeout
-		}
+		clientCopy := boundedProviderClient(client)
 		// Token POSTs carry secrets, and 307/308 redirects preserve their body.
 		clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		if logger := srv.debugLogger(); logger != nil {
@@ -176,8 +171,17 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 		if entry == nil {
 			return ErrOAuth2MissingSession
 		}
-		srv.clearSessionAuth(sess, nil, entry, true, true)
+		srv.clearSessionAuth(sess, nil, entry, true)
 		return errAuthTimerStale
+	}
+	if entry != nil {
+		previous, _ := sess.Get(srv.SessionKey).(map[string]any)
+		oldSubject, _ := previous["sub"].(string)
+		newSubject, _ := claims["sub"].(string)
+		if oldSubject == "" || oldSubject != newSubject {
+			srv.mu.Unlock()
+			return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCSubjectMismatch}
+		}
 	}
 	sess.Set(srv.SessionKey, claims)
 	sess.Set(srv.SessionTokenKey, tokenSource)
@@ -212,9 +216,6 @@ func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Sessi
 	idToken, claims, err := srv.verifyIDToken(ctx, raw)
 	if err != nil {
 		return err
-	}
-	if idToken.Expiry.IsZero() {
-		return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
 	}
 	if !minExpiry.IsZero() && !idToken.Expiry.After(minExpiry) {
 		return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCStaleIDToken}
@@ -331,7 +332,7 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 	if srv.sessionAuthTimerCurrent(sess, entry) {
 		remaining := time.Until(srv.authTimerDue(entry.expiry))
 		if !sessionAlive(sess) || (srv.profileSubject != nil && remaining <= 0) {
-			srv.clearSessionAuth(sess, nil, entry, true, true)
+			srv.clearSessionAuth(sess, nil, entry, true)
 			return
 		}
 		if remaining > 0 {
@@ -390,7 +391,7 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 				"session_present", present,
 			)
 			_ = srv.Jaws.Log(err)
-			srv.clearSessionAuth(sess, nil, entry, true, true)
+			srv.clearSessionAuth(sess, nil, entry, true)
 		} else {
 			srv.debugLog("jawsauth: auth refresh timer completed", "session_prefix", debugSessionPrefix(sess))
 		}
@@ -412,7 +413,7 @@ func (srv *Server) authTimerDue(expiry time.Time) time.Time {
 // pendingOrdinaryLoginLocked requires srv.mu.
 func (srv *Server) pendingOrdinaryLoginLocked(sess *jaws.Session) bool {
 	if flow := srv.oauthCallbacks[sess]; flow.canceled != nil {
-		return !flow.link && !flow.revoked()
+		return !flow.link
 	}
 	flow, _ := sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
 	return flow.state != "" && !flow.link && time.Now().Before(flow.expiry)
@@ -436,16 +437,16 @@ func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
 // It performs no HTTP redirect. An HTTP handler can build its own post-logout
 // response. A JaWS event handler cannot use [jaws.Request.Redirect] after Logout
 // queues Reload, which closes the connection; use an HTTP logout endpoint instead.
+// It takes SessionRotationLock, if set, and releases it before LogoutEvent runs.
 func (srv *Server) Logout(sess *jaws.Session, hr *http.Request) (cleared bool) {
-	return srv.clearSessionAuth(sess, hr, nil, false, false)
+	return srv.clearSessionAuth(sess, hr, nil, false)
 }
 
-// Public logout may already hold SessionRotationLock; internal revocation takes it here.
-func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry *authTimerState, preservePendingLogin, lockRotation bool) (cleared bool) {
+func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry *authTimerState, preservePendingLogin bool) (cleared bool) {
 	if srv == nil || sess == nil {
 		return
 	}
-	if lockRotation && srv.SessionRotationLock != nil {
+	if srv.SessionRotationLock != nil {
 		srv.SessionRotationLock.Lock()
 	}
 	srv.mu.Lock()
@@ -465,7 +466,7 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 		requests = sess.Requests()
 	}
 	srv.mu.Unlock()
-	if lockRotation && srv.SessionRotationLock != nil {
+	if srv.SessionRotationLock != nil {
 		srv.SessionRotationLock.Unlock()
 	}
 	if cleared {

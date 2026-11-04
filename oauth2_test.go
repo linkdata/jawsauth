@@ -3,7 +3,6 @@ package jawsauth
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -211,11 +210,8 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	}
 	flow := testOAuthFlow(sess, nil)
 	state := flow.state
-	if len(state) != 64 {
-		t.Fatal(state)
-	}
-	if _, err = hex.DecodeString(state); err != nil {
-		t.Fatal(err)
+	if state == "" {
+		t.Fatal("missing state")
 	}
 	verifier := flow.verifier
 	if verifier == "" {
@@ -233,8 +229,8 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 		t.Fatal(gotMethod)
 	}
 	nonce := flow.nonce
-	if len(nonce) != 64 {
-		t.Fatal(nonce)
+	if nonce == "" || nonce == state {
+		t.Fatalf("nonce %q is missing or matches state", nonce)
 	}
 	if gotNonce := values.Get("nonce"); gotNonce != nonce {
 		t.Fatal(gotNonce)

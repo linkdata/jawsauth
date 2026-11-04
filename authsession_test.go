@@ -385,6 +385,36 @@ func TestSetSessionAuthFromTokenErrors(t *testing.T) {
 	}
 }
 
+func TestOIDCRefreshRejectsChangedSubject(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	const issuer = "https://issuer.example"
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, issuer, factory)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	oldExpiry := time.Now().Add(time.Minute).Truncate(time.Second)
+	if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "person-a", "email": "a@example.com"}, nil, oldExpiry, nil); err != nil {
+		t.Fatal(err)
+	}
+	entry := srv.authTimers[sess.ID()]
+	newExpiry := time.Now().Add(time.Hour).Truncate(time.Second)
+	raw := makeIDToken(t, map[string]any{
+		"iss": issuer, "aud": "client", "sub": "person-b", "exp": newExpiry.Unix(),
+	})
+	err = srv.setSessionAuthFromToken(t.Context(), sess, nil, makeOAuth2Token("access", raw, ""), oldExpiry, entry)
+	if !errors.Is(err, ErrOIDCInvalidIDToken) || !errors.Is(err, errOIDCSubjectMismatch) {
+		t.Fatalf("changed subject: %v", err)
+	}
+	claims, _ := sess.Get(srv.SessionKey).(map[string]any)
+	if claims["sub"] != "person-a" || claims["email"] != "a@example.com" || srv.authTimers[sess.ID()] != entry {
+		t.Fatalf("refresh changed prior auth: claims=%v timer=%v", claims, srv.authTimers[sess.ID()])
+	}
+}
+
 func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {
@@ -458,6 +488,7 @@ func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 	tokenSource := oauth2.StaticTokenSource(makeOAuth2Token("cached-access", cachedIDToken, "refresh123"))
 	err = srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":            initialExpiry.Unix(),
+		"sub":            "sub-123",
 		"email":          "cached@example.com",
 		"email_verified": false,
 	}, tokenSource, initialExpiry, nil)
@@ -1082,9 +1113,16 @@ func TestServerLogout(t *testing.T) {
 
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+	lock := &observedRotationLock{second: make(chan struct{})}
+	srv.SessionRotationLock = lock
 	var logoutCount int
 	var logoutRequest *http.Request
 	srv.LogoutEvent = func(_ *jaws.Session, hr *http.Request) {
+		if lock.attempts.Load() != 1 || !lock.TryLock() {
+			t.Error("LogoutEvent ran while the rotation lock was held or Logout skipped it")
+			return
+		}
+		lock.Unlock()
 		logoutCount++
 		logoutRequest = hr
 	}

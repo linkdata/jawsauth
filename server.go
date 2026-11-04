@@ -61,10 +61,11 @@ type HandleFunc func(uri string, handler http.Handler)
 
 // EventFunc is called for login and logout lifecycle events.
 //
-// For [Server.LogoutEvent], hr may be nil.
+// For [Server.LogoutEvent], hr may be nil. jawsauth calls it after releasing
+// SessionRotationLock.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
-// FailedFunc is called when a login attempt fails.
+// FailedFunc is called when a login or link attempt fails.
 //
 // It returns true if it wrote the HTTP response itself, in which case jawsauth writes
 // nothing further. Errors can contain untrusted browser-supplied text. Quote errors
@@ -74,7 +75,9 @@ type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err
 // LinkFunc receives the current session and a newly verified identity. Recheck
 // the current authentication before a durable link write. When configured,
 // jawsauth holds SessionRotationLock while calling LinkFunc; do not acquire it
-// again in the callback. Return zero and nil on success, or an HTTP error status.
+// again or call Server.Logout in the callback. Claims contain raw provider fields, so their types
+// (including email_verified) may differ from stored session values. Return zero
+// and nil on success, or an HTTP error status.
 type LinkFunc func(sess *jaws.Session, hr *http.Request, claims map[string]any) (statusCode int, err error)
 
 // Server provides OIDC or verified OAuth2 profile authentication for JaWS sessions.
@@ -83,17 +86,20 @@ type LinkFunc func(sess *jaws.Session, hr *http.Request, claims map[string]any) 
 // exported configuration fields and callbacks should be set before serving requests.
 type Server struct {
 	Jaws                    *jaws.Jaws
-	SessionKey              string                  // default is "oidc_claims", value will be of type map[string]any
-	SessionTokenKey         string                  // default is "oauth2_tokensource", value will be of type oauth2.TokenSource
-	SessionEmailKey         string                  // default is "email", value is a parsed string address with ASCII letters lowercased
-	SessionEmailVerifiedKey string                  // default is "email_verified", value will be of type bool
-	HandledPaths            map[string]struct{}     // URI paths we have registered handlers for
-	LoginEvent              EventFunc               // if not nil, called after a successful login
-	LogoutEvent             EventFunc               // if not nil, called after auth is cleared; hr may be nil
-	LoginFailed             FailedFunc              // if not nil, called on failed login
-	LinkEvent               LinkFunc                // if not nil, enables HandleLink
-	SessionRotationLock     sync.Locker             // optional; held during rotation, internal revocation, and LinkEvent
-	Options                 []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
+	SessionKey              string              // default is "oidc_claims", value will be of type map[string]any
+	SessionTokenKey         string              // default is "oauth2_tokensource"; an oauth2.TokenSource in OIDC mode, empty in profile mode
+	SessionEmailKey         string              // default is "email", value is a parsed string address with ASCII letters lowercased
+	SessionEmailVerifiedKey string              // default is "email_verified", value will be of type bool
+	HandledPaths            map[string]struct{} // URI paths we have registered handlers for
+	LoginEvent              EventFunc           // if not nil, called after claims are stored; revocation may follow
+	LogoutEvent             EventFunc           // if not nil, called after auth is cleared; hr may be nil
+	LoginFailed             FailedFunc          // if not nil, called on failed login or link
+	LinkEvent               LinkFunc            // if not nil, enables HandleLink
+	// SessionRotationLock is held during rotation, revocation, HandleLogout,
+	// Logout, and LinkEvent.
+	// shortcut: One lock serializes all sessions; shard it if link writes delay auth traffic.
+	SessionRotationLock sync.Locker
+	Options             []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
 
 	// RequireVerifiedAdminEmail requires email_verified for a non-empty admin list.
 	//
