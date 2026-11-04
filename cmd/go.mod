@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/linkdata/deadlock v0.5.5
-	github.com/linkdata/jaws v0.808.0
+	github.com/linkdata/jaws v0.901.2-0.20261104081709-b5ee7ec23e15
 	github.com/linkdata/jawsauth v0.0.0
 	github.com/linkdata/webserv v1.4.2
 	github.com/moby/moby/api v1.55.0
@@ -37,6 +37,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/linkdata/jq v0.6.0 // indirect
+	github.com/linkdata/rate v1.17.1 // indirect
 	github.com/linkdata/secureheaders v1.5.0 // indirect
 	github.com/linkdata/staticserve v1.1.8 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260802145828-341c2f0c90b5 // indirect

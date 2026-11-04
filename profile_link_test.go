@@ -42,6 +42,38 @@ func TestOAuthProfileConfigRequiresExplicitSecureEndpoints(t *testing.T) {
 	}
 }
 
+func TestOAuthProfileConfigInsecureModeAllowsHTTPOnly(t *testing.T) {
+	base := Config{RedirectURL: "https://app.example/auth/callback", Issuer: "https://provider.example",
+		AuthURL: "https://provider.example/authorize", TokenURL: "https://provider.example/token",
+		UserInfoURL: "https://provider.example/user", ClientID: "app", AllowInsecureIssuer: true,
+		ProfileSubject: func(map[string]any) (string, error) { return "42", nil }}
+	for _, tc := range []struct {
+		name string
+		set  func(*Config)
+		want error
+	}{
+		{"issuer", func(c *Config) { c.Issuer = "ftp://provider.example" }, ErrConfigIssuerMustBeHTTPS},
+		{"authorize", func(c *Config) { c.AuthURL = "ftp://provider.example/authorize" }, ErrConfigProfileEndpointMustBeHTTPS},
+		{"token", func(c *Config) { c.TokenURL = "ftp://provider.example/token" }, ErrConfigProfileEndpointMustBeHTTPS},
+		{"userinfo", func(c *Config) { c.UserInfoURL = "ftp://provider.example/user" }, ErrConfigProfileEndpointMustBeHTTPS},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.set(&cfg)
+			if err := cfg.Validate(); !errors.Is(err, tc.want) {
+				t.Fatalf("scheme validation: %v", err)
+			}
+		})
+	}
+	base.Issuer = "http://provider.example"
+	base.AuthURL = "http://provider.example/authorize"
+	base.TokenURL = "http://provider.example/token"
+	base.UserInfoURL = "http://provider.example/user"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("HTTP dev endpoints: %v", err)
+	}
+}
+
 func TestOAuthProfileAuthLifetimeCapsLongProviderToken(t *testing.T) {
 	srv := &Server{issuer: "https://provider.example", userinfoUrl: "https://provider.example/user",
 		profileSubject: func(map[string]any) (string, error) { return "42", nil }}
@@ -430,6 +462,22 @@ func TestOAuthProfileRejectsInvalidSubjectAndOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestOAuthProfileRejectsTokenExpiredDuringUserInfo(t *testing.T) {
+	token := &oauth2.Token{AccessToken: "access", TokenType: "Bearer", Expiry: time.Now().Add(11 * time.Second)}
+	srv := &Server{
+		userinfoUrl:    "https://provider.example/user",
+		profileSubject: func(map[string]any) (string, error) { return "42", nil },
+	}
+	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		token.Expiry = time.Now().Add(-time.Second)
+		return profileTestResponse(`{"id":42}`), nil
+	})})
+	claims, source, expiry, status, err := srv.verifyOAuthIdentity(ctx, token, "")
+	if !errors.Is(err, ErrOAuth2InvalidProfile) || claims != nil || source != nil || !expiry.IsZero() || status != http.StatusUnauthorized {
+		t.Fatalf("expired profile: claims=%v source=%t expiry=%v status=%d err=%v", claims, source != nil, expiry, status, err)
+	}
+}
+
 func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {
@@ -445,15 +493,48 @@ func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
 	if response.Code != http.StatusFound || factory.len() != 1 {
 		t.Fatalf("profile sign-in: status=%d timers=%d", response.Code, factory.len())
 	}
-	if delay := factory.timer(0).delay; delay < 23*time.Hour || delay > 24*time.Hour {
-		t.Fatalf("profile auth lifetime: %s", delay)
+	if delay := factory.timer(0).delay; delay <= 0 || delay > profileAuthCheckInterval {
+		t.Fatalf("profile auth cleanup interval: %s", delay)
 	}
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
 	r.RemoteAddr = "192.0.2.1:1234"
 	r.AddCookie(response.Result().Cookies()[0])
 	sess := jw.GetSession(r)
 	factory.timer(0).fire()
-	if sess.Get(srv.SessionKey) != nil || !factory.timer(0).isStopped() {
+	if sess.Get(srv.SessionKey) == nil || factory.len() != 2 {
+		t.Fatal("profile auth cleared before its expiry")
+	}
+	srv.mu.Lock()
+	srv.authTimers[sess.ID()].expiry = time.Now().Add(-time.Second)
+	srv.mu.Unlock()
+	factory.timer(1).fire()
+	if sess.Get(srv.SessionKey) != nil || !factory.timer(1).isStopped() {
 		t.Fatal("profile auth remained after expiry timer")
+	}
+}
+
+func TestOAuthProfileTimerReleasesClosedSession(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	calls := 0
+	srv := newProfileTestServer(t, jw, &calls)
+	factory := &testAuthTimerFactory{}
+	srv.authTimerAfterFunc = factory.after
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	response := profileCallback(srv, cookie, state, "first")
+	if response.Code != http.StatusFound || factory.len() != 1 {
+		t.Fatalf("profile sign-in: status=%d timers=%d", response.Code, factory.len())
+	}
+	r := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
+	r.RemoteAddr = "192.0.2.1:1234"
+	r.AddCookie(response.Result().Cookies()[0])
+	sess := jw.GetSession(r)
+	sess.Close()
+	factory.timer(0).fire()
+	if sess.Get(srv.SessionKey) != nil || len(srv.authTimers) != 0 || !factory.timer(0).isStopped() {
+		t.Fatal("closed profile session remained pinned by auth timer")
 	}
 }

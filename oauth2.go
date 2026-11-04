@@ -340,6 +340,7 @@ func extractEmailVerified(claims map[string]any) (verified bool) {
 func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenSource oauth2.TokenSource) (userinfo map[string]any, err error) {
 	if userinfoURL != "" && tokenSource != nil {
 		client := oauth2.NewClient(ctx, tokenSource)
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		var resp *http.Response
 		if resp, err = client.Get(userinfoURL); /*#nosec G704*/ err == nil {
 			defer func() {
@@ -404,7 +405,7 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 			return
 		}
 		tokenSource = srv.oauth2cfg.TokenSource(srv.oauth2Context(context.Background()), token)
-		srv.addUserInfoClaims(ctx, claims, tokenSource)
+		srv.addUserInfoClaims(ctx, claims, oauth2.StaticTokenSource(token))
 		return claims, tokenSource, idToken.Expiry, status, nil
 	}
 	if srv.profileSubject == nil || token.AccessToken == "" || !token.Valid() {
@@ -414,6 +415,9 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 	claims, err = srv.fetchUserInfo(ctx, srv.userinfoUrl, oauth2.StaticTokenSource(token))
 	if err != nil {
 		return
+	}
+	if !token.Valid() {
+		return nil, nil, time.Time{}, http.StatusUnauthorized, ErrOAuth2InvalidProfile
 	}
 	status = http.StatusUnauthorized
 	if claims == nil {

@@ -780,6 +780,61 @@ func TestServer_fetchUserInfoStatusError(t *testing.T) {
 	}
 }
 
+func TestServer_fetchUserInfoDoesNotFollowBearerRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("UserInfo redirect target received the bearer token request")
+	}))
+	defer target.Close()
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("original UserInfo authorization = %q", hr.Header.Get("Authorization"))
+		}
+		http.Redirect(hw, hr, target.URL+"/profile", http.StatusFound)
+	}))
+	defer provider.Close()
+
+	_, err := (&Server{}).fetchUserInfo(t.Context(), provider.URL+"/userinfo",
+		oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "secret", TokenType: "Bearer"}))
+	if !errors.Is(err, ErrUserInfoStatus) || !strings.Contains(err.Error(), "302 Found") {
+		t.Fatalf("redirect response = %v, want 302 without following", err)
+	}
+}
+
+func TestVerifyOIDCUserInfoDoesNotRefreshDuringCallback(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := newWrapperTestServer(jw, "https://issuer.example")
+	srv.userinfoUrl = "https://provider.example/userinfo"
+	userinfoCalls, refreshCalls := 0, 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/userinfo":
+			userinfoCalls++
+			return profileTestResponse(`{"sub":"one","email":"user@example.com"}`), nil
+		case "/token":
+			refreshCalls++
+			return profileTestResponse(`{"access_token":"refreshed","token_type":"Bearer"}`), nil
+		default:
+			t.Fatalf("unexpected provider request %s", req.URL)
+			return nil, nil
+		}
+	})}
+	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, client)
+	raw := makeIDToken(t, map[string]any{
+		"iss": "https://issuer.example", "aud": "client", "sub": "one", "nonce": "nonce",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	token := makeOAuth2Token("access", raw, "refresh")
+	token.Expiry = time.Now().Add(time.Second) // Inside oauth2's refresh skew.
+	claims, source, _, _, err := srv.verifyOAuthIdentity(ctx, token, "nonce")
+	if err != nil || source == nil || claims["email"] != "user@example.com" || userinfoCalls != 1 || refreshCalls != 0 {
+		t.Fatalf("claims=%v source=%t userinfo=%d refresh=%d err=%v", claims, source != nil, userinfoCalls, refreshCalls, err)
+	}
+}
+
 func TestServer_fetchUserInfoCloseError(t *testing.T) {
 	wantErr := errors.New("close response body")
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

@@ -20,9 +20,11 @@ Login callback token/profile calls and startup discovery have a 15-second deadli
 profile responses are capped at 32 KiB.
 
 For multiple providers on one JaWS instance, give each `Config` a distinct
-`Namespace` and callback path. `New` sets `Jaws.MakeAuth` for its own Server, so
+`Namespace` and callback directory (for example, `/oauth/github/callback` and
+`/oauth/gitlab/callback`). `New` sets `Jaws.MakeAuth` for its own Server, so
 install a composite `MakeAuth` after creating all provider Servers if pages need
-to recognize more than one provider. `HandleLink` is an opt-in POST handler:
+to recognize more than one provider. Use `Server.CurrentClaims` to check each
+provider's live session auth there. `HandleLink` is an opt-in POST handler:
 authorize the existing session before calling it, then set `Server.LinkEvent` to
 recheck the original identity and accept the newly verified subject. A successful
 link keeps the original session; ordinary login still rotates it. Link callbacks

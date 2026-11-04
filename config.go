@@ -84,18 +84,14 @@ func validateUrl(k, u, defaultURL string, optional bool) (value string, err erro
 //
 // RedirectURL, Issuer and ClientID must be present. URL fields must be absolute
 // and include a host. OIDC endpoint overrides are optional; profile endpoints
-// are required and must use HTTPS. Issuer must use HTTPS unless
-// AllowInsecureIssuer is true. Returned failures match [ErrConfig].
+// are required and must use HTTPS, or HTTP when AllowInsecureIssuer is true.
+// The same scheme rule applies to Issuer. Returned failures match [ErrConfig].
 func (cfg *Config) Validate() (err error) {
 	if _, err = validateUrl("RedirectURL", cfg.RedirectURL, "", false); err == nil {
 		if _, err = validateUrl("Issuer", cfg.Issuer, "", false); err == nil {
-			if !cfg.AllowInsecureIssuer {
-				var issuer *url.URL
-				if issuer, err = url.Parse(cfg.Issuer); err == nil {
-					if issuer.Scheme != "https" {
-						err = errConfig{field: "Issuer", cause: ErrConfigIssuerMustBeHTTPS}
-					}
-				}
+			issuer, _ := url.Parse(cfg.Issuer)
+			if issuer.Scheme != "https" && (!cfg.AllowInsecureIssuer || issuer.Scheme != "http") {
+				err = errConfig{field: "Issuer", cause: ErrConfigIssuerMustBeHTTPS}
 			}
 			if err == nil {
 				if cfg.ProfileSubject != nil {
@@ -105,11 +101,9 @@ func (cfg *Config) Validate() (err error) {
 						if _, err = validateUrl(field.name, field.value, "", false); err != nil {
 							return err
 						}
-						if !cfg.AllowInsecureIssuer {
-							parsed, _ := url.Parse(field.value)
-							if parsed.Scheme != "https" {
-								return errConfig{field: field.name, cause: ErrConfigProfileEndpointMustBeHTTPS}
-							}
+						parsed, _ := url.Parse(field.value)
+						if parsed.Scheme != "https" && (!cfg.AllowInsecureIssuer || parsed.Scheme != "http") {
+							return errConfig{field: field.name, cause: ErrConfigProfileEndpointMustBeHTTPS}
 						}
 					}
 					return requireStr("ClientID", cfg.ClientID)
