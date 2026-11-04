@@ -286,6 +286,7 @@ func errorDebugClasses(err error) (classes []string) {
 	classes = appendErrorDebugClass(classes, err, ErrOIDCNonceMismatch, "oidc_nonce_mismatch")
 	classes = appendErrorDebugClass(classes, err, errOIDCStaleIDToken, "oidc_stale_id_token")
 	classes = appendErrorDebugClass(classes, err, errOIDCInvalidExpiry, "oidc_invalid_expiry")
+	classes = appendErrorDebugClass(classes, err, errOIDCMissingSubject, "oidc_missing_subject")
 	classes = appendErrorDebugClass(classes, err, errAuthTimerStale, "auth_timer_stale")
 	return
 }

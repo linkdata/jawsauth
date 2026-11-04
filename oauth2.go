@@ -420,6 +420,9 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 		if wrapOIDC(ErrOIDCInvalidIDToken, &err) != nil {
 			return
 		}
+		if idToken.Subject == "" {
+			return nil, nil, time.Time{}, status, errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCMissingSubject}
+		}
 		err = ErrOIDCMissingNonce
 		if nonce == "" {
 			return
@@ -434,6 +437,9 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 		}
 		tokenSource = srv.oauth2cfg.TokenSource(srv.oauth2Context(context.Background()), token)
 		srv.addUserInfoClaims(ctx, claims, oauth2.StaticTokenSource(token))
+		if err = srv.identityExpiryError(idToken.Expiry); err != nil {
+			return nil, nil, time.Time{}, status, err
+		}
 		return claims, tokenSource, idToken.Expiry, status, nil
 	}
 	if srv.profileSubject == nil || token.AccessToken == "" || !token.Valid() {
@@ -462,6 +468,9 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 	if !token.Expiry.IsZero() && token.Expiry.Before(expiry) {
 		expiry = token.Expiry
 	}
+	if err = srv.identityExpiryError(expiry); err != nil {
+		return nil, nil, time.Time{}, status, err
+	}
 	return claims, nil, expiry, status, nil
 }
 
@@ -485,6 +494,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		var sessValue any
 		var sessEmail string
 		var linked bool
+		var flow pendingOAuthFlow
 		providerCtx, cancel := context.WithTimeout(hr.Context(), oauth2ProviderTimeout)
 		defer cancel()
 		authctx := srv.oauth2Context(providerCtx)
@@ -500,8 +510,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			statusCode = http.StatusBadRequest
 			if sess != nil {
 				gotState := hr.FormValue("state") // #nosec G120
-				flow, flowErr := srv.takeOAuthFlow(sess, gotState)
-				err = flowErr
+				flow, err = srv.takeOAuthFlow(sess, gotState)
 				if err == nil {
 					defer srv.finishOAuthFlow(sess, flow)
 					if statusCode, err = oauth2CallbackError(statusCode, hr); err == nil {
@@ -520,7 +529,9 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 								var expiry time.Time
 								claims, tokenSource, expiry, statusCode, err = srv.verifyOAuthIdentity(authctx, token, flow.nonce)
 								if err == nil {
-									if flow.revoked() || srv.Jaws.GetSession(hr) != sess {
+									if err = srv.identityExpiryError(expiry); err != nil {
+										statusCode = http.StatusUnauthorized
+									} else if flow.revoked() || srv.Jaws.GetSession(hr) != sess {
 										err = ErrOAuth2MissingSession
 										statusCode = http.StatusForbidden
 									} else if flow.link {
@@ -569,9 +580,13 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 												}
 												sess = rotated
 												err = srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, nil, flow.canceled)
-												if errors.Is(err, ErrOAuth2MissingSession) {
+												if err != nil {
 													http.SetCookie(hw, rotated.Close())
-													statusCode = http.StatusForbidden
+													if errors.Is(err, ErrOAuth2MissingSession) {
+														statusCode = http.StatusForbidden
+													} else {
+														statusCode = http.StatusUnauthorized
+													}
 												}
 											}
 										} else {
@@ -597,8 +612,20 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		if sess != nil {
 			if sessValue == nil {
 				srv.Jaws.Dirty(sess)
-			} else if !linked && srv.LoginEvent != nil {
-				srv.LoginEvent(sess, hr)
+			} else if !linked {
+				if srv.LoginEvent != nil && !flow.revoked() {
+					srv.LoginEvent(sess, hr)
+				}
+				current, present := srv.sessionAuthStatus(sess, time.Now)
+				if flow.revoked() || !current || !sessionAlive(sess) {
+					if present {
+						srv.Logout(sess, hr)
+					}
+					http.SetCookie(hw, sess.Close())
+					hw.Header().Del("Location")
+					err = ErrOAuth2MissingSession
+					statusCode = http.StatusForbidden
+				}
 			}
 		}
 		if err != nil && srv.LoginFailed != nil {

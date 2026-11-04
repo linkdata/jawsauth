@@ -17,6 +17,7 @@ const profileAuthCheckInterval = time.Minute
 var errOIDCStaleIDToken = errors.New("oidc stale id_token")
 var errAuthTimerStale = errors.New("auth timer stale")
 var errOIDCInvalidExpiry = errors.New("oidc invalid exp")
+var errOIDCMissingSubject = errors.New("oidc missing sub")
 
 type authTimer interface {
 	Stop() bool
@@ -101,6 +102,16 @@ func sessionAlive(sess *jaws.Session) bool {
 	return cookie != nil && cookie.MaxAge >= 0
 }
 
+func (srv *Server) identityExpiryError(expiry time.Time) error {
+	if expiry.After(time.Now()) {
+		return nil
+	}
+	if srv.idTokenVerifier == nil {
+		return ErrOAuth2InvalidProfile
+	}
+	return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
+}
+
 func (srv *Server) storeSessionAuthClaims(sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState) error {
 	return srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, entry, nil)
 }
@@ -123,6 +134,12 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 		srv.mu.Unlock()
 		return ErrOAuth2MissingSession
 	default:
+	}
+	if canceled != nil {
+		if err := srv.identityExpiryError(expiry); err != nil {
+			srv.mu.Unlock()
+			return err
+		}
 	}
 	if entry != nil && srv.authTimers[sess.ID()] != entry {
 		srv.mu.Unlock()
@@ -163,6 +180,9 @@ func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Sessi
 			if rawIDToken != "" {
 				var idToken *oidc.IDToken
 				if idToken, err = srv.idTokenVerifier.Verify(ctx, rawIDToken); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
+					if idToken.Subject == "" {
+						return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCMissingSubject}
+					}
 					var claims map[string]any
 					if err = idToken.Claims(&claims); wrapOIDC(ErrOIDCInvalidIDToken, &err) == nil {
 						if idToken.Expiry.IsZero() {
@@ -171,7 +191,9 @@ func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Sessi
 							err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCStaleIDToken}
 						} else {
 							srv.addUserInfoClaims(ctx, claims, tokenSource)
-							err = srv.storeSessionAuthClaims(sess, claims, tokenSource, idToken.Expiry, entry)
+							if err = srv.identityExpiryError(idToken.Expiry); err == nil {
+								err = srv.storeSessionAuthClaims(sess, claims, tokenSource, idToken.Expiry, entry)
+							}
 						}
 					}
 				}
