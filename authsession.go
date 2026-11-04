@@ -70,15 +70,22 @@ func realAuthTimerAfterFunc(delay time.Duration, callback func()) authTimer {
 func (srv *Server) oauth2Context(ctx context.Context) (authctx context.Context) {
 	authctx = ctx
 	if srv != nil {
-		client, ok := authctx.Value(oauth2.HTTPClient).(*http.Client)
-		if !ok {
+		client, _ := authctx.Value(oauth2.HTTPClient).(*http.Client)
+		if client == nil {
 			client = srv.httpClient
 		}
-		if logger := srv.debugLogger(); logger != nil {
-			authctx = context.WithValue(authctx, oauth2.HTTPClient, srv.debugHTTPClient(client, logger))
-		} else if !ok && client != nil {
-			authctx = context.WithValue(authctx, oauth2.HTTPClient, client)
+		if client == nil {
+			client = http.DefaultClient
 		}
+		clientCopy := *client
+		// Token POSTs carry secrets, and 307/308 redirects preserve their body.
+		clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		if logger := srv.debugLogger(); logger != nil {
+			client = srv.debugHTTPClient(&clientCopy, logger)
+		} else {
+			client = &clientCopy
+		}
+		authctx = context.WithValue(authctx, oauth2.HTTPClient, client)
 	}
 	return
 }

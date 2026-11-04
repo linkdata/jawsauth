@@ -224,3 +224,28 @@ func TestConfig_buildContextWithHTTPClient(t *testing.T) {
 		t.Fatal("expected oauth2 config")
 	}
 }
+
+func TestConfig_buildContextDiscoveryStillFollowsRedirect(t *testing.T) {
+	var issuer string
+	target := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
+		hw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(hw).Encode(map[string]any{
+			"issuer":                 issuer,
+			"authorization_endpoint": issuer + "/auth",
+			"token_endpoint":         issuer + "/token",
+			"jwks_uri":               issuer + "/jwks",
+		})
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		http.Redirect(hw, hr, target.URL+"/metadata", http.StatusFound)
+	}))
+	defer redirector.Close()
+	issuer = redirector.URL
+	cfg := &Config{RedirectURL: "https://app.example/callback", Issuer: issuer,
+		AllowInsecureIssuer: true, ClientID: "client", HTTPClient: redirector.Client()}
+	got, _, _, err := cfg.buildContext(t.Context(), "")
+	if err != nil || got == nil || got.Endpoint.TokenURL != issuer+"/token" {
+		t.Fatalf("redirected discovery: config=%v err=%v", got, err)
+	}
+}

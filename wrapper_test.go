@@ -269,18 +269,20 @@ func TestWrapperServeHTTPRedirectsWhenAuthDataMissing(t *testing.T) {
 }
 
 func TestOAuth2ContextUsesServerHTTPClient(t *testing.T) {
-	client := &http.Client{}
+	client := &http.Client{Transport: &http.Transport{}, Timeout: time.Second}
 	srv := &Server{httpClient: client}
 
 	ctx := srv.oauth2Context(t.Context())
-	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got != client {
+	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got == nil || got == client ||
+		got.Transport != client.Transport || got.Timeout != client.Timeout || got.CheckRedirect == nil {
 		t.Fatal(got)
 	}
 
-	otherClient := &http.Client{}
+	otherClient := &http.Client{Transport: &http.Transport{}, Timeout: 2 * time.Second}
 	base := context.WithValue(t.Context(), oauth2.HTTPClient, otherClient)
 	ctx = srv.oauth2Context(base)
-	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got != otherClient {
+	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got == nil || got == otherClient ||
+		got.Transport != otherClient.Transport || got.Timeout != otherClient.Timeout || got.CheckRedirect == nil {
 		t.Fatal(got)
 	}
 }
