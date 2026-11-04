@@ -4,6 +4,7 @@ package jawsauth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"slices"
@@ -26,9 +27,9 @@ type Config struct {
 	AuthURL     string // OIDC override; required in profile mode
 	TokenURL    string // OIDC override; required in profile mode
 	UserInfoURL string // OIDC override; required in profile mode
-	// AllowInsecureIssuer permits HTTP issuer/profile URLs and is only for tests/dev.
+	// AllowInsecureIssuer permits HTTP issuer and provider endpoints and is only for tests/dev.
 	AllowInsecureIssuer bool
-	// HTTPClient is used for OIDC discovery at startup and, unless a per-request
+	// HTTPClient is used for OIDC discovery and JWKS requests and, unless a per-request
 	// oauth2.HTTPClient is supplied via the request context, as the default client
 	// for token exchange/refresh and UserInfo requests.
 	HTTPClient   *http.Client
@@ -80,12 +81,25 @@ func validateUrl(k, u, defaultURL string, optional bool) (value string, err erro
 	return
 }
 
+func validateOIDCEndpoint(field, value string, optional, allowInsecure bool) error {
+	value, err := validateUrl(field, value, "", optional)
+	if err != nil || value == "" {
+		return err
+	}
+	parsed, _ := url.Parse(value)
+	if parsed.Scheme != "https" && (!allowInsecure || parsed.Scheme != "http") {
+		return errConfig{field: field, cause: ErrConfigOIDCEndpointMustBeHTTPS}
+	}
+	return nil
+}
+
 // Validate checks whether cfg contains usable OIDC/OAuth2 settings.
 //
 // RedirectURL, Issuer and ClientID must be present. URL fields must be absolute
 // and include a host. OIDC endpoint overrides are optional; profile endpoints
 // are required and must use HTTPS, or HTTP when AllowInsecureIssuer is true.
-// The same scheme rule applies to Issuer. Returned failures match [ErrConfig].
+// OIDC endpoints and Issuer must use HTTPS unless AllowInsecureIssuer is true.
+// Returned failures match [ErrConfig].
 func (cfg *Config) Validate() (err error) {
 	if _, err = validateUrl("RedirectURL", cfg.RedirectURL, "", false); err == nil {
 		if _, err = validateUrl("Issuer", cfg.Issuer, "", false); err == nil {
@@ -108,9 +122,9 @@ func (cfg *Config) Validate() (err error) {
 					}
 					return requireStr("ClientID", cfg.ClientID)
 				}
-				if _, err = validateUrl("AuthURL", cfg.AuthURL, "", true); err == nil {
-					if _, err = validateUrl("TokenURL", cfg.TokenURL, "", true); err == nil {
-						if _, err = validateUrl("UserInfoURL", cfg.UserInfoURL, "", true); err == nil {
+				if err = validateOIDCEndpoint("AuthURL", cfg.AuthURL, true, cfg.AllowInsecureIssuer); err == nil {
+					if err = validateOIDCEndpoint("TokenURL", cfg.TokenURL, true, cfg.AllowInsecureIssuer); err == nil {
+						if err = validateOIDCEndpoint("UserInfoURL", cfg.UserInfoURL, true, cfg.AllowInsecureIssuer); err == nil {
 							err = requireStr("ClientID", cfg.ClientID)
 						}
 					}
@@ -167,6 +181,27 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 		if cfg.HTTPClient != nil {
 			ctx = context.WithValue(ctx, oauth2.HTTPClient, cfg.HTTPClient)
 		}
+		if !cfg.AllowInsecureIssuer {
+			client, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
+			if client == nil {
+				client = http.DefaultClient
+			}
+			clientCopy := *client
+			checkRedirect := clientCopy.CheckRedirect
+			clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+				if req.URL.Scheme != "https" {
+					return errors.New("oidc redirect must use https")
+				}
+				if checkRedirect != nil {
+					return checkRedirect(req, via)
+				}
+				if len(via) >= 10 {
+					return errors.New("stopped after 10 redirects")
+				}
+				return nil
+			}
+			ctx = context.WithValue(ctx, oauth2.HTTPClient, &clientCopy)
+		}
 
 		var provider *oidc.Provider
 		if provider, err = oidc.NewProvider(ctx, cfg.Issuer); wrapOIDC(ErrOIDCDiscovery, &err) == nil {
@@ -174,8 +209,22 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 				AuthorizationEndpoint string `json:"authorization_endpoint"`
 				TokenEndpoint         string `json:"token_endpoint"`
 				UserinfoEndpoint      string `json:"userinfo_endpoint"`
+				JWKSURI               string `json:"jwks_uri"`
 			}
 			if err = provider.Claims(&metadata); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
+				for _, field := range []struct {
+					name, value string
+					optional    bool
+				}{
+					{"AuthURL", metadata.AuthorizationEndpoint, true},
+					{"TokenURL", metadata.TokenEndpoint, true},
+					{"UserInfoURL", metadata.UserinfoEndpoint, true},
+					{"JWKSURI", metadata.JWKSURI, cfg.AllowInsecureIssuer},
+				} {
+					if err = validateOIDCEndpoint(field.name, field.value, field.optional, cfg.AllowInsecureIssuer); wrapOIDC(ErrOIDCProviderMetadata, &err) != nil {
+						return
+					}
+				}
 				var authURL string
 				var tokenURL string
 				if authURL, err = validateUrl("AuthURL", cfg.AuthURL, metadata.AuthorizationEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {

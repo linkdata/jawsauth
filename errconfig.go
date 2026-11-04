@@ -22,6 +22,9 @@ var ErrConfigIssuerMustBeHTTPS = errors.New("issuer url must use https")
 // ErrConfigProfileEndpointMustBeHTTPS means a profile-flow endpoint must use HTTPS, or HTTP when AllowInsecureIssuer is enabled.
 var ErrConfigProfileEndpointMustBeHTTPS = errors.New("profile endpoint must use https")
 
+// ErrConfigOIDCEndpointMustBeHTTPS means an OIDC endpoint must use HTTPS, or HTTP when AllowInsecureIssuer is enabled.
+var ErrConfigOIDCEndpointMustBeHTTPS = errors.New("oidc endpoint must use https")
+
 type errConfig struct {
 	field string
 	cause error
