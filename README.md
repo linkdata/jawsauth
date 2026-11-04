@@ -83,5 +83,6 @@ their ordinary login remains valid.
 Use an HTTP endpoint for logout redirects: calling `Request.Redirect` after
 `Server.Logout` in a JaWS event cannot send the redirect because Reload closes the
 connection and discards later messages. Closed or expired JaWS sessions have their
-tokens and timers discarded at the next scheduled refresh, which calls
+tokens and timers discarded at the next auth timer check (normally within one
+minute), which calls
 `LogoutEvent` with a nil HTTP request.
