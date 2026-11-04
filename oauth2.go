@@ -240,7 +240,7 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method == http.MethodGet {
 		_, location := srv.begin(hr)
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
-			srv.clearSessionAuth(sess, hr, nil, false, nil)
+			srv.clearSessionAuth(sess, hr, nil, false, srv.SessionRotationLock)
 		}
 		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound

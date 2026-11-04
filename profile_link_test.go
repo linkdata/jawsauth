@@ -507,8 +507,8 @@ func (lock *observedRotationLock) Lock() {
 	lock.Mutex.Lock()
 }
 
-func TestOAuthProfileLinkSerializesInternalRevocation(t *testing.T) {
-	for _, revocation := range []string{"timer", "wrapper"} {
+func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
+	for _, revocation := range []string{"timer", "wrapper", "handler logout"} {
 		for _, revocationFirst := range []bool{false, true} {
 			name := revocation + "/event first"
 			if revocationFirst {
@@ -560,14 +560,17 @@ func TestOAuthProfileLinkSerializesInternalRevocation(t *testing.T) {
 				}
 				_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
 				revoke := func() {
-					if revocation == "timer" {
+					switch revocation {
+					case "timer":
 						srv.mu.Lock()
 						srv.authTimers[sess.ID()].expiry = time.Now().Add(-time.Second)
 						srv.mu.Unlock()
 						factory.timer(0).fire()
-					} else {
+					case "wrapper":
 						sess.Set(srv.sessionKey(oauth2IDTokenExpiryKey), time.Now().Add(-time.Second))
 						wrapper{server: srv}.ServeHTTP(httptest.NewRecorder(), req)
+					case "handler logout":
+						srv.HandleLogout(httptest.NewRecorder(), req)
 					}
 				}
 				if revocationFirst {

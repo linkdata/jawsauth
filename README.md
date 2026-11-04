@@ -37,9 +37,10 @@ that grace until the original flow's grace deadline, about ten minutes plus
 the callback allowance after link start. `LinkEvent` must serialize its final
 current-auth check and durable link write with logout and any other provider's
 auth revocation. Set each provider's `SessionRotationLock` to the same lock so
-ordinary login callbacks and timer or wrapper auth revocation serialize with
-that write;
-the original session is rechecked inside that lock, and the lock is not held
+ordinary login callbacks, timer or wrapper auth revocation, and the built-in
+`HandleLogout` serialize with that write. Applications calling `Server.Logout`
+must take the shared lock around that call when they use `LinkEvent` for durable writes.
+The original session is rechecked inside that lock, and the lock is not held
 during provider requests. Without this serialization, jawsauth cannot roll back
 an application write if revocation finishes while `LinkEvent` is running; it
 rejects the stale callback response.
