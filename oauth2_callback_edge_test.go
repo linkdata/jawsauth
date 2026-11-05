@@ -22,11 +22,7 @@ func TestOIDCCallbackRejectsEmptySubject(t *testing.T) {
 			name = "link"
 		}
 		t.Run(name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			srv := newWrapperTestServer(jw, "https://issuer.example")
 			idToken := makeIDToken(t, map[string]any{
 				"iss": "https://issuer.example", "aud": "client", "sub": "", "nonce": "nonce",
@@ -77,11 +73,7 @@ func TestOIDCCallbackRejectsEmptySubject(t *testing.T) {
 
 func TestOIDCExpiryDuringUserInfoRejected(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		srv := newWrapperTestServer(jw, "https://issuer.example")
 		srv.userinfoUrl = "https://provider.example/userinfo"
 		idToken := makeIDToken(t, map[string]any{
@@ -115,7 +107,7 @@ func TestOIDCExpiryDuringUserInfoRejected(t *testing.T) {
 		refreshReq := httptest.NewRequest(http.MethodGet, "http://example.com/refresh", nil)
 		refreshSess := jw.NewSession(httptest.NewRecorder(), refreshReq)
 		refreshToken := makeOAuth2Token("access", idToken, "")
-		err = srv.setSessionAuthFromToken(srv.oauth2Context(t.Context()), refreshSess,
+		err := srv.setSessionAuthFromToken(srv.oauth2Context(t.Context()), refreshSess,
 			oauth2.StaticTokenSource(refreshToken), refreshToken, time.Time{}, nil)
 		if !errors.Is(err, ErrOIDCInvalidIDToken) || refreshSess.Get(srv.SessionKey) != nil {
 			t.Fatalf("expired refresh during UserInfo: claims=%v err=%v", refreshSess.Get(srv.SessionKey), err)
@@ -125,11 +117,7 @@ func TestOIDCExpiryDuringUserInfoRejected(t *testing.T) {
 
 func TestProfileExpiryDuringSubjectRejected(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		srv := &Server{Jaws: jw, userinfoUrl: "https://provider.example/user",
 			profileSubject: func(map[string]any) (string, error) {
 				time.Sleep(12 * time.Second)
@@ -147,11 +135,7 @@ func TestProfileExpiryDuringSubjectRejected(t *testing.T) {
 }
 
 func TestOAuthLogoutDuringLoginEventClosesRotatedSession(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	calls := 0
 	srv := newProfileTestServer(t, jw, &calls)
 	entered := make(chan *jaws.Session, 1)
@@ -185,5 +169,88 @@ func TestOAuthLogoutDuringLoginEventClosesRotatedSession(t *testing.T) {
 		cookies[1].Name != cookies[0].Name || cookies[1].Value != cookies[0].Value ||
 		rotated.Cookie().MaxAge >= 0 || rotated.Get(srv.SessionKey) != nil || srv.authTimers[rotated.ID()] != nil {
 		t.Fatalf("superseded login: status=%d location=%q cookies=%v claims=%v", w.Code, w.Header().Get("Location"), cookies, rotated.Get(srv.SessionKey))
+	}
+}
+
+func TestLoginClearedBeforeEventSkipsLifecycleEvents(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newProfileTestServer(t, jw, nil)
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	req.AddCookie(cookie)
+	preauth := jw.GetSession(req)
+	var events []string
+	srv.LoginEvent = func(*jaws.Session, *http.Request) { events = append(events, "login") }
+	srv.LogoutEvent = func(*jaws.Session, *http.Request) { events = append(events, "logout") }
+	cleared := false
+	jw.Debug = true
+	jw.Logger = infoHookLogger(func(msg string) {
+		if msg == "jawsauth: scheduled auth timer" {
+			for _, sess := range jw.Sessions() {
+				if sess != preauth {
+					cleared = srv.Logout(sess, nil)
+				}
+			}
+		}
+	})
+	response := profileCallback(srv, cookie, state, "first")
+	if !cleared || response.Code != http.StatusForbidden || len(events) != 0 {
+		t.Fatalf("cleared=%t status=%d events=%v", cleared, response.Code, events)
+	}
+	srv.mu.Lock()
+	pending := len(srv.loginEvents)
+	srv.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pending login events = %d", pending)
+	}
+}
+
+func TestLoginEventCanLogoutItsSession(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newProfileTestServer(t, jw, nil)
+	var events []string
+	srv.LoginEvent = func(sess *jaws.Session, _ *http.Request) {
+		events = append(events, "login")
+		if !srv.Logout(sess, nil) {
+			t.Fatal("logout failed")
+		}
+	}
+	srv.LogoutEvent = func(*jaws.Session, *http.Request) { events = append(events, "logout") }
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	response := profileCallback(srv, cookie, state, "first")
+	if response.Code != http.StatusForbidden || strings.Join(events, ",") != "login,logout" {
+		t.Fatalf("status=%d events=%v", response.Code, events)
+	}
+}
+
+func TestConcurrentLogoutWaitsForLoginEvent(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newProfileTestServer(t, jw, nil)
+	entered := make(chan *jaws.Session, 1)
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
+	events := make(chan string, 2)
+	srv.LoginEvent = func(sess *jaws.Session, _ *http.Request) {
+		events <- "login"
+		entered <- sess
+		<-release
+	}
+	srv.LogoutEvent = func(*jaws.Session, *http.Request) { events <- "logout" }
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() { result <- profileCallback(srv, cookie, state, "first") }()
+	rotated := waitFor(t, entered, "LoginEvent did not start")
+	loggedOut := make(chan bool, 1)
+	go func() { loggedOut <- srv.Logout(rotated, nil) }()
+	if !waitFor(t, loggedOut, "concurrent logout blocked") || len(events) != 1 {
+		t.Fatalf("logout before LoginEvent returned: events=%d", len(events))
+	}
+	releaseOnce()
+	response := waitFor(t, result, "callback did not finish")
+	first := waitFor(t, events, "missing LoginEvent")
+	second := waitFor(t, events, "missing LogoutEvent")
+	if response.Code != http.StatusForbidden || first != "login" || second != "logout" || srv.CurrentClaims(rotated) != nil {
+		t.Fatalf("status=%d events=%s,%s claims=%v", response.Code, first, second, srv.CurrentClaims(rotated))
 	}
 }

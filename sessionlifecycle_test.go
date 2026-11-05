@@ -24,23 +24,19 @@ func (l logoutOnWarnLogger) Error(string, ...any) {}
 func (l logoutOnWarnLogger) Warn(string, ...any)  { l.onWarn() }
 
 func TestLogoutDuringClaimPreparation(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	expiry := time.Now().Add(time.Hour)
-	if err = srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, nil, expiry, nil); err != nil {
+	if err := srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, nil, expiry, nil); err != nil {
 		t.Fatal(err)
 	}
 	entry := srv.authTimers[sess.ID()]
 	jw.Logger = logoutOnWarnLogger{onWarn: func() { srv.Logout(sess, req) }}
 	// Claim preparation may invoke application logging while logout completes.
-	err = srv.storeSessionAuthClaims(sess, map[string]any{"sub": "one"}, nil, expiry, entry)
+	err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "one"}, nil, expiry, entry)
 	if !errors.Is(err, errAuthTimerStale) {
 		t.Fatalf("got %v, want stale refresh", err)
 	}
@@ -88,11 +84,7 @@ func TestAuthTimerDiscardsClosedSession(t *testing.T) {
 }
 
 func TestOIDCTimerReleasesSessionRotatedByOtherProvider(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -124,11 +116,7 @@ func TestOIDCTimerReleasesSessionRotatedByOtherProvider(t *testing.T) {
 
 func TestOIDCRefreshTimeoutClearsExpiredAuth(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		factory := &testAuthTimerFactory{}
 		srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 		started := make(chan struct{}, 1)
@@ -289,11 +277,7 @@ func TestLoginRotationExistingAuth(t *testing.T) {
 }
 
 func TestSetAdminsLeavesAnonymousRequestsOpen(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	req := httptest.NewRequest(http.MethodGet, "/public", nil)
 	jw.NewSession(httptest.NewRecorder(), req)
@@ -392,17 +376,13 @@ func TestSetAdminsUsesSessionPolicy(t *testing.T) {
 func TestLoginUserInfoDeadlineKeepsOIDCFallbackOptional(t *testing.T) {
 	// A slow UserInfo fallback must stop at the callback deadline before rotation.
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
+		jw := newTestJaws(t)
 		go jw.ServeWithTimeout(2 * time.Minute)
-		t.Cleanup(jw.Close)
 		srv := newWrapperTestServer(jw, "https://issuer.example")
 		expiry := time.Now().Add(time.Hour)
 		hr := httptest.NewRequest(http.MethodGet, "/callback?state=state&code=code", nil)
 		sess := jw.NewSession(httptest.NewRecorder(), hr)
-		if err = srv.storeSessionAuthClaims(sess, map[string]any{"sub": "user", "email": "user@example.com"}, nil, expiry, nil); err != nil {
+		if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "user", "email": "user@example.com"}, nil, expiry, nil); err != nil {
 			t.Fatal(err)
 		}
 		defer srv.Logout(sess, nil)

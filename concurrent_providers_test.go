@@ -44,11 +44,7 @@ func (l *gateRotationLock) Lock() {
 func (l *gateRotationLock) Unlock() { l.mu.Unlock() }
 
 func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/token" {
 			return profileTestResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
@@ -113,8 +109,7 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 	}
 }
 
-// holdFirstRotationLock lets logout acquire the lock before a callback that
-// reached Lock first, so the callback must recheck its flow after acquisition.
+// holdFirstRotationLock lets a later caller acquire the lock before the first.
 type holdFirstRotationLock struct {
 	mu           sync.Mutex
 	attempts     atomic.Int32
@@ -135,11 +130,7 @@ func (l *holdFirstRotationLock) Unlock() { l.mu.Unlock() }
 func TestLinkedProviderLogoutBeforeLinkWrite(t *testing.T) {
 	for _, logoutProvider := range []string{"linked", "original"} {
 		t.Run(logoutProvider, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/token" {
 					return profileTestResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil

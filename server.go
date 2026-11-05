@@ -62,7 +62,8 @@ type HandleFunc func(uri string, handler http.Handler)
 // EventFunc is called for login and logout lifecycle events.
 //
 // For [Server.LogoutEvent], hr may be nil. jawsauth calls it after releasing
-// SessionRotationLock.
+// SessionRotationLock. When LoginEvent is set, clearing auth before it begins
+// suppresses both events; clearing auth during it defers LogoutEvent until it returns.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
 // FailedFunc is called on callback failures and when a protected request meets
@@ -73,7 +74,7 @@ type EventFunc func(sess *jaws.Session, hr *http.Request)
 // when logging them and escape them for the output format when rendering them.
 type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err error, email string) (wroteresponse bool)
 
-// LinkFunc receives the current session and a newly verified identity. Recheck
+// LinkFunc receives the current session and a newly authenticated identity. Recheck
 // the existing authentication before a durable link write; with multiple
 // providers, use the original provider's CurrentClaims. Logout and flow
 // cancellation affect only their own Server. jawsauth holds
@@ -83,7 +84,7 @@ type FailedFunc func(hw http.ResponseWriter, hr *http.Request, httpCode int, err
 // Return zero and nil on success, or an HTTP error status.
 type LinkFunc func(sess *jaws.Session, hr *http.Request, claims map[string]any) (statusCode int, err error)
 
-// Server provides OIDC or verified OAuth2 profile authentication for JaWS sessions.
+// Server provides OIDC or OAuth2 profile authentication for JaWS sessions.
 //
 // Create one with New or NewDebug. Its methods are safe for concurrent use; the
 // exported configuration fields and callbacks should be set before serving requests.
@@ -95,7 +96,7 @@ type Server struct {
 	SessionEmailKey         string              // default is "email", value is a parsed string address with ASCII letters lowercased
 	SessionEmailVerifiedKey string              // default is "email_verified", value will be of type bool
 	HandledPaths            map[string]struct{} // URI paths excluded from OAuth return targets
-	LoginEvent              EventFunc           // if not nil, called after claims are stored; revocation may follow
+	LoginEvent              EventFunc           // called after claims are stored; revocation may suppress or follow it
 	LogoutEvent             EventFunc           // if not nil, called after auth is cleared; hr may be nil
 	LoginFailed             FailedFunc          // callback failures and protected requests during a running login callback
 	LinkEvent               LinkFunc            // required by HandleLink; register its POST route separately
@@ -123,6 +124,7 @@ type Server struct {
 	admins             map[string]struct{} // if not empty, emails of admins
 	handle403          http.Handler        // handler for 403 Forbidden
 	authTimers         map[uint64]*authTimerState
+	loginEvents        map[*jaws.Session]*pendingLoginEvent
 	oauthCallbacks     map[*jaws.Session]pendingOAuthFlow
 	authTimerAfterFunc authTimerAfterFunc
 	namespace          string
@@ -137,7 +139,7 @@ type Server struct {
 // A nil jw returns ErrServerNilJaws and a nil Server. Otherwise a non-nil Server is
 // always returned. Authentication is configured, and the login, logout and callback
 // handlers registered via handleFn, only when cfg, handleFn and cfg.RedirectURL are
-// all provided; setup errors are returned alongside the not-yet-Valid Server.
+// all provided; setup errors are returned with the Server.
 func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl string) (srv *Server, err error) {
 	if jw == nil {
 		err = ErrServerNilJaws
@@ -335,7 +337,7 @@ func (srv *Server) Valid() bool {
 // wrap returns a http.Handler that requires an authenticated user before invoking h.
 //
 // When admin is true, non-admins receive 403. Unauthenticated GET begins login;
-// other unauthenticated methods receive 405. An invalid Server returns h.
+// other unauthenticated methods receive 403. An invalid Server returns h.
 func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 	rh = h
 	if srv.Valid() {
@@ -347,7 +349,7 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 // WrapAdmin returns a http.Handler that requires an authenticated administrator
 // before invoking h.
 //
-// Unauthenticated GET begins login; other unauthenticated methods receive 405.
+// Unauthenticated GET begins login; other unauthenticated methods receive 403.
 // Authenticated non-admins receive 403. [Server.RequireVerifiedAdminEmail]
 // applies. A GET request during a running login callback may return 409.
 // An invalid Server returns h.
@@ -357,7 +359,7 @@ func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
 //
-// Unauthenticated GET begins login; other unauthenticated methods receive 405.
+// Unauthenticated GET begins login; other unauthenticated methods receive 403.
 // A GET request during a running login callback may return 409.
 // An invalid Server returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
@@ -367,7 +369,7 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 // HandlerAdmin returns a http.Handler that renders the named jaws.Template with dot
 // and requires an authenticated administrator.
 //
-// Unauthenticated GET begins login; other unauthenticated methods receive 405.
+// Unauthenticated GET begins login; other unauthenticated methods receive 403.
 // Authenticated non-admins receive 403. [Server.RequireVerifiedAdminEmail]
 // applies. A GET request during a running login callback may return 409.
 // An invalid Server returns the unprotected template handler.
@@ -378,7 +380,7 @@ func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
 // Handler returns a http.Handler that renders the named jaws.Template with dot
 // and requires an authenticated user.
 //
-// Unauthenticated GET begins login; other unauthenticated methods receive 405.
+// Unauthenticated GET begins login; other unauthenticated methods receive 403.
 // A GET request during a running login callback may return 409.
 // An invalid Server returns the unprotected template handler.
 func (srv *Server) Handler(name string, dot any) http.Handler {

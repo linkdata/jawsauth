@@ -62,10 +62,11 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
 ## Admin access
 
 Profile mode requires a verified email for a non-empty admin list by default;
-OIDC mode does not. `ProfileSubject` may map a provider verification signal to
-`email_verified`. Set `RequireVerifiedAdminEmail = false` only when the provider
-guarantees verified addresses. Providers without a verification signal cannot
-grant admin access in strict mode.
+OIDC mode does not. Set `RequireVerifiedAdminEmail = true` in OIDC mode unless
+the provider guarantees verified addresses. In profile mode, `ProfileSubject`
+may map a provider verification signal to `email_verified`; disable the check
+only with the same guarantee. Providers without a verification signal cannot
+grant admin access while the check is enabled.
 [Microsoft warns against using its email claim for authorization](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference);
 use application policy based on a stable identifier for Entra ID.
 
@@ -85,8 +86,7 @@ running callback they return 409 unless `LoginFailed` handles them. Logout and
 authentication expiry clear that server's credentials and reload its JaWS pages.
 Auth expiry preserves a pending login but cancels a pending link. Explicit
 logout cancels either flow. A new login on the same server, including one
-started by `Wrap` or `Handler`, cancels a pending link. Check `CurrentClaims`
-before protected operations, and `JawsAuth.IsAdmin` for administrator actions.
+started by `Wrap` or `Handler`, cancels a pending link.
 
 Use an HTTP endpoint for a post-logout redirect. When `Server.Logout` clears
 authentication, it reloads pages and closes their sockets, so a later JaWS

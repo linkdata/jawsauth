@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linkdata/jaws"
 	"golang.org/x/oauth2"
 )
 
@@ -96,11 +95,7 @@ func Test_oauth2CallbackErrorNilReceiver(t *testing.T) {
 }
 
 func Test_handleAuthResponseOAuthErrorCallback(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{},
@@ -165,11 +160,7 @@ func Test_handleAuthResponseOAuthErrorCallback(t *testing.T) {
 }
 
 func Test_handleAuthResponseOAuthErrorCallbackReceivesSessionEmail(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:                    jw,
 		SessionKey:              "oauth2userinfo",

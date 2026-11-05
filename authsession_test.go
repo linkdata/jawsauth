@@ -243,11 +243,7 @@ func newTimerTestServer(t *testing.T, jw *jaws.Jaws, issuer string, factory *tes
 }
 
 func TestStoreSessionAuthClaimsSchedulesTimer(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
@@ -256,7 +252,7 @@ func TestStoreSessionAuthClaimsSchedulesTimer(t *testing.T) {
 	expiry := time.Now().Add(time.Hour).Truncate(time.Second)
 	tokenSource := oauth2.StaticTokenSource(makeOAuth2Token("access", "", ""))
 
-	err = srv.storeSessionAuthClaims(sess, map[string]any{
+	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":            expiry.Unix(),
 		"email":          "User@Example.COM",
 		"email_verified": "true",
@@ -348,11 +344,7 @@ func TestStoreSessionAuthClaimsErrors(t *testing.T) {
 }
 
 func TestSetSessionAuthFromTokenErrors(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	factory := &testAuthTimerFactory{}
@@ -360,7 +352,7 @@ func TestSetSessionAuthFromTokenErrors(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 
-	err = (*Server)(nil).setSessionAuthFromToken(t.Context(), sess, nil, nil, time.Time{}, nil)
+	err := (*Server)(nil).setSessionAuthFromToken(t.Context(), sess, nil, nil, time.Time{}, nil)
 	if !errors.Is(err, ErrOAuth2NotConfigured) {
 		t.Fatal(err)
 	}
@@ -391,11 +383,7 @@ func TestSetSessionAuthFromTokenErrors(t *testing.T) {
 }
 
 func TestOIDCRefreshRejectsChangedSubject(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	const issuer = "https://issuer.example"
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, issuer, factory)
@@ -433,11 +421,7 @@ func TestOIDCRefreshRejectsChangedSubject(t *testing.T) {
 }
 
 func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	logger := &testAuthDebugLogger{}
 	jw.Debug = true
 	jw.Logger = logger
@@ -503,7 +487,7 @@ func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	tokenSource := oauth2.StaticTokenSource(makeOAuth2Token("cached-access", cachedIDToken, "refresh123"))
-	err = srv.storeSessionAuthClaims(sess, map[string]any{
+	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":            initialExpiry.Unix(),
 		"sub":            "sub-123",
 		"email":          "cached@example.com",
@@ -578,11 +562,7 @@ func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 }
 
 func TestRefreshSessionAuthUsesStoredValidToken(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	logger := &testAuthDebugLogger{}
 	jw.Debug = true
@@ -606,7 +586,7 @@ func TestRefreshSessionAuthUsesStoredValidToken(t *testing.T) {
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	sess.Set(srv.SessionTokenKey, oauth2.StaticTokenSource(makeOAuth2Token("stored-access", rawIDToken, "")))
 
-	err = srv.refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
+	err := srv.refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -633,11 +613,7 @@ func TestRefreshSessionAuthUsesStoredValidToken(t *testing.T) {
 }
 
 func TestRefreshSessionAuthLogsForcedRefreshTokenSourceFailure(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	logger := &testAuthDebugLogger{}
 	jw.Debug = true
@@ -667,7 +643,7 @@ func TestRefreshSessionAuthLogsForcedRefreshTokenSourceFailure(t *testing.T) {
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	sess.Set(srv.SessionTokenKey, oauth2.StaticTokenSource(makeOAuth2Token("cached-access", "", "refresh123")))
 
-	err = srv.refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
+	err := srv.refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
 	if err == nil {
 		t.Fatal("expected refresh error")
 	}
@@ -698,11 +674,7 @@ func TestRefreshSessionAuthLogsForcedRefreshTokenSourceFailure(t *testing.T) {
 }
 
 func TestAuthTimerRefreshFailureKeepsCurrentAuthUntilExpiry(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	logger := &testAuthDebugLogger{}
 	jw.Debug = true
@@ -718,7 +690,7 @@ func TestAuthTimerRefreshFailureKeepsCurrentAuthUntilExpiry(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	expiry := time.Now().Add(authRefreshSkew - time.Second).Truncate(time.Second)
-	err = srv.storeSessionAuthClaims(sess, map[string]any{
+	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":            expiry.Unix(),
 		"email":          "current@example.com",
 		"email_verified": true,
@@ -797,11 +769,7 @@ func TestAuthTimerRefreshFailureClearsExpiredAuth(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 
 			var tokenRequests int
 			provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
@@ -828,7 +796,7 @@ func TestAuthTimerRefreshFailureClearsExpiredAuth(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
 			expiry := time.Now().Add(time.Minute).Truncate(time.Second)
-			err = srv.storeSessionAuthClaims(sess, map[string]any{
+			err := srv.storeSessionAuthClaims(sess, map[string]any{
 				"exp":            expiry.Unix(),
 				"email":          "old@example.com",
 				"email_verified": true,
@@ -866,11 +834,7 @@ func TestAuthTimerRefreshFailureClearsExpiredAuth(t *testing.T) {
 }
 
 func TestAuthTimerDebugLogsRefreshFailure(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	logger := &testAuthDebugLogger{}
 	jw.Debug = true
@@ -883,7 +847,7 @@ func TestAuthTimerDebugLogsRefreshFailure(t *testing.T) {
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	expiry := time.Now().Add(authRefreshSkew - time.Second).Truncate(time.Second)
 
-	err = srv.storeSessionAuthClaims(sess, map[string]any{
+	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":            expiry.Unix(),
 		"email":          "old@example.com",
 		"email_verified": true,
@@ -911,11 +875,7 @@ func TestAuthTimerDebugLogsRefreshFailure(t *testing.T) {
 }
 
 func TestAuthTimerDebugLogsRequireJawsDebug(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	logger := &testAuthDebugLogger{}
 	jw.Logger = logger
@@ -927,7 +887,7 @@ func TestAuthTimerDebugLogsRequireJawsDebug(t *testing.T) {
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	expiry := time.Now().Add(30 * time.Second).Truncate(time.Second)
 
-	err = srv.storeSessionAuthClaims(sess, map[string]any{
+	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":            expiry.Unix(),
 		"email":          "old@example.com",
 		"email_verified": true,
@@ -946,11 +906,7 @@ func TestAuthTimerDebugLogsRequireJawsDebug(t *testing.T) {
 }
 
 func TestAuthTimerStaleCallbackNoOp(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	factory := &testAuthTimerFactory{}
@@ -963,7 +919,7 @@ func TestAuthTimerStaleCallbackNoOp(t *testing.T) {
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	expiry := time.Now().Add(time.Minute).Truncate(time.Second)
 
-	err = srv.storeSessionAuthClaims(sess, map[string]any{
+	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":   expiry.Unix(),
 		"email": "first@example.com",
 	}, tokenSourceFunc(func() (*oauth2.Token, error) {
@@ -997,11 +953,7 @@ func TestAuthTimerStaleCallbackNoOp(t *testing.T) {
 }
 
 func TestAuthTimerStaleAfterRefreshNoOp(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	factory := &testAuthTimerFactory{}
@@ -1024,7 +976,7 @@ func TestAuthTimerStaleAfterRefreshNoOp(t *testing.T) {
 		srv.mu.Unlock()
 		return makeOAuth2Token("access", rawIDToken, ""), nil
 	})
-	err = srv.storeSessionAuthClaims(sess, map[string]any{
+	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":   oldExpiry.Unix(),
 		"email": "old@example.com",
 	}, tokenSource, oldExpiry, nil)
@@ -1044,11 +996,7 @@ func TestAuthTimerStaleAfterRefreshNoOp(t *testing.T) {
 }
 
 func TestExplicitLogoutStopsAuthTimer(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
@@ -1061,7 +1009,7 @@ func TestExplicitLogoutStopsAuthTimer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/logout", nil)
 	rec := httptest.NewRecorder()
 	sess := jw.NewSession(rec, req)
-	err = srv.storeSessionAuthClaims(sess, map[string]any{
+	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":   time.Now().Add(time.Hour).Unix(),
 		"email": "user@example.com",
 	}, oauth2.StaticTokenSource(makeOAuth2Token("access", "", "")), time.Now().Add(time.Hour), nil)
@@ -1091,11 +1039,7 @@ func TestExplicitLogoutStopsAuthTimer(t *testing.T) {
 }
 
 func TestRefreshSessionAuthErrors(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	factory := &testAuthTimerFactory{}
@@ -1103,7 +1047,7 @@ func TestRefreshSessionAuthErrors(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 
-	err = (*Server)(nil).refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
+	err := (*Server)(nil).refreshSessionAuth(t.Context(), sess, time.Time{}, nil)
 	if !errors.Is(err, ErrOAuth2NotConfigured) {
 		t.Fatal(err)
 	}
@@ -1125,11 +1069,7 @@ func TestRefreshSessionAuthErrors(t *testing.T) {
 }
 
 func TestServerLogout(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
@@ -1148,7 +1088,7 @@ func TestServerLogout(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/logout", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
-	err = srv.storeSessionAuthClaims(sess, map[string]any{
+	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":   time.Now().Add(time.Hour).Unix(),
 		"email": "user@example.com",
 	}, oauth2.StaticTokenSource(makeOAuth2Token("access", "", "")), time.Now().Add(time.Hour), nil)
@@ -1188,27 +1128,59 @@ func TestServerLogout(t *testing.T) {
 	}
 }
 
-type delayedFirstAuthLock struct {
-	sync.Mutex
-	attempts atomic.Int32
-	entered  chan struct{}
-	release  chan struct{}
+func TestReloginAfterSessionClearReportsLogout(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newProfileTestServer(t, jw, nil)
+	factory := &testAuthTimerFactory{}
+	srv.authTimerAfterFunc = factory.after
+	logins, logouts := 0, 0
+	srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
+	srv.LogoutEvent = func(*jaws.Session, *http.Request) { logouts++ }
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	first := profileCallback(srv, cookie, state, "first")
+	if first.Code != http.StatusFound || len(first.Result().Cookies()) != 1 {
+		t.Fatalf("first login: status=%d cookies=%v", first.Code, first.Result().Cookies())
+	}
+	cookie = first.Result().Cookies()[0]
+	req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	req.AddCookie(cookie)
+	old := jw.GetSession(req)
+	if old == nil {
+		t.Fatal("first login did not create a session")
+	}
+	old.Clear()
+	_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
+	second := profileCallback(srv, cookie, state, "second")
+	if second.Code != http.StatusFound || logins != 2 || logouts != 1 || !factory.timer(0).isStopped() {
+		t.Fatalf("second login: status=%d logins=%d logouts=%d first_timer_stopped=%t", second.Code, logins, logouts, factory.timer(0).isStopped())
+	}
 }
 
-func (lock *delayedFirstAuthLock) Lock() {
-	if lock.attempts.Add(1) == 1 {
-		close(lock.entered)
-		<-lock.release
+func TestAbandonedLoginClearDropsPendingEvent(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newProfileTestServer(t, jw, nil)
+	srv.authTimerAfterFunc = (&testAuthTimerFactory{}).after
+	events := 0
+	srv.LoginEvent = func(*jaws.Session, *http.Request) { events++ }
+	srv.LogoutEvent = func(*jaws.Session, *http.Request) { events++ }
+	req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	if err := srv.storeSessionAuthClaimsIfActive(sess, map[string]any{"sub": "one"}, nil, time.Now().Add(time.Hour), nil, make(chan struct{})); err != nil {
+		t.Fatal(err)
 	}
-	lock.Mutex.Lock()
+	if !srv.Logout(sess, nil) {
+		t.Fatal("pending login was not cleared")
+	}
+	srv.mu.Lock()
+	pending := len(srv.loginEvents)
+	srv.mu.Unlock()
+	if pending != 0 || events != 0 || sess.Get(srv.SessionKey) != nil {
+		t.Fatalf("pending=%d events=%d claims=%v", pending, events, sess.Get(srv.SessionKey))
+	}
 }
 
 func TestStaleWrapperDoesNotRepeatRotationLogoutEvent(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	srv.authTimerAfterFunc = (&testAuthTimerFactory{}).after
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
@@ -1225,10 +1197,10 @@ func TestStaleWrapperDoesNotRepeatRotationLogoutEvent(t *testing.T) {
 	}
 	_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
 	old.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(-time.Second))
-	lock := &delayedFirstAuthLock{entered: make(chan struct{}), release: make(chan struct{})}
+	lock := &holdFirstRotationLock{first: make(chan struct{}), releaseFirst: make(chan struct{})}
 	srv.SessionRotationLock = lock
 	var oldLogouts atomic.Int32
-	release := sync.OnceFunc(func() { close(lock.release) })
+	release := sync.OnceFunc(func() { close(lock.releaseFirst) })
 	defer release()
 	srv.LogoutEvent = func(sess *jaws.Session, _ *http.Request) {
 		if sess == old {
@@ -1241,7 +1213,7 @@ func TestStaleWrapperDoesNotRepeatRotationLogoutEvent(t *testing.T) {
 		srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(httptest.NewRecorder(), req)
 		close(wrapped)
 	}()
-	waitFor(t, lock.entered, "wrapper did not reach auth clear")
+	waitFor(t, lock.first, "wrapper did not reach auth clear")
 	callback := profileCallback(srv, cookie, state, "second")
 	waitFor(t, wrapped, "stale wrapper did not finish")
 	if callback.Code != http.StatusFound || len(callback.Result().Cookies()) != 1 || oldLogouts.Load() != 1 {
@@ -1250,11 +1222,7 @@ func TestStaleWrapperDoesNotRepeatRotationLogoutEvent(t *testing.T) {
 }
 
 func TestAuthDebugSessionPrefix(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	var output strings.Builder
 	jw.Debug = true
 	jw.Logger = slog.New(slog.NewTextHandler(&output, nil))
@@ -1263,7 +1231,7 @@ func TestAuthDebugSessionPrefix(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	expiry := time.Now().Add(time.Hour)
-	if err = srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, tokenSourceFunc(func() (*oauth2.Token, error) {
+	if err := srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, tokenSourceFunc(func() (*oauth2.Token, error) {
 		return nil, errAuthSessionTestToken
 	}), expiry, nil); err != nil {
 		t.Fatal(err)

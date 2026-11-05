@@ -24,11 +24,7 @@ func (h testStatusHandler) ServeHTTP(hw http.ResponseWriter, _ *http.Request) {
 // TestWrapperServeHTTPSet403HandlerConcurrent verifies that Set403Handler and
 // ServeHTTP can run concurrently under the race detector.
 func TestWrapperServeHTTPSet403HandlerConcurrent(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	srv := &Server{
 		Jaws:            jw,
@@ -79,11 +75,7 @@ func TestWrapperServeHTTPSet403HandlerConcurrent(t *testing.T) {
 }
 
 func TestWrapperServeHTTPAllowsPresentAuthData(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
@@ -104,6 +96,25 @@ func TestWrapperServeHTTPAllowsPresentAuthData(t *testing.T) {
 
 	if code := rec.Result().StatusCode; code != http.StatusOK {
 		t.Fatal(code)
+	}
+}
+
+func TestWrapperUnauthenticatedPostReturnsForbidden(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newWrapperTestServer(jw, "https://issuer.example")
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/protected", nil)
+	rec := httptest.NewRecorder()
+	(wrapper{server: srv, handler: testStatusHandler{statusCode: http.StatusOK}}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || rec.Header().Get("Allow") != "" {
+		t.Fatalf("protected POST: status=%d Allow=%q", rec.Code, rec.Header().Get("Allow"))
+	}
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	sess.Set(srv.SessionKey, map[string]any{"sub": "user"})
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
+	rec = httptest.NewRecorder()
+	(wrapper{server: srv, handler: testStatusHandler{statusCode: http.StatusOK}}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated POST: status=%d", rec.Code)
 	}
 }
 
@@ -130,11 +141,7 @@ func TestWrapperServeHTTPClearsInvalidAuthData(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 
 			srv := newWrapperTestServer(jw, "https://issuer.example")
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
@@ -212,11 +219,7 @@ func TestSessionAuthStatus(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 
 			srv := &Server{SessionKey: "claims"}
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
@@ -236,11 +239,7 @@ func TestSessionAuthStatus(t *testing.T) {
 }
 
 func TestWrapperServeHTTPRedirectsWhenAuthDataMissing(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	tests := []struct {

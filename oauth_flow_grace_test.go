@@ -18,11 +18,7 @@ import (
 
 func TestOAuthProviderVisitKeepsOnlyPendingSessionAlive(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		srv := &Server{Jaws: jw, oauth2cfg: &oauth2.Config{
 			ClientID: "test", RedirectURL: "https://app.example/auth/callback",
 			Endpoint: oauth2.Endpoint{AuthURL: "https://provider.example/auth", TokenURL: "https://provider.example/token"},
@@ -60,11 +56,7 @@ func TestOAuthProviderVisitKeepsOnlyPendingSessionAlive(t *testing.T) {
 
 func TestPendingLoginProtectedRequestDoesNotRestartOrRenewGrace(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		srv := newProfileTestServer(t, jw, nil)
 		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 		protected := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
@@ -90,11 +82,7 @@ func TestPendingLoginProtectedRequestDoesNotRestartOrRenewGrace(t *testing.T) {
 
 func TestExpiredPendingLoginStartsFreshFlow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		srv := newProfileTestServer(t, jw, nil)
 		cookie, oldState := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 		request := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
@@ -120,11 +108,7 @@ func TestExpiredPendingLoginStartsFreshFlow(t *testing.T) {
 
 func TestOAuthFlowExpiresEvenWithLiveSession(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		providerCalls := 0
 		srv := &Server{Jaws: jw, oauth2cfg: &oauth2.Config{
 			ClientID: "test", RedirectURL: "https://app.example/auth/callback",
@@ -166,11 +150,7 @@ func TestOAuthFlowExpiresEvenWithLiveSession(t *testing.T) {
 
 func TestOIDCInitialCallbackAfterProviderVisit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		var idToken string
 		exchanges := 0
 		srv := &Server{Jaws: jw,
@@ -221,11 +201,7 @@ func TestOIDCInitialCallbackAfterProviderVisit(t *testing.T) {
 
 func TestOAuthLinkCallbackNearDeadlineCanFinishProviderExchange(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		linked := false
 		srv := &Server{Jaws: jw, SessionKey: "claims", issuer: "https://provider.example",
 			profileSubject: func(map[string]any) (string, error) { return "42", nil },

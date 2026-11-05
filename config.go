@@ -26,9 +26,9 @@ type Config struct {
 	// Namespace isolates providers sharing one JaWS instance. New appends it to
 	// the four exported Server session-key fields; use a distinct value per provider.
 	Namespace   string
-	AuthURL     string // OIDC override; required in profile mode
-	TokenURL    string // OIDC override; required in profile mode
-	UserInfoURL string // OIDC override; required in profile mode
+	AuthURL     string // OIDC override
+	TokenURL    string // OIDC override
+	UserInfoURL string // OIDC override
 	// AllowInsecureIssuer permits HTTP issuer and provider endpoints and is only for tests/dev.
 	AllowInsecureIssuer bool
 	// HTTPClient is used for OIDC discovery and JWKS, and by default for token
@@ -42,8 +42,8 @@ type Config struct {
 	ClientID     string
 	ClientSecret string
 	// ProfileSubject enables OAuth2 profile authentication without an OIDC ID token.
-	// AuthURL, TokenURL and UserInfoURL are required in this mode. It must return
-	// a stable, non-empty provider subject from the authenticated profile response.
+	// It must return a stable, non-empty provider subject from the authenticated
+	// profile response.
 	// Profile mode sets claims["iss"] to Issuer and claims["sub"] to this subject;
 	// use a distinct Issuer per provider.
 	// JSON numbers arrive as json.Number to preserve large numeric IDs.
@@ -97,10 +97,8 @@ func validateEndpoint(field, value string, optional, allowInsecure bool) error {
 
 // Validate checks whether cfg contains usable OIDC/OAuth2 settings.
 //
-// RedirectURL, Issuer and ClientID must be present. URL fields must be absolute
-// and include a host. OIDC endpoint overrides are optional; profile endpoints
-// are required and must use HTTPS, or HTTP when AllowInsecureIssuer is true.
-// OIDC endpoints and Issuer must use HTTPS unless AllowInsecureIssuer is true.
+// It checks required fields and absolute URLs with hosts. Configured issuer and
+// provider endpoints require HTTPS unless AllowInsecureIssuer permits HTTP.
 // Returned failures match [ErrConfig].
 func (cfg *Config) Validate() error {
 	if _, err := validateUrl("RedirectURL", cfg.RedirectURL, false); err != nil {

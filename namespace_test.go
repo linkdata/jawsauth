@@ -28,11 +28,7 @@ func setTestOAuthFlow(sess *jaws.Session, srv *Server, flow pendingOAuthFlow) {
 }
 
 func TestOAuthFlowNamespacesShareSessionWithoutSharingState(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	newServer := func(namespace string) *Server {
 		srv, err := New(jw, &Config{Namespace: namespace}, nil)
 		if err != nil {

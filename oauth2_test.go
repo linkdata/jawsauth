@@ -104,6 +104,15 @@ func Test_sanitizeRedirectTarget(t *testing.T) {
 	if s := sanitizeRedirectTarget("example.com", "https://example.com.:443/dashboard"); s != "/dashboard" {
 		t.Fatal(s)
 	}
+	if s := sanitizeRedirectTarget("[::1]", "https://[::1]:443/dashboard"); s != "/dashboard" {
+		t.Fatal(s)
+	}
+	if s := sanitizeRedirectTarget("[::1]:443", "https://[::1]/dashboard"); s != "/dashboard" {
+		t.Fatal(s)
+	}
+	if s := sanitizeRedirectTarget("::1:443", "https://[::1]/dashboard"); s != "/" {
+		t.Fatalf("malformed host accepted: %q", s)
+	}
 	if s := sanitizeRedirectTarget("example.com", "section/page"); s != "/section/page" {
 		t.Fatal(s)
 	}
@@ -153,6 +162,15 @@ func Test_beginReferrerHandling(t *testing.T) {
 	if location != "/app/home?next=x" {
 		t.Fatalf("unhandled target changed to %q", location)
 	}
+	for _, referer := range []string{
+		"https://example.com/oauth2//login", "https://example.com/oauth2/./login",
+	} {
+		hr.Header.Set("Referer", referer)
+		_, location = srv.begin(hr)
+		if location != "/" {
+			t.Fatalf("handled path %q returned to %q", referer, location)
+		}
+	}
 }
 
 // Test_beginPathBoundary verifies that handled paths only rewrite exact
@@ -178,11 +196,7 @@ func Test_beginPathBoundary(t *testing.T) {
 }
 
 func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{"/oauth2/login": {}},
@@ -245,11 +259,7 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 }
 
 func Test_handleLoginCreatesSessionAndRotatesState(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{"/oauth2/login": {}},
@@ -295,11 +305,7 @@ func Test_handleLoginCreatesSessionAndRotatesState(t *testing.T) {
 }
 
 func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:                    jw,
 		SessionKey:              "oauth2userinfo",
@@ -335,11 +341,7 @@ func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
 }
 
 func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	var mu sync.Mutex
 	var gotVerifier string
@@ -497,11 +499,7 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 // the TokenSource stored in the session uses a request-independent context.
 // Scheduled refreshes can run after the callback request finishes.
 func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	const wantNonce = "nonce123"
@@ -577,11 +575,7 @@ func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T)
 }
 
 func Test_handleAuthResponseMissingPKCEVerifier(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	var tokenRequests int
 	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
@@ -636,11 +630,7 @@ func Test_handleAuthResponseMissingPKCEVerifier(t *testing.T) {
 }
 
 func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	rec := httptest.NewRecorder()
@@ -831,11 +821,7 @@ func TestServer_fetchUserInfoDoesNotFollowBearerRedirect(t *testing.T) {
 }
 
 func TestOAuthOfflineOptionUsesAuthorizationOnly(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	srv.Options = []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
 	var idToken string
@@ -880,11 +866,7 @@ func TestOAuthOfflineOptionUsesAuthorizationOnly(t *testing.T) {
 }
 
 func TestVerifyOIDCUserInfoDoesNotRefreshDuringCallback(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	srv.userinfoUrl = "https://provider.example/userinfo"
 	userinfoCalls, refreshCalls := 0, 0
@@ -940,11 +922,7 @@ func TestServer_fetchUserInfoCloseError(t *testing.T) {
 }
 
 func Test_handleAuthResponseMissingIDToken(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
@@ -995,11 +973,7 @@ func Test_handleAuthResponseMissingIDToken(t *testing.T) {
 }
 
 func Test_handleAuthResponseInvalidIDToken(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	idToken := makeIDToken(t, map[string]any{
@@ -1059,11 +1033,7 @@ func Test_handleAuthResponseInvalidIDToken(t *testing.T) {
 }
 
 func Test_handleAuthResponseAudienceMismatch(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	idToken := makeIDToken(t, map[string]any{
@@ -1123,11 +1093,7 @@ func Test_handleAuthResponseAudienceMismatch(t *testing.T) {
 }
 
 func Test_handleAuthResponseNonceMismatch(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	idToken := makeIDToken(t, map[string]any{
@@ -1187,11 +1153,7 @@ func Test_handleAuthResponseNonceMismatch(t *testing.T) {
 }
 
 func Test_handleAuthResponseWithoutSession(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{},
@@ -1221,11 +1183,7 @@ func Test_handleAuthResponseWithoutSession(t *testing.T) {
 }
 
 func Test_handleAuthResponseLoginFailedFallsBack(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{Jaws: jw}
 	var callbackCount int
 	var callbackStatus int
@@ -1269,11 +1227,7 @@ func Test_handleAuthResponseLoginFailedFallsBack(t *testing.T) {
 }
 
 func Test_handleAuthResponseLoginFailedHandlesResponse(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{Jaws: jw}
 	const customBody = "handled by callback"
 	srv.LoginFailed = func(hw http.ResponseWriter, hr *http.Request, httpCode int, callErr error, email string) bool {
@@ -1311,11 +1265,7 @@ func Test_handleAuthResponseLoginFailedHandlesResponse(t *testing.T) {
 }
 
 func TestServerExtractEmail(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	testCases := []struct {
 		name       string
@@ -1446,11 +1396,7 @@ func (h *recordingHandler) WithGroup(string) slog.Handler {
 }
 
 func Test_handleAuthResponseMissingState(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{},
@@ -1481,11 +1427,7 @@ func Test_handleAuthResponseMissingState(t *testing.T) {
 }
 
 func Test_handleAuthResponseMissingNonce(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	idToken := makeIDToken(t, map[string]any{
@@ -1546,11 +1488,7 @@ func Test_handleAuthResponseMissingNonce(t *testing.T) {
 }
 
 func TestHandleLinkWithoutOAuthConfigReturnsError(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{Jaws: jw, LinkEvent: func(*jaws.Session, *http.Request, map[string]any) (int, error) { return 0, nil }}
 	req := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link/provider", nil)
 	if jw.NewSession(httptest.NewRecorder(), req) == nil {
@@ -1565,11 +1503,7 @@ func TestHandleLinkWithoutOAuthConfigReturnsError(t *testing.T) {
 }
 
 func Test_handlersRejectNonGet(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	newServer := func() *Server {
 		return &Server{
@@ -1690,11 +1624,7 @@ func TestRedirectTargetBounds(t *testing.T) {
 func TestLoginSessionUnavailable(t *testing.T) {
 	for _, limit := range []string{"global", "perIP", "closed"} {
 		t.Run(limit, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			switch limit {
 			case "global":
 				jw.MaxSessions = 1

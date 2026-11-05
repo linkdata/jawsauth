@@ -5,16 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/linkdata/jaws"
 )
 
 func TestServerCurrentClaimsChecksExpiryAndJaWSSession(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{Jaws: jw, SessionKey: "claims", namespace: "github"}
 	sess := jw.NewSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "https://app.example/", nil))
 	if sess == nil {
@@ -32,11 +26,7 @@ func TestServerCurrentClaimsChecksExpiryAndJaWSSession(t *testing.T) {
 	if got := srv.CurrentClaims(sess); got["sub"] != "42" {
 		t.Fatalf("live claims: %v", got)
 	}
-	other, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer other.Close()
+	other := newTestJaws(t)
 	if (&Server{Jaws: other, SessionKey: srv.SessionKey, namespace: srv.namespace}).CurrentClaims(sess) != nil {
 		t.Fatal("another JaWS instance accepted session")
 	}

@@ -6,8 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/linkdata/jaws"
 )
 
 func TestAdminEmailPolicy(t *testing.T) {
@@ -27,16 +25,12 @@ func TestAdminEmailPolicy(t *testing.T) {
 		{"quotedLocalPart", map[string]any{"email": `"\"quoted\""@example.com`, "email_verified": true}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			srv := newTimerTestServer(t, jw, "https://issuer.example", &testAuthTimerFactory{})
 			srv.SetAdmins([]string{"admin@example.com", "kate@example.com", "Åsa@example.com", `"\"quoted\""@example.com`})
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
-			if err = srv.storeSessionAuthClaims(sess, tc.claims, nil, time.Now().Add(time.Hour), nil); err != nil {
+			if err := srv.storeSessionAuthClaims(sess, tc.claims, nil, time.Now().Add(time.Hour), nil); err != nil {
 				t.Fatal(err)
 			}
 			auth := &JawsAuth{server: srv, sess: sess}
@@ -78,11 +72,7 @@ func TestProfileAdminRequiresVerifiedEmailByDefault(t *testing.T) {
 		{"explicit opt-out", true, http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			srv := newProfileTestServer(t, jw, nil)
 			if !srv.RequireVerifiedAdminEmail {
 				t.Fatal("profile mode did not require verified admin email by default")
@@ -145,11 +135,7 @@ func TestUserInfoClaimProvenance(t *testing.T) {
 
 func TestAdminEmailPolicyConcurrentUpdates(t *testing.T) {
 	// Exercise real concurrent updates and reads without forcing an interleaving.
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv, err := New(jw, nil, nil)
 	if err != nil {
 		t.Fatal(err)

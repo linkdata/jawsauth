@@ -37,11 +37,7 @@ func (w *rotationHeaderGate) Header() http.Header {
 }
 
 func TestLoginStartDuringRotationKeepsFirstCallback(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	lock := &observedRotationLock{second: make(chan struct{})}
@@ -75,11 +71,7 @@ func TestLoginStartDuringRotationKeepsFirstCallback(t *testing.T) {
 }
 
 func TestCallbackRevokedAfterStoreBalancesEvents(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
@@ -112,11 +104,7 @@ func TestCallbackRevokedAfterStoreBalancesEvents(t *testing.T) {
 func TestCallbackRejectsAuthInvalidatedByLoginEvent(t *testing.T) {
 	for _, action := range []string{"expired auth", "closed session"} {
 		t.Run(action, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			srv := newProfileTestServer(t, jw, nil)
 			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 			called := false
@@ -139,11 +127,7 @@ func TestCallbackRejectsAuthInvalidatedByLoginEvent(t *testing.T) {
 
 func TestProfileTokenExpiresBetweenRotationAndStore(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		srv := newProfileTestServer(t, jw, nil)
 		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 		first := profileCallback(srv, cookie, state, "first")
@@ -182,11 +166,7 @@ func TestProfileTokenExpiresBetweenRotationAndStore(t *testing.T) {
 }
 
 func TestLinkWithoutEventDoesNotStartFlow(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	calls := 0
 	srv := newProfileTestServer(t, jw, &calls)
 	srv.LinkEvent = nil
@@ -203,11 +183,7 @@ func TestLinkWithoutEventDoesNotStartFlow(t *testing.T) {
 }
 
 func TestLinkRejectsGETBeforeStartingFlow(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	calls := 0
 	srv := newProfileTestServer(t, jw, &calls)
 	srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) { return 0, nil }
@@ -235,11 +211,7 @@ func TestLinkRejectsInvalidEventResults(t *testing.T) {
 		{"conflict status", http.StatusConflict, errors.New("secret persistence detail"), http.StatusConflict},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			srv := newProfileTestServer(t, jw, nil)
 			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 			first := profileCallback(srv, cookie, state, "first")
@@ -263,11 +235,7 @@ func TestLinkRejectsInvalidEventResults(t *testing.T) {
 
 func TestLinkRejectsIdentityThatExpiresWhileWaitingForLock(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		srv := newProfileTestServer(t, jw, nil)
 		lock := &holdFirstRotationLock{first: make(chan struct{}), releaseFirst: make(chan struct{})}
 		srv.SessionRotationLock = lock
@@ -302,30 +270,36 @@ func TestLinkRejectsIdentityThatExpiresWhileWaitingForLock(t *testing.T) {
 	})
 }
 
-func TestUserInfoRejectsTrailingJSON(t *testing.T) {
+func TestUserInfoRequiresOneJSONObject(t *testing.T) {
 	for _, profile := range []bool{false, true} {
 		t.Run(map[bool]string{false: "OIDC", true: "profile"}[profile], func(t *testing.T) {
-			srv := &Server{}
-			if profile {
-				srv.profileSubject = func(map[string]any) (string, error) { return "42", nil }
-			}
-			ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				return profileTestResponse(`{"id":42} {"id":43}`), nil
-			})})
-			claims, err := srv.fetchUserInfo(ctx, "https://provider.example/user", oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "proof"}))
-			if !errors.Is(err, ErrUserInfoInvalidResponse) || claims != nil {
-				t.Fatalf("trailing JSON accepted: claims=%v err=%v", claims, err)
+			for _, tc := range []struct{ name, body string }{
+				{"trailing", `{"id":42} {"id":43}`},
+				{"null", `null`},
+				{"array", `[1]`},
+				{"string", `"x"`},
+				{"number", `1`},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					srv := &Server{}
+					if profile {
+						srv.profileSubject = func(map[string]any) (string, error) { return "42", nil }
+					}
+					ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+						return profileTestResponse(tc.body), nil
+					})})
+					claims, err := srv.fetchUserInfo(ctx, "https://provider.example/user", oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "proof"}))
+					if !errors.Is(err, ErrUserInfoInvalidResponse) || claims != nil {
+						t.Fatalf("invalid UserInfo accepted: claims=%v err=%v", claims, err)
+					}
+				})
 			}
 		})
 	}
 }
 
 func TestLinkWithoutRefererReturnsHome(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	first := profileCallback(srv, cookie, state, "first")
@@ -354,17 +328,13 @@ func TestProfileUserInfoNullDoesNotCallSubject(t *testing.T) {
 		return profileTestResponse(`null`), nil
 	})})
 	claims, source, expiry, status, err := srv.verifyOAuthIdentity(ctx, &oauth2.Token{AccessToken: "proof", TokenType: "Bearer"}, "")
-	if !errors.Is(err, ErrOAuth2InvalidProfile) || claims != nil || source != nil || !expiry.IsZero() || status != http.StatusUnauthorized || called {
+	if !errors.Is(err, ErrUserInfoInvalidResponse) || claims != nil || source != nil || !expiry.IsZero() || status != http.StatusBadGateway || called {
 		t.Fatalf("null profile: claims=%v source=%t expiry=%v status=%d err=%v subject_called=%t", claims, source != nil, expiry, status, err, called)
 	}
 }
 
 func TestCallbackClosesRotatedSessionOnStoreFailure(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	first := profileCallback(srv, cookie, state, "first")
@@ -403,11 +373,7 @@ func (lock *revokeAfterRotationLock) Unlock() {
 }
 
 func TestCallbackRevokedAfterRotationClosesNewSession(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	first := profileCallback(srv, cookie, state, "first")

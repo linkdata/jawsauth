@@ -17,6 +17,11 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 		if present {
 			w.server.clearSessionAuth(sess, hr, nil, true)
 		}
+		if hr.Method != http.MethodGet {
+			SetHeaders(hw, w.server.ishttps)
+			hw.WriteHeader(http.StatusForbidden)
+			return
+		}
 		w.server.startOAuth(hw, hr, false, true)
 		return
 	}

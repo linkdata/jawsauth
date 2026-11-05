@@ -6,16 +6,10 @@ import (
 	"net/url"
 	"testing"
 	"time"
-
-	"github.com/linkdata/jaws"
 )
 
 func TestProtectedRequestPreservesPendingLoginOnAuthExpiry(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	cookie, initialState := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	first := profileCallback(srv, cookie, initialState, "first")

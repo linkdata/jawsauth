@@ -31,6 +31,13 @@ type authTimerState struct {
 	expiry time.Time
 }
 
+// pendingLoginEvent orders callbacks when authentication is cleared before login notification finishes.
+type pendingLoginEvent struct {
+	started       bool
+	cleared       bool
+	logoutRequest *http.Request
+}
+
 func authTimerEntryExpiry(entry *authTimerState) (expiry time.Time) {
 	if entry != nil {
 		expiry = entry.expiry
@@ -189,6 +196,12 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 	sess.Set(srv.SessionEmailKey, email)
 	sess.Set(srv.SessionEmailVerifiedKey, verified)
 	delay, replaced := srv.scheduleSessionAuthTimerLocked(sess, expiry)
+	if canceled != nil && srv.LoginEvent != nil {
+		if srv.loginEvents == nil {
+			srv.loginEvents = make(map[*jaws.Session]*pendingLoginEvent)
+		}
+		srv.loginEvents[sess] = &pendingLoginEvent{}
+	}
 	srv.mu.Unlock()
 	srv.Jaws.Dirty(sess)
 	mode := "oidc"
@@ -203,6 +216,31 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 		"replaced_existing", replaced,
 	)
 	return nil
+}
+
+func (srv *Server) emitLoginEvent(sess *jaws.Session, hr *http.Request) {
+	if srv.LoginEvent == nil {
+		return
+	}
+	srv.mu.Lock()
+	pending := srv.loginEvents[sess]
+	if pending == nil || pending.cleared {
+		delete(srv.loginEvents, sess)
+		srv.mu.Unlock()
+		return
+	}
+	pending.started = true
+	srv.mu.Unlock()
+	defer func() {
+		srv.mu.Lock()
+		delete(srv.loginEvents, sess)
+		cleared, request := pending.cleared, pending.logoutRequest
+		srv.mu.Unlock()
+		if cleared && srv.LogoutEvent != nil {
+			srv.LogoutEvent(sess, request)
+		}
+	}()
+	srv.LoginEvent(sess, hr)
 }
 
 func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Session, tokenSource oauth2.TokenSource, token *oauth2.Token, minExpiry time.Time, entry *authTimerState) error {
@@ -444,10 +482,12 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 	if srv == nil || sess == nil {
 		return
 	}
-	if srv.SessionRotationLock != nil {
-		srv.SessionRotationLock.Lock()
+	rotationLock := srv.SessionRotationLock
+	if rotationLock != nil {
+		rotationLock.Lock()
 	}
 	srv.mu.Lock()
+	pending := srv.loginEvents[sess]
 	hadAuth := srv.authTimers[sess.ID()] != nil
 	if !hadAuth {
 		_, hadAuth = srv.sessionAuthStatus(sess, nil)
@@ -467,16 +507,23 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 		sess.Set(srv.SessionEmailVerifiedKey, nil)
 		if hadAuth {
 			requests = sess.Requests()
+			if pending != nil {
+				pending.cleared = true
+				pending.logoutRequest = hr
+				if !pending.started {
+					delete(srv.loginEvents, sess)
+				}
+			}
 		}
 	}
 	srv.mu.Unlock()
-	if srv.SessionRotationLock != nil {
-		srv.SessionRotationLock.Unlock()
+	if rotationLock != nil {
+		rotationLock.Unlock()
 	}
 	if cleared {
 		if hadAuth {
 			reloadAuthRequests(requests)
-			if srv.LogoutEvent != nil {
+			if pending == nil && srv.LogoutEvent != nil {
 				srv.LogoutEvent(sess, hr)
 			}
 		}

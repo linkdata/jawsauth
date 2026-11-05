@@ -73,11 +73,7 @@ func TestOAuthProfileAuthLifetimeCapsLongProviderToken(t *testing.T) {
 }
 
 func TestOAuthProfileCallbackStateIsSingleUseConcurrently(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	var calls atomic.Int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		calls.Add(1)
@@ -136,11 +132,7 @@ func (l *rotationNoticeLock) Lock() {
 func (l *rotationNoticeLock) Unlock() { l.mu.Unlock() }
 
 func TestOAuthProfileRotationLockDoesNotBlockProvider(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	providerReached := make(chan struct{})
 	srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -174,11 +166,7 @@ func TestOAuthProfileRotationLockDoesNotBlockProvider(t *testing.T) {
 }
 
 func TestOAuthFailedCallbackDoesNotEraseNewCallback(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	entered := make(chan struct{})
 	secondEntered := make(chan struct{})
 	release := make(chan struct{})
@@ -261,11 +249,7 @@ func TestOAuthFailedCallbackDoesNotEraseNewCallback(t *testing.T) {
 func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 	for _, action := range []string{"logout", "new flow"} {
 		t.Run(action, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			var releaseOnce sync.Once
@@ -329,11 +313,7 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 }
 
 func TestOAuthProfileCallbackCanceledBeforeFinalStore(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	factory := &testAuthTimerFactory{}
 	srv.authTimerAfterFunc = factory.after
@@ -373,11 +353,7 @@ func TestOAuthProfileCallbackCanceledBeforeFinalStore(t *testing.T) {
 }
 
 func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -428,11 +404,7 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 }
 
 func TestOAuthProfileLinkRejectsReplacedSession(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	login := profileCallback(srv, cookie, state, "first")
@@ -495,11 +467,7 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 				name = revocation + "/revocation first"
 			}
 			t.Run(name, func(t *testing.T) {
-				jw, err := jaws.New()
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer jw.Close()
+				jw := newTestJaws(t)
 				srv := newProfileTestServer(t, jw, nil)
 				factory := &testAuthTimerFactory{}
 				srv.authTimerAfterFunc = factory.after
@@ -582,11 +550,7 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 	for _, phase := range []string{"pending", "callback"} {
 		t.Run(phase, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			srv := newProfileTestServer(t, jw, nil)
 			factory := &testAuthTimerFactory{}
 			srv.authTimerAfterFunc = factory.after
@@ -801,11 +765,7 @@ func profileCallback(srv *Server, cookie *http.Cookie, state, code string) *http
 
 func TestOAuthProfileSignInAndDualProofLink(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		calls := 0
 		srv := newProfileTestServer(t, jw, &calls)
 		logins, links := 0, 0
@@ -856,11 +816,7 @@ func TestOAuthProfileSignInAndDualProofLink(t *testing.T) {
 }
 
 func TestOAuthProfileExpiredLinkStateNeverCallsProvider(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	calls := 0
 	srv := newProfileTestServer(t, jw, &calls)
 	oldCookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
@@ -885,11 +841,7 @@ func TestOAuthProfileExpiredLinkStateNeverCallsProvider(t *testing.T) {
 }
 
 func TestOAuthLinkRequiresSessionAndSameOriginRequestAndRejectsDeclinedLink(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	calls := 0
 	srv := newProfileTestServer(t, jw, &calls)
 	missing := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link/github", nil)
@@ -935,11 +887,7 @@ func TestOAuthLinkRequiresSessionAndSameOriginRequestAndRejectsDeclinedLink(t *t
 }
 
 func TestOAuthProfileRejectsInvalidSubjectAndOversizedResponse(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	calls := 0
 	srv := newProfileTestServer(t, jw, &calls)
 	srv.profileSubject = func(map[string]any) (string, error) { return "", ErrOAuth2InvalidProfile }
@@ -966,7 +914,7 @@ func TestOAuthProfileRejectsInvalidSubjectAndOversizedResponse(t *testing.T) {
 	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return profileTestResponse(`{"id":42}` + strings.Repeat(" ", maxUserInfoBytes+1)), nil
 	})})
-	_, err = oversized.fetchUserInfo(ctx, "https://provider.example/user", oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "secret"}))
+	_, err := oversized.fetchUserInfo(ctx, "https://provider.example/user", oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "secret"}))
 	if !errors.Is(err, ErrUserInfoTooLarge) {
 		t.Fatalf("oversized profile: %v", err)
 	}
@@ -1007,11 +955,7 @@ func TestOAuthProfileRejectsEmptyAccessTokenBeforeUserInfo(t *testing.T) {
 
 func TestOAuthProfileUserInfoCallbackDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		srv := newProfileTestServer(t, jw, nil)
 		var userinfoErr error
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -1045,11 +989,7 @@ func TestOAuthProfileUserInfoCallbackDeadline(t *testing.T) {
 
 func TestOAuthProfileAcceptsShortUnexpiredToken(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer jw.Close()
+		jw := newTestJaws(t)
 		srv := &Server{Jaws: jw, issuer: "https://provider.example", userinfoUrl: "https://provider.example/user",
 			profileSubject: func(map[string]any) (string, error) { return "42", nil }}
 		calls := 0
@@ -1085,11 +1025,7 @@ func TestOAuthProfileExplicitZeroExpiryRejectedButOmittedExpiryCapped(t *testing
 		{"form zero", "&expires_in=0", true, http.StatusUnauthorized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			srv := newProfileTestServer(t, jw, nil)
 			srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/token" {
@@ -1131,11 +1067,7 @@ func TestOAuthProfileExplicitZeroExpiryRejectedButOmittedExpiryCapped(t *testing
 }
 
 func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	factory := &testAuthTimerFactory{}
 	srv.authTimerAfterFunc = factory.after
@@ -1164,11 +1096,7 @@ func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
 }
 
 func TestOAuthProfileTimerReleasesClosedSession(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	factory := &testAuthTimerFactory{}
 	srv.authTimerAfterFunc = factory.after
