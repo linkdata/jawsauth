@@ -21,14 +21,18 @@ issue refresh tokens only with offline access can use
 
 Profile mode requires `AuthURL`, `TokenURL` and `UserInfoURL`, plus a
 `ProfileSubject` function that extracts a stable subject from the authenticated
-profile. Email and names are not identity proof. Profile JSON numbers arrive as
-`json.Number` to preserve large IDs. Profile authentication expires after 24
-hours or the access token's earlier expiry.
+profile. Profile mode sets the `iss` claim to `Issuer` and `sub` to the
+`ProfileSubject` result. The `iss`+`sub` pair identifies an account, so use a
+distinct `Issuer` for each provider. Email and names are not identity proof.
+Profile JSON numbers arrive as `json.Number` to preserve large IDs. Profile
+authentication expires after 24 hours or the access token's earlier expiry.
+An explicit `expires_in: 0` in the token response is rejected.
 
 Set `Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound sessions created by
-unauthenticated requests. A login attempt can retain an anonymous session for
-ten minutes while the user visits the provider. Login rotates the session and
-discards its application data; rotation needs a free slot under both limits.
+unauthenticated requests; both limits are unlimited by default. A login attempt
+can retain an anonymous session for about ten minutes while the user visits the
+provider. Login rotates the session and discards its application data; rotation
+needs a free slot under both limits.
 In particular, `MaxSessionsPerIP = 1` prevents login. If a slot is unavailable,
 login returns 503 with `Retry-After: 60` and preserves the existing session.
 
@@ -37,23 +41,20 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
 - Give each `Config` a distinct `Namespace` and callback directory. Add each
   provider's registered paths to the other servers' `HandledPaths` so return
   targets cannot enter another provider's auth endpoints.
-- `New` installs that provider's `Jaws.MakeAuth`. Install a composite `MakeAuth`
-  if JaWS pages need data from several providers. Each server's `Wrap` and
-  `Handler` require its own authentication; `CurrentClaims` checks that
-  provider's live claims.
-- `HandleLink` is an opt-in POST handler. Authorize the existing session before
-  calling it, then recheck the original provider's `CurrentClaims` in
-  `LinkEvent` before writing the link. A link keeps the session; an ordinary
-  login rotates it and signs out the other providers. Their `LogoutEvent` may
-  run later at their next auth timer check, with a nil request.
+- `New` sets `Jaws.MakeAuth`. Install a composite `MakeAuth` if JaWS pages need
+  data from several providers. Each server's `Wrap`, `Handler` and
+  `CurrentClaims` check that provider's authentication.
+- Register `HandleLink` as a POST handler to enable linking; `New` does not
+  register it. Authorize the session before calling it. In `LinkEvent`, recheck
+  the original provider's `CurrentClaims` before writing the link. Linking keeps
+  the session; an ordinary login rotates it and signs out other providers.
+  Their `LogoutEvent` may run later with a nil request.
 - `New` gives each server a private `SessionRotationLock`. For cross-provider
-  linking, give the involved servers one shared lock before serving. jawsauth
-  holds it during login rotation, logout, expiry, protected-handler revocation
-  and `LinkEvent`. Do not hold it around any jawsauth handler or `Server.Logout`,
-  or inside `LinkEvent`. Keep `LinkEvent` brief: while it runs, login, logout
-  and expiry for other sessions sharing the lock wait. Logout of one provider
-  does not cancel another provider's pending link, which must recheck the
-  original authentication.
+  linking, assign one shared lock before serving. jawsauth holds it during
+  rotation, logout, expiry, revocation and `LinkEvent`. Do not lock around
+  jawsauth handlers or `Server.Logout`; do not lock or call `Server.Logout` in
+  `LinkEvent`. Keep `LinkEvent` brief because other sessions sharing the lock
+  wait. One provider's logout does not cancel another provider's pending link.
 
 ## Admin access
 
@@ -65,21 +66,23 @@ grant admin access in strict mode. Some providers omit `email_verified`.
 [Microsoft warns against using its email claim for authorization](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference);
 use application policy based on a stable identifier for Entra ID.
 
-`SetAdmins` compares parsed email addresses with ASCII case ignored. An empty
-list allows every authenticated user through the admin handlers.
+`SetAdmins` parses valid addresses and compares them ignoring ASCII case. An
+empty list allows every authenticated user through the admin handlers.
 `Server.IsAdmin(email)` checks only list membership; `JawsAuth.IsAdmin` and the
 admin handlers enforce email verification when required.
 
 ## Session lifetime
 
 Pending OAuth flows expire after ten minutes. jawsauth extends the original
-JaWS session's grace while the user visits the provider. Protected requests
-during a pending login may return 409 without restarting or extending the flow;
-the original callback keeps its return target. Logout and authentication expiry
+JaWS session's grace while the user visits the provider. Unauthenticated
+protected requests during a pending login redirect to the same provider flow
+without replacing its state, return target or grace deadline. Requests during
+a running callback return 409 unless `LoginFailed` handles them. Logout and
+authentication expiry
 clear that server's credentials and reload the session's JaWS pages. Auth expiry
-preserves a pending login but cancels a pending link;
-explicit logout cancels either flow. A new login on the same server, including
-one started by `Wrap` or `Handler`, cancels a pending link. Protected operations
+preserves a pending login but cancels a pending link. Explicit logout cancels
+either flow. A new login on the same server, including one started by `Wrap` or
+`Handler`, cancels a pending link. Protected operations
 should check `CurrentClaims`, plus `JawsAuth.IsAdmin` for administrator actions.
 
 Use an HTTP endpoint for a post-logout redirect. `Server.Logout` reloads pages

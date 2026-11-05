@@ -60,7 +60,7 @@ func TestOAuthFlowNamespacesShareSessionWithoutSharingState(t *testing.T) {
 	}
 	link := httptest.NewRecorder()
 	gitlab.HandleLink(link, linkRequest)
-	if link.Code != http.StatusFound {
+	if link.Code != http.StatusSeeOther {
 		t.Fatalf("gitlab link start: %d", link.Code)
 	}
 	sess := jw.GetSession(r)

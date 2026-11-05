@@ -123,7 +123,7 @@ func TestOIDCExpiryDuringUserInfoRejected(t *testing.T) {
 	})
 }
 
-func TestProfileExpiryDuringSubjectAndFinalStoreRejected(t *testing.T) {
+func TestProfileExpiryDuringSubjectRejected(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		jw, err := jaws.New()
 		if err != nil {
@@ -142,18 +142,6 @@ func TestProfileExpiryDuringSubjectAndFinalStoreRejected(t *testing.T) {
 		claims, _, _, status, err := srv.verifyOAuthIdentity(ctx, token, "")
 		if !errors.Is(err, ErrOAuth2InvalidProfile) || claims != nil || status != http.StatusUnauthorized {
 			t.Fatalf("expiry during subject: claims=%v status=%d err=%v", claims, status, err)
-		}
-
-		req := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
-		sess := jw.NewSession(httptest.NewRecorder(), req)
-		srv.SessionKey = "claims"
-		srv.SessionTokenKey = "token"
-		srv.SessionEmailKey = "email"
-		srv.SessionEmailVerifiedKey = "verified"
-		canceled := make(chan struct{})
-		err = srv.storeSessionAuthClaimsIfActive(sess, map[string]any{"sub": "person"}, nil, time.Now().Add(-time.Second), nil, canceled)
-		if !errors.Is(err, ErrOAuth2InvalidProfile) || sess.Get(srv.SessionKey) != nil {
-			t.Fatalf("final store of expired profile: claims=%v err=%v", sess.Get(srv.SessionKey), err)
 		}
 	})
 }

@@ -2,7 +2,7 @@
 //
 // OIDC mode uses discovery, PKCE, nonce and ID token verification. Profile mode
 // uses explicit provider endpoints, PKCE and an authenticated profile response
-// with an application-supplied stable-subject verifier. The verified claims are
+// with an application-supplied subject extractor. The verified claims are
 // stored in a JaWS session. OIDC attempts refresh before expiry; profile auth
 // expires after a bounded lifetime. Both modes support admin email gates.
 //

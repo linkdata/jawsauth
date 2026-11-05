@@ -17,9 +17,9 @@ import (
 
 // Config holds the OIDC/OAuth2 settings used by New and NewDebug to construct a Server.
 //
-// RedirectURL, Issuer and ClientID are required. OIDC mode discovers endpoints;
-// URL fields may override them. Profile mode requires explicit AuthURL, TokenURL,
-// UserInfoURL and ProfileSubject.
+// RedirectURL, Issuer and ClientID are required. Setting ProfileSubject selects
+// profile mode and requires AuthURL, TokenURL and UserInfoURL. Otherwise OIDC
+// mode discovers endpoints; URL fields may override them.
 type Config struct {
 	RedirectURL string // required. e.g. "https://application.example.com/oauth2/callback"
 	Issuer      string // required. e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
@@ -35,14 +35,17 @@ type Config struct {
 	// exchange/refresh and UserInfo. All provider requests cap its timeout at 15
 	// seconds. Discovery/JWKS follow only HTTPS redirects unless AllowInsecureIssuer
 	// is set; token and UserInfo requests follow none. A request context may supply
-	// a different oauth2.HTTPClient for token and UserInfo requests.
+	// a different oauth2.HTTPClient for code exchange and UserInfo requests;
+	// background refresh uses this configured client.
 	HTTPClient   *http.Client
-	Scopes       []string // optional; OIDC adds "openid" and "email", profile mode uses only these scopes
+	Scopes       []string // optional; OIDC adds "openid" and "email"; profile mode adds none
 	ClientID     string
 	ClientSecret string
 	// ProfileSubject enables OAuth2 profile authentication without an OIDC ID token.
 	// AuthURL, TokenURL and UserInfoURL are required in this mode. It must return
 	// a stable, non-empty provider subject from the authenticated profile response.
+	// Profile mode sets claims["iss"] to Issuer and claims["sub"] to this subject;
+	// use a distinct Issuer per provider.
 	// JSON numbers arrive as json.Number to preserve large numeric IDs.
 	// Profile emails can be unverified. For a non-empty admin list, set
 	// Server.RequireVerifiedAdminEmail unless the provider guarantees verified

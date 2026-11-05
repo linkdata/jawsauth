@@ -33,7 +33,8 @@ type JawsAuth struct {
 	sess   *jaws.Session
 }
 
-// Data returns the verified OIDC or OAuth2 profile claims stored in the session, or nil.
+// Data returns the OIDC or OAuth2 profile claims stored in the session, or nil.
+// It does not check expiry; use [Server.CurrentClaims] for access decisions.
 // It is safe to call on a nil or zero-value JawsAuth.
 func (a *JawsAuth) Data() (x map[string]any) {
 	if a != nil && a.server != nil && a.sess != nil {
@@ -42,10 +43,10 @@ func (a *JawsAuth) Data() (x map[string]any) {
 	return
 }
 
-// Email returns the authenticated email stored in the session, or an empty string.
+// Email returns the email stored in the session, or an empty string.
 //
 // The value is a parsed address with ASCII letters lowercased.
-// Use [JawsAuth.IsAdmin] to check administrator status.
+// It does not check expiry; use [Server.CurrentClaims] for access decisions.
 // It is safe to call on a nil or zero-value JawsAuth.
 func (a *JawsAuth) Email() (s string) {
 	if a != nil && a.server != nil && a.sess != nil {
@@ -65,9 +66,10 @@ func (a *JawsAuth) EmailVerified() (yes bool) {
 	return
 }
 
-// IsAdmin reports whether the authenticated email is an administrator.
+// IsAdmin reports whether the stored session email is an administrator.
 //
 // It applies [Server.RequireVerifiedAdminEmail] to non-empty admin lists.
+// It does not check login expiry; use [Server.CurrentClaims] for access decisions.
 // A nil or zero-value JawsAuth follows [Server.IsAdmin]'s nil-server behavior and returns true.
 func (a *JawsAuth) IsAdmin() (yes bool) {
 	if a == nil || a.server == nil {

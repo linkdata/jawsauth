@@ -112,7 +112,6 @@ func TestOIDCTimerReleasesSessionRotatedByOtherProvider(t *testing.T) {
 		t.Fatal("live OIDC session did not schedule its next liveness check")
 	}
 	replace := httptest.NewRequest(http.MethodGet, "/", nil)
-	replace.RemoteAddr = req.RemoteAddr
 	replace.AddCookie(first.Result().Cookies()[0])
 	if next := jw.NewSession(httptest.NewRecorder(), replace); next == nil || next == old || sessionAlive(old) {
 		t.Fatal("session was not rotated")
@@ -123,7 +122,7 @@ func TestOIDCTimerReleasesSessionRotatedByOtherProvider(t *testing.T) {
 	}
 }
 
-func TestOIDCRefreshTimeoutReleasesClosedSession(t *testing.T) {
+func TestOIDCRefreshTimeoutClearsExpiredAuth(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		jw, err := jaws.New()
 		if err != nil {
@@ -156,16 +155,21 @@ func TestOIDCRefreshTimeoutReleasesClosedSession(t *testing.T) {
 			close(done)
 		}()
 		<-started
-		sess.Close()
-		time.Sleep(oauth2ProviderTimeout + time.Second)
+		time.Sleep(oauth2ProviderTimeout - time.Second)
+		select {
+		case <-done:
+			t.Fatal("refresh completed before the provider timeout")
+		default:
+		}
+		time.Sleep(2 * time.Second)
 		synctest.Wait()
 		select {
 		case <-done:
 		default:
-			t.Fatal("stalled refresh retained closed session")
+			t.Fatal("stalled refresh did not time out")
 		}
-		if len(srv.authTimers) != 0 {
-			t.Fatal("stalled refresh left auth timer")
+		if len(srv.authTimers) != 0 || sess.Get(srv.SessionKey) != nil {
+			t.Fatal("stalled refresh retained expired auth")
 		}
 	})
 }
@@ -187,11 +191,15 @@ func TestAuthorizationWithdrawalCancelsRequests(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
 			expiry := time.Now().Add(time.Hour)
-			if action == "expiry" {
-				expiry = time.Now().Add(-time.Second)
-			}
 			if err = srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, nil, expiry, nil); err != nil {
 				t.Fatal(err)
+			}
+			if action == "expiry" {
+				expired := time.Now().Add(-time.Second)
+				sess.Set(srv.sessionKey(oauth2AuthExpiryKey), expired)
+				srv.mu.Lock()
+				srv.authTimers[sess.ID()].expiry = expired
+				srv.mu.Unlock()
 			}
 			rq := newLiveAuthRequest(t, jw, req)
 			ctx := rq.Context()
@@ -414,7 +422,7 @@ func TestLoginUserInfoDeadlineKeepsOIDCFallbackOptional(t *testing.T) {
 				case <-hr.Context().Done():
 					userinfoErr = hr.Context().Err()
 					return nil, userinfoErr
-				case <-time.After(61 * time.Second):
+				case <-time.After(oauth2ProviderTimeout + time.Second):
 					userinfoErr = errors.New("UserInfo missed callback deadline")
 					return nil, userinfoErr
 				}

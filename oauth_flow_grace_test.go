@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -37,14 +38,13 @@ func TestOAuthProviderVisitKeepsOnlyPendingSessionAlive(t *testing.T) {
 			t.Fatalf("cookies: %d", len(cookies))
 		}
 		callback := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback", nil)
-		callback.RemoteAddr = start.RemoteAddr
 		callback.AddCookie(cookies[0])
 		unrelated := httptest.NewRequest(http.MethodGet, "https://app.example/other", nil)
 		unrelated.RemoteAddr = "192.0.2.2:1234"
 		if jw.NewSession(httptest.NewRecorder(), unrelated) == nil {
 			t.Fatal("unrelated session missing")
 		}
-		time.Sleep(61 * time.Second)
+		time.Sleep(time.Minute + time.Second)
 		if jw.GetSession(callback) == nil {
 			t.Fatal("pending preauth session expired during provider visit")
 		}
@@ -65,8 +65,7 @@ func TestPendingLoginProtectedRequestDoesNotRestartOrRenewGrace(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer jw.Close()
-		calls := 0
-		srv := newProfileTestServer(t, jw, &calls)
+		srv := newProfileTestServer(t, jw, nil)
 		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 		protected := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
 		protected.AddCookie(cookie)
@@ -75,7 +74,7 @@ func TestPendingLoginProtectedRequestDoesNotRestartOrRenewGrace(t *testing.T) {
 		srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("pending login reached protected handler")
 		})).ServeHTTP(response, protected)
-		if response.Code != http.StatusConflict || response.Header().Get("Location") != "" || !strings.Contains(response.Body.String(), ErrOAuth2LoginInProgress.Error()) {
+		if response.Code != http.StatusFound || response.Header().Get("Location") == "" {
 			t.Fatalf("pending login: status=%d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
 		}
 		stored := testOAuthFlow(jw.GetSession(protected), srv)
@@ -85,6 +84,36 @@ func TestPendingLoginProtectedRequestDoesNotRestartOrRenewGrace(t *testing.T) {
 		time.Sleep(time.Minute + oauth2ProviderTimeout + 2*time.Second)
 		if jw.GetSession(protected) != nil {
 			t.Fatal("rejected start renewed pending session grace")
+		}
+	})
+}
+
+func TestExpiredPendingLoginStartsFreshFlow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		jw, err := jaws.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer jw.Close()
+		srv := newProfileTestServer(t, jw, nil)
+		cookie, oldState := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+		request := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
+		request.AddCookie(cookie)
+		sess := jw.GetSession(request)
+		if sess == nil || jw.NewRequest(httptest.NewRecorder(), request).Session() != sess {
+			t.Fatal("pending session not attached to live page")
+		}
+		time.Sleep(oauth2FlowLifetime + time.Second)
+		response := httptest.NewRecorder()
+		srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("expired pending flow reached protected handler")
+		})).ServeHTTP(response, request)
+		if response.Code != http.StatusFound || jw.GetSession(request) != sess {
+			t.Fatalf("fresh login: status=%d session=%v", response.Code, jw.GetSession(request))
+		}
+		location, err := url.Parse(response.Header().Get("Location"))
+		if err != nil || location.Query().Get("state") == "" || location.Query().Get("state") == oldState || testOAuthFlow(sess, srv).state != location.Query().Get("state") {
+			t.Fatalf("expired flow was reused: location=%q err=%v", response.Header().Get("Location"), err)
 		}
 	})
 }
@@ -112,7 +141,6 @@ func TestOAuthFlowExpiresEvenWithLiveSession(t *testing.T) {
 		}
 		cookies := response.Result().Cookies()
 		callback := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback", nil)
-		callback.RemoteAddr = start.RemoteAddr
 		callback.AddCookie(cookies[0])
 		sess := jw.GetSession(callback)
 		if sess == nil {
@@ -130,8 +158,8 @@ func TestOAuthFlowExpiresEvenWithLiveSession(t *testing.T) {
 		}
 		result := httptest.NewRecorder()
 		srv.HandleAuthResponse(result, callback)
-		if result.Code != http.StatusBadRequest || !strings.Contains(result.Body.String(), ErrOAuth2ExpiredState.Error()) || sess.Get(oauth2FlowKey) != nil || providerCalls != 0 {
-			t.Fatalf("expired flow: status=%d state=%v provider_calls=%d body=%q", result.Code, sess.Get(oauth2FlowKey), providerCalls, result.Body.String())
+		if result.Code != http.StatusBadRequest || !strings.Contains(result.Body.String(), ErrOAuth2ExpiredState.Error()) || sess.Get(srv.sessionKey(oauth2FlowKey)) != nil || providerCalls != 0 {
+			t.Fatalf("expired flow: status=%d state=%v provider_calls=%d body=%q", result.Code, sess.Get(srv.sessionKey(oauth2FlowKey)), providerCalls, result.Body.String())
 		}
 	})
 }
@@ -170,9 +198,8 @@ func TestOIDCInitialCallbackAfterProviderVisit(t *testing.T) {
 			"iss": "https://issuer.example", "aud": "app", "sub": "subject-1", "nonce": nonce,
 			"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(),
 		})
-		time.Sleep(61 * time.Second)
+		time.Sleep(time.Minute + time.Second)
 		callback := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback?state="+state+"&code=code", nil)
-		callback.RemoteAddr = start.RemoteAddr
 		callback.AddCookie(cookie)
 		result := httptest.NewRecorder()
 		srv.HandleAuthResponse(result, callback)
@@ -184,7 +211,6 @@ func TestOIDCInitialCallbackAfterProviderVisit(t *testing.T) {
 			t.Fatalf("rotated cookies: %d", len(rotated))
 		}
 		authorized := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
-		authorized.RemoteAddr = start.RemoteAddr
 		authorized.AddCookie(rotated[0])
 		sess := jw.GetSession(authorized)
 		if sess == nil || sess.Get(srv.SessionKey).(map[string]any)["sub"] != "subject-1" {
@@ -230,14 +256,13 @@ func TestOAuthLinkCallbackNearDeadlineCanFinishProviderExchange(t *testing.T) {
 		}
 		startResult := httptest.NewRecorder()
 		srv.HandleLink(startResult, start)
-		if startResult.Code != http.StatusFound {
+		if startResult.Code != http.StatusSeeOther {
 			t.Fatalf("link start: %d", startResult.Code)
 		}
 		state := testOAuthFlow(sess, nil).state
 		cookie := created.Result().Cookies()[0]
 		time.Sleep(oauth2FlowLifetime - time.Second)
 		callback := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback?state="+state+"&code=code", nil)
-		callback.RemoteAddr = start.RemoteAddr
 		callback.AddCookie(cookie)
 		result := httptest.NewRecorder()
 		srv.HandleAuthResponse(result, callback)

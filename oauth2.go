@@ -148,7 +148,8 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 
 // HandleLink begins a provider flow for linking to the caller's existing
 // identity. The application must authorize this POST before calling it and
-// recheck that identity in LinkEvent when the provider returns.
+// recheck that identity in LinkEvent when the provider returns. On success it
+// responds with a 303 redirect to the provider.
 func (srv *Server) HandleLink(hw http.ResponseWriter, hr *http.Request) {
 	switch {
 	case hr.Method != http.MethodPost:
@@ -192,24 +193,35 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 			var flow pendingOAuthFlow
 			srv.mu.Lock()
 			if preservePendingLogin && srv.pendingOrdinaryLoginLocked(sess) {
-				srv.mu.Unlock()
-				srv.writeResult(hw, http.StatusConflict, ErrOAuth2LoginInProgress, nil)
-				return
+				// Reissue one pending transaction without replacing the first tab's state.
+				flow, _ = sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
+				if flow.state == "" {
+					srv.mu.Unlock()
+					if srv.LoginFailed != nil {
+						email, _ := sess.Get(srv.SessionEmailKey).(string)
+						if srv.LoginFailed(hw, hr, http.StatusConflict, ErrOAuth2LoginInProgress, email) {
+							return
+						}
+					}
+					srv.writeResult(hw, http.StatusConflict, ErrOAuth2LoginInProgress, nil)
+					return
+				}
+			} else {
+				flow = pendingOAuthFlow{
+					state: rand.Text(), expiry: time.Now().Add(oauth2FlowLifetime),
+					link: link, verifier: oauth2.GenerateVerifier(), referrer: location,
+				}
+				if srv.profileSubject == nil {
+					flow.nonce = rand.Text()
+				}
+				if !sess.ExtendGrace(oauth2FlowGrace) {
+					srv.mu.Unlock()
+					missingSession()
+					return
+				}
+				srv.clearSessionOAuthFlow(sess)
+				sess.Set(srv.sessionKey(oauth2FlowKey), flow)
 			}
-			flow = pendingOAuthFlow{
-				state: rand.Text(), expiry: time.Now().Add(oauth2FlowLifetime),
-				link: link, verifier: oauth2.GenerateVerifier(), referrer: location,
-			}
-			if srv.profileSubject == nil {
-				flow.nonce = rand.Text()
-			}
-			if !sess.ExtendGrace(oauth2FlowGrace) {
-				srv.mu.Unlock()
-				missingSession()
-				return
-			}
-			srv.clearSessionOAuthFlow(sess)
-			sess.Set(srv.sessionKey(oauth2FlowKey), flow)
 			srv.mu.Unlock()
 			authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
 			if flow.nonce != "" {
@@ -220,6 +232,9 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 		}
 		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
+		if link {
+			statusCode = http.StatusSeeOther
+		}
 	}
 	SetHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
@@ -289,7 +304,7 @@ var ErrOAuth2ExpiredState = errors.New("oauth2 expired state")
 // ErrOAuth2MissingPKCEVerifier means the callback session did not contain the required PKCE verifier.
 var ErrOAuth2MissingPKCEVerifier = errors.New("oauth2 missing pkce verifier")
 
-// ErrOAuth2LoginInProgress means an ordinary login is pending or its callback is running.
+// ErrOAuth2LoginInProgress means a callback has consumed the pending login state.
 var ErrOAuth2LoginInProgress = errors.New("oauth2 login already in progress")
 
 // ErrOAuth2InvalidOrigin means a link start request failed the same-origin check.
@@ -427,13 +442,11 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 		if verifyErr != nil {
 			return nil, nil, time.Time{}, status, verifyErr
 		}
-		err = ErrOIDCMissingNonce
 		if nonce == "" {
-			return
+			return nil, nil, time.Time{}, status, ErrOIDCMissingNonce
 		}
-		err = ErrOIDCNonceMismatch
 		if idToken.Nonce != nonce {
-			return
+			return nil, nil, time.Time{}, status, ErrOIDCNonceMismatch
 		}
 		claims = verifiedClaims
 		tokenSource = srv.oauth2cfg.TokenSource(srv.oauth2Context(context.Background()), token)
@@ -449,7 +462,7 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 	status = http.StatusBadGateway
 	claims, err = srv.fetchUserInfo(ctx, srv.userinfoUrl, oauth2.StaticTokenSource(token))
 	if err != nil {
-		return
+		return nil, nil, time.Time{}, status, err
 	}
 	// UserInfo can outlive the token; reject it before calling application code.
 	if !profileTokenUnexpired(token) {
@@ -461,10 +474,7 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 	}
 	var subject string
 	subject, err = srv.profileSubject(claims)
-	if err != nil {
-		_ = srv.Jaws.Log(err)
-	}
-	if err != nil || subject == "" {
+	if srv.Jaws.Log(err) != nil || subject == "" {
 		return nil, nil, time.Time{}, status, ErrOAuth2InvalidProfile
 	}
 	claims["iss"] = srv.issuer
@@ -518,7 +528,10 @@ func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map
 		srv.SessionRotationLock.Lock()
 		defer srv.SessionRotationLock.Unlock()
 	}
-	if srv.LinkEvent == nil || flow.revoked() || srv.Jaws.GetSession(hr) != sess {
+	if srv.LinkEvent == nil {
+		return http.StatusInternalServerError, ErrOAuth2NotConfigured
+	}
+	if flow.revoked() || srv.Jaws.GetSession(hr) != sess {
 		return http.StatusForbidden, ErrOAuth2MissingSession
 	}
 	if err = srv.identityExpiryError(expiry); err != nil {
@@ -546,11 +559,6 @@ func (srv *Server) completeLogin(hw http.ResponseWriter, hr *http.Request, old *
 		}
 		return
 	}
-	if flow.revoked() {
-		// Do not stop the old auth timer or fire LogoutEvent for a canceled login.
-		http.SetCookie(hw, rotated.Close())
-		return old, http.StatusForbidden, ErrOAuth2MissingSession
-	}
 	srv.mu.Lock()
 	hadTimer := srv.authTimers[old.ID()] != nil
 	srv.stopSessionAuthTimerLocked(old, nil)
@@ -572,7 +580,7 @@ func (srv *Server) completeLogin(hw http.ResponseWriter, hr *http.Request, old *
 	return sess, http.StatusFound, nil
 }
 
-func (srv *Server) completeOAuthCallback(hw http.ResponseWriter, hr *http.Request, ctx context.Context, config *oauth2.Config, sess *jaws.Session, flow pendingOAuthFlow) (*jaws.Session, int, error) {
+func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWriter, hr *http.Request, sess *jaws.Session, flow pendingOAuthFlow) (*jaws.Session, int, error) {
 	status, err := oauth2CallbackError(http.StatusBadRequest, hr)
 	if err != nil {
 		return sess, status, err
@@ -580,7 +588,7 @@ func (srv *Server) completeOAuthCallback(hw http.ResponseWriter, hr *http.Reques
 	if flow.verifier == "" {
 		return sess, http.StatusBadRequest, ErrOAuth2MissingPKCEVerifier
 	}
-	token, err := config.Exchange(ctx, hr.FormValue("code") /* #nosec G120 */, oauth2.VerifierOption(flow.verifier))
+	token, err := srv.oauth2cfg.Exchange(ctx, hr.FormValue("code") /* #nosec G120 */, oauth2.VerifierOption(flow.verifier))
 	if srv.Jaws.Log(err) != nil {
 		return sess, http.StatusBadRequest, err
 	}
@@ -628,13 +636,13 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 	}
 	statusCode, err := http.StatusInternalServerError, ErrOAuth2NotConfigured
 	var flow pendingOAuthFlow
-	if oauth2Config := srv.oauth2cfg; oauth2Config != nil {
+	if srv.oauth2cfg != nil {
 		statusCode, err = http.StatusBadRequest, ErrOAuth2MissingSession
 		if sess != nil {
 			flow, err = srv.takeOAuthFlow(sess, hr.FormValue("state") /* #nosec G120 */)
 			if err == nil {
 				defer srv.finishOAuthFlow(sess, flow)
-				sess, statusCode, err = srv.completeOAuthCallback(hw, hr, authctx, oauth2Config, sess, flow)
+				sess, statusCode, err = srv.completeOAuthCallback(authctx, hw, hr, sess, flow)
 				if err == nil && !flow.link {
 					sessEmail, _ = sess.Get(srv.SessionEmailKey).(string)
 				}

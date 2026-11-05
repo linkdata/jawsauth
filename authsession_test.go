@@ -325,6 +325,10 @@ func TestStoreSessionAuthClaimsErrors(t *testing.T) {
 	if !errors.Is(err, ErrOIDCInvalidIDToken) {
 		t.Fatal(err)
 	}
+	err = srv.storeSessionAuthClaims(sess, map[string]any{"sub": "person"}, nil, time.Now().Add(-time.Second), nil)
+	if !errors.Is(err, errOIDCInvalidExpiry) || sess.Get(srv.SessionKey) != nil || factory.len() != 0 {
+		t.Fatalf("expired identity stored: err=%v claims=%v timers=%d", err, sess.Get(srv.SessionKey), factory.len())
+	}
 
 	entry := &authTimerState{}
 	err = srv.storeSessionAuthClaims(sess, map[string]any{}, nil, time.Now().Add(time.Hour), entry)
@@ -394,24 +398,36 @@ func TestOIDCRefreshRejectsChangedSubject(t *testing.T) {
 	const issuer = "https://issuer.example"
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, issuer, factory)
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
-	sess := jw.NewSession(httptest.NewRecorder(), req)
-	oldExpiry := time.Now().Add(time.Minute).Truncate(time.Second)
-	if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "person-a", "email": "a@example.com"}, nil, oldExpiry, nil); err != nil {
-		t.Fatal(err)
-	}
-	entry := srv.authTimers[sess.ID()]
-	newExpiry := time.Now().Add(time.Hour).Truncate(time.Second)
-	raw := makeIDToken(t, map[string]any{
-		"iss": issuer, "aud": "client", "sub": "person-b", "exp": newExpiry.Unix(),
-	})
-	err = srv.setSessionAuthFromToken(t.Context(), sess, nil, makeOAuth2Token("access", raw, ""), oldExpiry, entry)
-	if !errors.Is(err, ErrOIDCInvalidIDToken) || !errors.Is(err, errOIDCSubjectMismatch) {
-		t.Fatalf("changed subject: %v", err)
-	}
-	claims, _ := sess.Get(srv.SessionKey).(map[string]any)
-	if claims["sub"] != "person-a" || claims["email"] != "a@example.com" || srv.authTimers[sess.ID()] != entry {
-		t.Fatalf("refresh changed prior auth: claims=%v timer=%v", claims, srv.authTimers[sess.ID()])
+	for _, tc := range []struct{ name, storedSubject string }{
+		{"changed subject", "person-a"},
+		{"missing stored subject", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
+			sess := jw.NewSession(httptest.NewRecorder(), req)
+			oldExpiry := time.Now().Add(time.Minute).Truncate(time.Second)
+			original := map[string]any{"email": "a@example.com"}
+			if tc.storedSubject != "" {
+				original["sub"] = tc.storedSubject
+			}
+			if err := srv.storeSessionAuthClaims(sess, original, nil, oldExpiry, nil); err != nil {
+				t.Fatal(err)
+			}
+			entry := srv.authTimers[sess.ID()]
+			newExpiry := time.Now().Add(time.Hour).Truncate(time.Second)
+			raw := makeIDToken(t, map[string]any{
+				"iss": issuer, "aud": "client", "sub": "person-b", "exp": newExpiry.Unix(),
+			})
+			err := srv.setSessionAuthFromToken(t.Context(), sess, nil, makeOAuth2Token("access", raw, ""), oldExpiry, entry)
+			if !errors.Is(err, ErrOIDCInvalidIDToken) || !errors.Is(err, errOIDCSubjectMismatch) {
+				t.Fatalf("changed subject: %v", err)
+			}
+			claims, _ := sess.Get(srv.SessionKey).(map[string]any)
+			_, hasSubject := claims["sub"]
+			if hasSubject != (tc.storedSubject != "") || claims["sub"] != original["sub"] || claims["email"] != "a@example.com" || srv.authTimers[sess.ID()] != entry {
+				t.Fatalf("refresh changed prior auth: claims=%v timer=%v", claims, srv.authTimers[sess.ID()])
+			}
+		})
 	}
 }
 
@@ -810,7 +826,7 @@ func TestAuthTimerRefreshFailureClearsExpiredAuth(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
-			expiry := time.Now().Add(-time.Second).Truncate(time.Second)
+			expiry := time.Now().Add(time.Minute).Truncate(time.Second)
 			err = srv.storeSessionAuthClaims(sess, map[string]any{
 				"exp":            expiry.Unix(),
 				"email":          "old@example.com",
@@ -819,6 +835,9 @@ func TestAuthTimerRefreshFailureClearsExpiredAuth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			expired := time.Now().Add(-time.Second)
+			sess.Set(srv.sessionKey(oauth2AuthExpiryKey), expired)
+			srv.authTimers[sess.ID()].expiry = expired
 
 			factory.timer(0).fire()
 

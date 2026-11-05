@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,8 +16,7 @@ func TestProtectedRequestPreservesPendingLoginOnAuthExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer jw.Close()
-	calls := 0
-	srv := newProfileTestServer(t, jw, &calls)
+	srv := newProfileTestServer(t, jw, nil)
 	cookie, initialState := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	first := profileCallback(srv, cookie, initialState, "first")
 	if first.Code != http.StatusFound {
@@ -43,8 +41,12 @@ func TestProtectedRequestPreservesPendingLoginOnAuthExpiry(t *testing.T) {
 	protected.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("expired auth reached protected handler") })).ServeHTTP(response, protected)
-	if response.Code != http.StatusConflict || len(response.Result().Cookies()) != 0 ||
-		response.Header().Get("Location") != "" || !strings.Contains(response.Body.String(), ErrOAuth2LoginInProgress.Error()) {
+	redirect, err := url.Parse(response.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusFound || len(response.Result().Cookies()) != 0 ||
+		redirect.Query().Get("state") != pendingState {
 		t.Fatalf("protected request during login: status=%d location=%q body=%q cookies=%v", response.Code, response.Header().Get("Location"), response.Body.String(), response.Result().Cookies())
 	}
 	gotState := testOAuthFlow(sess, srv).state

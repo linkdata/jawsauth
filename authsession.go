@@ -113,7 +113,7 @@ func (srv *Server) identityExpiryError(expiry time.Time) error {
 	if expiry.After(time.Now()) {
 		return nil
 	}
-	if srv.idTokenVerifier == nil {
+	if srv.profileSubject != nil {
 		return ErrOAuth2InvalidProfile
 	}
 	return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCInvalidExpiry}
@@ -158,11 +158,9 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 		return ErrOAuth2MissingSession
 	default:
 	}
-	if canceled != nil {
-		if err := srv.identityExpiryError(expiry); err != nil {
-			srv.mu.Unlock()
-			return err
-		}
+	if err := srv.identityExpiryError(expiry); err != nil {
+		srv.mu.Unlock()
+		return err
 	}
 	if entry != nil && srv.authTimers[sess.ID()] != entry {
 		srv.mu.Unlock()
@@ -223,9 +221,6 @@ func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Sessi
 		return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCStaleIDToken}
 	}
 	srv.addUserInfoClaims(ctx, claims, tokenSource)
-	if err := srv.identityExpiryError(idToken.Expiry); err != nil {
-		return err
-	}
 	return srv.storeSessionAuthClaims(sess, claims, tokenSource, idToken.Expiry, entry)
 }
 

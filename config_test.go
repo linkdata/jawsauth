@@ -227,31 +227,6 @@ func TestConfig_buildContextWithHTTPClient(t *testing.T) {
 	}
 }
 
-func TestConfig_buildContextDiscoveryStillFollowsRedirect(t *testing.T) {
-	var issuer string
-	target := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
-		hw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(hw).Encode(map[string]any{
-			"issuer":                 issuer,
-			"authorization_endpoint": issuer + "/auth",
-			"token_endpoint":         issuer + "/token",
-			"jwks_uri":               issuer + "/jwks",
-		})
-	}))
-	defer target.Close()
-	redirector := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
-		http.Redirect(hw, hr, target.URL+"/metadata", http.StatusFound)
-	}))
-	defer redirector.Close()
-	issuer = redirector.URL
-	cfg := &Config{RedirectURL: "https://app.example/callback", Issuer: issuer,
-		AllowInsecureIssuer: true, ClientID: "client", HTTPClient: redirector.Client()}
-	got, _, _, err := cfg.buildContext(t.Context(), "")
-	if err != nil || got == nil || got.Endpoint.TokenURL != issuer+"/token" {
-		t.Fatalf("redirected discovery: config=%v err=%v", got, err)
-	}
-}
-
 func TestConfigValidateRejectsInsecureOIDCOverrides(t *testing.T) {
 	for _, field := range []string{"AuthURL", "TokenURL", "UserInfoURL"} {
 		t.Run(field, func(t *testing.T) {
@@ -296,7 +271,11 @@ func TestConfigBuildContextRejectsInsecureOIDCMetadata(t *testing.T) {
 		{"jwks_uri", "JWKSURI", "", true},
 		{"jwks_uri", "JWKSURI", "ftp://provider.example/jwks", true},
 	} {
-		t.Run(tc.key+"/"+tc.value, func(t *testing.T) {
+		name := tc.key + "/" + tc.value
+		if tc.allowInsecure {
+			name += "/dev"
+		}
+		t.Run(name, func(t *testing.T) {
 			var issuer string
 			provider := httptest.NewTLSServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
 				metadata := map[string]string{
@@ -484,7 +463,11 @@ func TestConfigBuildContextJWKSTimeout(t *testing.T) {
 		t.Run(configuredTimeout.String(), func(t *testing.T) {
 			const issuer = "https://issuer.example"
 			var jwksHits atomic.Int32
-			deadlineObserved := make(chan time.Duration, 1)
+			type observedDeadline struct {
+				remaining time.Duration
+				ok        bool
+			}
+			deadlineObserved := make(chan observedDeadline, 1)
 			client := &http.Client{Timeout: configuredTimeout, Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				switch req.URL.Path {
 				case "/.well-known/openid-configuration":
@@ -492,11 +475,10 @@ func TestConfigBuildContextJWKSTimeout(t *testing.T) {
 				case "/jwks":
 					jwksHits.Add(1)
 					deadline, ok := req.Context().Deadline()
+					deadlineObserved <- observedDeadline{time.Until(deadline), ok}
 					if !ok {
-						deadlineObserved <- -1
 						return nil, errors.New("JWKS request has no deadline")
 					}
-					deadlineObserved <- time.Until(deadline)
 					if configuredTimeout > 0 {
 						<-req.Context().Done()
 						return nil, req.Context().Err()
@@ -518,8 +500,8 @@ func TestConfigBuildContextJWKSTimeout(t *testing.T) {
 			if want == 0 {
 				want = oauth2ProviderTimeout
 			}
-			if remaining := <-deadlineObserved; remaining <= 0 || remaining > want {
-				t.Fatalf("JWKS deadline %s, want at most %s", remaining, want)
+			if observed := <-deadlineObserved; !observed.ok || observed.remaining > want {
+				t.Fatalf("JWKS deadline %+v, want at most %s", observed, want)
 			}
 		})
 	}

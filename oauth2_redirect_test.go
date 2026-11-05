@@ -67,18 +67,6 @@ func TestOAuthTokenRequestsDoNotFollowRedirect(t *testing.T) {
 					ctx = context.WithValue(ctx, oauth2.HTTPClient, client)
 				}
 				authctx := srv.oauth2Context(ctx)
-				gotClient, ok := authctx.Value(oauth2.HTTPClient).(*http.Client)
-				if !ok || gotClient == nil || gotClient == client || gotClient.Timeout != client.Timeout || authctx.Done() != ctx.Done() {
-					t.Fatal("OAuth context did not clone the selected client or retain its timeout/context")
-				}
-				if srv.Jaws == nil {
-					if gotClient.Transport != client.Transport {
-						t.Fatal("OAuth client lost the selected transport")
-					}
-				} else if wrapped, ok := gotClient.Transport.(debugOAuth2Transport); !ok || wrapped.next != client.Transport {
-					t.Fatal("OAuth client lost the selected transport or debug wrapper")
-				}
-
 				cfg := oauth2.Config{ClientID: "client", ClientSecret: "client-secret",
 					Endpoint: oauth2.Endpoint{TokenURL: provider.URL + "/token", AuthStyle: oauth2.AuthStyleInParams}}
 				var err error

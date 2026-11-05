@@ -210,8 +210,8 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	}
 	flow := testOAuthFlow(sess, nil)
 	state := flow.state
-	if state == "" {
-		t.Fatal("missing state")
+	if len(state) != 26 {
+		t.Fatalf("state length = %d, want 26", len(state))
 	}
 	verifier := flow.verifier
 	if verifier == "" {
@@ -229,7 +229,7 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 		t.Fatal(gotMethod)
 	}
 	nonce := flow.nonce
-	if nonce == "" || nonce == state {
+	if len(nonce) != 26 || nonce == state {
 		t.Fatalf("nonce %q is missing or matches state", nonce)
 	}
 	if gotNonce := values.Get("nonce"); gotNonce != nonce {
@@ -310,7 +310,7 @@ func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
 	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: "verifier123", nonce: "nonce123", referrer: "/protected"})
 	sess.Set(srv.SessionKey, map[string]any{"email": "user@example.com"})
 	sess.Set(srv.SessionTokenKey, oauth2.StaticTokenSource(makeOAuth2Token("access", "", "")))
-	sess.Set(oauth2AuthExpiryKey, time.Now().Add(time.Hour))
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 	sess.Set(srv.SessionEmailVerifiedKey, true)
 
@@ -323,10 +323,10 @@ func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
 		t.Fatal(resp.Status)
 	}
 	closeResponseBody(t, resp)
-	if value := sess.Get(oauth2FlowKey); value != nil {
+	if value := sess.Get(srv.sessionKey(oauth2FlowKey)); value != nil {
 		t.Fatal(value)
 	}
-	if value := sess.Get(oauth2AuthExpiryKey); value != nil {
+	if value := sess.Get(srv.sessionKey(oauth2AuthExpiryKey)); value != nil {
 		t.Fatal(value)
 	}
 }
@@ -467,7 +467,7 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	if receivedProviderErr != nil {
 		t.Fatal(receivedProviderErr)
 	}
-	if value := sess.Get(oauth2FlowKey); value != nil {
+	if value := sess.Get(srv.sessionKey(oauth2FlowKey)); value != nil {
 		t.Fatal(value)
 	}
 	if gotEmail, _ := sess.Get(srv.SessionEmailKey).(string); gotEmail != "idtoken@example.com" {
@@ -650,7 +650,7 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 	expiry := time.Now().Add(time.Hour).Truncate(time.Second)
 	sess.Set(srv.SessionKey, claims)
 	sess.Set(srv.SessionTokenKey, tokenSource)
-	sess.Set(oauth2AuthExpiryKey, expiry)
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), expiry)
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 	sess.Set(srv.SessionEmailVerifiedKey, true)
 	setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "legit", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce", referrer: "/secure"})
@@ -675,7 +675,7 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 	if got := sess.Get(srv.SessionTokenKey); got != tokenSource {
 		t.Fatal(got)
 	}
-	if got, _ := sess.Get(oauth2AuthExpiryKey).(time.Time); !got.Equal(expiry) {
+	if got, _ := sess.Get(srv.sessionKey(oauth2AuthExpiryKey)).(time.Time); !got.Equal(expiry) {
 		t.Fatal(got)
 	}
 	if got, _ := sess.Get(srv.SessionEmailKey).(string); got != "user@example.com" {
@@ -725,6 +725,11 @@ func Test_extractEmailVerified(t *testing.T) {
 			claims: map[string]any{"email_verified": float64(1)},
 			want:   true,
 		},
+		{name: "numeric zero", claims: map[string]any{"email_verified": json.Number("0")}},
+		{name: "invalid number", claims: map[string]any{"email_verified": json.Number("x")}},
+		{name: "false string", claims: map[string]any{"email_verified": "false"}},
+		{name: "invalid string", claims: map[string]any{"email_verified": "junk"}},
+		{name: "float zero", claims: map[string]any{"email_verified": float64(0)}},
 	}
 
 	for _, tc := range testCases {
@@ -781,26 +786,17 @@ func TestServer_fetchUserInfoRespectsRequestCancellation(t *testing.T) {
 			oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "access"}))
 		result <- err
 	}()
-	select {
-	case <-started:
-	case <-time.After(3 * time.Second):
-		t.Fatal("UserInfo request did not start")
-	}
+	waitFor(t, started, "UserInfo request did not start")
 	cancel()
-	select {
-	case err := <-result:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("canceled UserInfo request: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("UserInfo request ignored cancellation")
+	if err := waitFor(t, result, "UserInfo request ignored cancellation"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled UserInfo request: %v", err)
 	}
 }
 
 func TestServer_fetchUserInfoOversizedStatusError(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
 		hw.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = io.WriteString(hw, strings.Repeat("x", 32769))
+		_, _ = io.WriteString(hw, strings.Repeat("x", maxUserInfoBytes+1))
 	}))
 	defer provider.Close()
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -28,8 +27,7 @@ func TestCallbackRevokedAfterStoreBalancesEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer jw.Close()
-	calls := 0
-	srv := newProfileTestServer(t, jw, &calls)
+	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
 	r.AddCookie(cookie)
@@ -58,6 +56,34 @@ func TestCallbackRevokedAfterStoreBalancesEvents(t *testing.T) {
 	}
 }
 
+func TestCallbackRejectsAuthInvalidatedByLoginEvent(t *testing.T) {
+	for _, action := range []string{"expired auth", "closed session"} {
+		t.Run(action, func(t *testing.T) {
+			jw, err := jaws.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer jw.Close()
+			srv := newProfileTestServer(t, jw, nil)
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			called := false
+			srv.LoginEvent = func(sess *jaws.Session, _ *http.Request) {
+				called = true
+				if action == "expired auth" {
+					sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(-time.Second))
+				} else {
+					sess.Close()
+				}
+			}
+			response := profileCallback(srv, cookie, state, "first")
+			cookies := response.Result().Cookies()
+			if !called || response.Code != http.StatusForbidden || response.Header().Get("Location") != "" || len(cookies) != 2 || cookies[1].MaxAge >= 0 {
+				t.Fatalf("invalidated login: called=%t status=%d location=%q cookies=%v", called, response.Code, response.Header().Get("Location"), cookies)
+			}
+		})
+	}
+}
+
 func TestProfileTokenExpiresBetweenRotationAndStore(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		jw, err := jaws.New()
@@ -65,8 +91,7 @@ func TestProfileTokenExpiresBetweenRotationAndStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer jw.Close()
-		calls := 0
-		srv := newProfileTestServer(t, jw, &calls)
+		srv := newProfileTestServer(t, jw, nil)
 		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 		first := profileCallback(srv, cookie, state, "first")
 		if first.Code != http.StatusFound {
@@ -79,7 +104,7 @@ func TestProfileTokenExpiresBetweenRotationAndStore(t *testing.T) {
 		if old == nil {
 			t.Fatal("old session missing")
 		}
-		state = startProfileLoginWithCookie(t, srv, cookie)
+		_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.URL.Path == "/token" {
 				return profileTestResponse(`{"access_token":"short","token_type":"Bearer","expires_in":30}`), nil
@@ -162,8 +187,7 @@ func TestLinkRejectsInvalidEventResults(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer jw.Close()
-			calls := 0
-			srv := newProfileTestServer(t, jw, &calls)
+			srv := newProfileTestServer(t, jw, nil)
 			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 			first := profileCallback(srv, cookie, state, "first")
 			if first.Code != http.StatusFound {
@@ -191,8 +215,7 @@ func TestLinkRejectsIdentityThatExpiresWhileWaitingForLock(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer jw.Close()
-		calls := 0
-		srv := newProfileTestServer(t, jw, &calls)
+		srv := newProfileTestServer(t, jw, nil)
 		lock := &holdFirstRotationLock{first: make(chan struct{}), releaseFirst: make(chan struct{})}
 		srv.SessionRotationLock = lock
 		release := sync.OnceFunc(func() { close(lock.releaseFirst) })
@@ -250,8 +273,7 @@ func TestLinkWithoutRefererReturnsHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer jw.Close()
-	calls := 0
-	srv := newProfileTestServer(t, jw, &calls)
+	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	first := profileCallback(srv, cookie, state, "first")
 	if first.Code != http.StatusFound {
@@ -290,15 +312,14 @@ func TestCallbackClosesRotatedSessionOnStoreFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer jw.Close()
-	calls := 0
-	srv := newProfileTestServer(t, jw, &calls)
+	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	first := profileCallback(srv, cookie, state, "first")
 	if first.Code != http.StatusFound {
 		t.Fatalf("sign-in: %d", first.Code)
 	}
 	cookie = first.Result().Cookies()[0]
-	state = startProfileLoginWithCookie(t, srv, cookie)
+	_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
 	closedRotated := false
 	srv.LogoutEvent = func(old *jaws.Session, r *http.Request) {
 		if rotated := jw.GetSession(r); rotated != nil && rotated != old {
@@ -312,22 +333,6 @@ func TestCallbackClosesRotatedSessionOnStoreFailure(t *testing.T) {
 		len(cookies) != 2 || cookies[1].MaxAge >= 0 || cookies[1].Value != cookies[0].Value {
 		t.Fatalf("store after close: closed=%t status=%d location=%q cookies=%v", closedRotated, w.Code, w.Header().Get("Location"), cookies)
 	}
-}
-
-func startProfileLoginWithCookie(t *testing.T, srv *Server, cookie *http.Cookie) string {
-	t.Helper()
-	start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
-	start.AddCookie(cookie)
-	begin := httptest.NewRecorder()
-	srv.HandleLogin(begin, start)
-	if begin.Code != http.StatusFound {
-		t.Fatalf("second start: %d", begin.Code)
-	}
-	providerURL, err := url.Parse(begin.Header().Get("Location"))
-	if err != nil || providerURL.Query().Get("state") == "" {
-		t.Fatalf("second provider redirect: %v %q", err, begin.Header().Get("Location"))
-	}
-	return providerURL.Query().Get("state")
 }
 
 type revokeAfterRotationLock struct {
@@ -350,8 +355,7 @@ func TestCallbackRevokedAfterRotationClosesNewSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer jw.Close()
-	calls := 0
-	srv := newProfileTestServer(t, jw, &calls)
+	srv := newProfileTestServer(t, jw, nil)
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	first := profileCallback(srv, cookie, state, "first")
 	if first.Code != http.StatusFound {
@@ -364,7 +368,7 @@ func TestCallbackRevokedAfterRotationClosesNewSession(t *testing.T) {
 	if old == nil {
 		t.Fatal("old session missing")
 	}
-	state = startProfileLoginWithCookie(t, srv, cookie)
+	_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
 	revoked := false
 	srv.SessionRotationLock = &revokeAfterRotationLock{logout: func() {
 		revoked = srv.Logout(old, nil)

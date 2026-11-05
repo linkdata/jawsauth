@@ -65,7 +65,8 @@ type HandleFunc func(uri string, handler http.Handler)
 // SessionRotationLock.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
-// FailedFunc is called when a login or link attempt fails.
+// FailedFunc is called on callback failures and when a protected request meets
+// a running login callback. Other flow-start failures write their own response.
 //
 // It returns true if it wrote the HTTP response itself, in which case jawsauth writes
 // nothing further. Errors can contain untrusted browser-supplied text. Quote errors
@@ -93,11 +94,11 @@ type Server struct {
 	SessionTokenKey         string              // default is "oauth2_tokensource"; an oauth2.TokenSource in OIDC mode, empty in profile mode
 	SessionEmailKey         string              // default is "email", value is a parsed string address with ASCII letters lowercased
 	SessionEmailVerifiedKey string              // default is "email_verified", value will be of type bool
-	HandledPaths            map[string]struct{} // URI paths we have registered handlers for
+	HandledPaths            map[string]struct{} // URI paths excluded from OAuth return targets
 	LoginEvent              EventFunc           // if not nil, called after claims are stored; revocation may follow
 	LogoutEvent             EventFunc           // if not nil, called after auth is cleared; hr may be nil
-	LoginFailed             FailedFunc          // if not nil, called on failed login or link
-	LinkEvent               LinkFunc            // if not nil, enables HandleLink
+	LoginFailed             FailedFunc          // callback failures and protected requests during a running login callback
+	LinkEvent               LinkFunc            // required by HandleLink; register its POST route separately
 	// SessionRotationLock is held during rotation, revocation, HandleLogout,
 	// Logout, and LinkEvent. New supplies a private lock; share one for cross-provider links.
 	SessionRotationLock sync.Locker
@@ -349,7 +350,7 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 // Unauthenticated requests are redirected into the configured login flow (HandleLogin);
 // authenticated users whose email is not an admin (see SetAdmins and IsAdmin) are
 // served the 403 handler instead of h. [Server.RequireVerifiedAdminEmail] also
-// applies. A protected request during a pending login may return 409.
+// applies. A protected request while a login callback runs may return 409.
 // If the Server is not Valid, returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, true)
@@ -359,7 +360,7 @@ func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 //
 // Unauthenticated requests are redirected into the configured login flow
 // (HandleLogin), which stores verified claims in srv.SessionKey before the user
-// returns. A protected request during a pending login may return 409.
+// returns. A protected request while a login callback runs may return 409.
 // If the Server is not Valid, returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, false)
@@ -370,7 +371,7 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 //
 // Unauthenticated requests are redirected into the configured login flow (HandleLogin);
 // authenticated non-admins (see SetAdmins and IsAdmin) are served the 403 handler.
-// [Server.RequireVerifiedAdminEmail] also applies. A protected request during a pending login may return 409.
+// [Server.RequireVerifiedAdminEmail] also applies. A protected request while a login callback runs may return 409.
 // If the Server is not Valid, the template handler is returned without the
 // authentication requirement.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
@@ -382,7 +383,7 @@ func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
 //
 // Unauthenticated requests are redirected into the configured login flow
 // (HandleLogin), which stores verified claims in srv.SessionKey before the user
-// returns. A protected request during a pending login may return 409.
+// returns. A protected request while a login callback runs may return 409.
 // If the Server is not Valid, the template
 // handler is returned without the authentication requirement.
 func (srv *Server) Handler(name string, dot any) http.Handler {
