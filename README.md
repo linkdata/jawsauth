@@ -15,9 +15,11 @@ sessions. Both modes use authorization-code state and PKCE (S256). `Wrap` and
 overrides, discovered endpoints and JWKS URI must use HTTPS;
 `AllowInsecureIssuer` permits HTTP for tests and development. OIDC mode
 discovers provider endpoints, verifies the ID token and nonce, and attempts
-refresh before expiry when the provider issues a refresh token. Providers that
-issue refresh tokens only with offline access can use
-`Server.Options = []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}`.
+refresh before expiry when the provider issues a refresh token. Request offline
+access with the `offline_access` scope for OIDC providers that support it, or
+`oauth2.AccessTypeOffline` in `Server.Options` for Google. Check both the error
+from `New` and `Server.Valid()` before serving protected routes; invalid servers
+pass wrapped handlers through without authentication.
 
 Profile mode requires `AuthURL`, `TokenURL` and `UserInfoURL`, plus a
 `ProfileSubject` function that extracts a stable subject from the authenticated
@@ -33,7 +35,7 @@ unauthenticated requests; both limits are unlimited by default. A login attempt
 can retain an anonymous session for about ten minutes while the user visits the
 provider. Login rotates the session and discards its application data; rotation
 needs a free slot under both limits.
-In particular, `MaxSessionsPerIP = 1` prevents login. If a slot is unavailable,
+`MaxSessionsPerIP = 1` prevents login. If a slot is unavailable,
 login returns 503 with `Retry-After: 60` and preserves the existing session.
 
 ## Multiple providers
@@ -51,40 +53,41 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
   Their `LogoutEvent` may run later with a nil request.
 - `New` gives each server a private `SessionRotationLock`. For cross-provider
   linking, assign one shared lock before serving. jawsauth holds it during
-  rotation, logout, expiry, revocation and `LinkEvent`. Do not lock around
-  jawsauth handlers or `Server.Logout`; do not lock or call `Server.Logout` in
-  `LinkEvent`. Keep `LinkEvent` brief because other sessions sharing the lock
-  wait. One provider's logout does not cancel another provider's pending link.
+  flow start, rotation, authentication clearing and `LinkEvent`. Do not take it
+  around jawsauth handlers or `Server.Logout`, or within `LinkEvent`; do not call
+  `Server.Logout` from `LinkEvent`. Keep `LinkEvent` brief because other sessions
+  sharing the lock wait. One provider's logout does not cancel another provider's
+  pending link.
 
 ## Admin access
 
-Email verification is optional by default. With a non-empty admin list, set
-`Server.RequireVerifiedAdminEmail = true` unless the provider guarantees
-verified addresses. Profile providers can map their verification signal to
-`email_verified` in `ProfileSubject`; providers without such a signal cannot
-grant admin access in strict mode. Some providers omit `email_verified`.
+Profile mode requires a verified email for a non-empty admin list by default;
+OIDC mode does not. `ProfileSubject` may map a provider verification signal to
+`email_verified`. Set `RequireVerifiedAdminEmail = false` only when the provider
+guarantees verified addresses. Providers without a verification signal cannot
+grant admin access in strict mode.
 [Microsoft warns against using its email claim for authorization](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference);
 use application policy based on a stable identifier for Entra ID.
 
 `SetAdmins` parses valid addresses and compares them ignoring ASCII case. An
 empty list allows every authenticated user through the admin handlers.
 `Server.IsAdmin(email)` checks only list membership; `JawsAuth.IsAdmin` and the
-admin handlers enforce email verification when required.
+admin handlers enforce email verification when required. Neither `IsAdmin`
+method proves a live login; check `CurrentClaims` before protected actions.
 
 ## Session lifetime
 
 Pending OAuth flows expire after ten minutes. jawsauth extends the original
 JaWS session's grace while the user visits the provider. Unauthenticated
-protected requests during a pending login redirect to the same provider flow
-without replacing its state, return target or grace deadline. Requests during
-a running callback return 409 unless `LoginFailed` handles them. Logout and
-authentication expiry
-clear that server's credentials and reload the session's JaWS pages. Auth expiry
-preserves a pending login but cancels a pending link. Explicit logout cancels
-either flow. A new login on the same server, including one started by `Wrap` or
-`Handler`, cancels a pending link. Protected operations
-should check `CurrentClaims`, plus `JawsAuth.IsAdmin` for administrator actions.
+protected GET requests during a pending login redirect to the same provider
+flow without replacing its state, return target or grace deadline. During a
+running callback they return 409 unless `LoginFailed` handles them. Logout and
+authentication expiry clear that server's credentials and reload its JaWS pages.
+Auth expiry preserves a pending login but cancels a pending link. Explicit
+logout cancels either flow. A new login on the same server, including one
+started by `Wrap` or `Handler`, cancels a pending link. Check `CurrentClaims`
+before protected operations, and `JawsAuth.IsAdmin` for administrator actions.
 
-Use an HTTP endpoint for a post-logout redirect. `Server.Logout` reloads pages
-and closes their sockets, so a later JaWS `Request.Redirect` cannot deliver the
-redirect.
+Use an HTTP endpoint for a post-logout redirect. When `Server.Logout` clears
+authentication, it reloads pages and closes their sockets, so a later JaWS
+`Request.Redirect` cannot deliver the redirect.

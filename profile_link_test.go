@@ -62,7 +62,7 @@ func TestOAuthProfileAuthLifetimeCapsLongProviderToken(t *testing.T) {
 	for _, duration := range []time.Duration{30 * time.Minute, 72 * time.Hour} {
 		token := &oauth2.Token{AccessToken: "secret", TokenType: "Bearer", Expiry: time.Now().Add(duration)}
 		_, _, expiry, status, err := srv.verifyOAuthIdentity(ctx, token, "")
-		if err != nil || status != http.StatusUnauthorized {
+		if err != nil || status != 0 {
 			t.Fatalf("duration %s: status=%d error=%v", duration, status, err)
 		}
 		want := min(duration, 24*time.Hour)
@@ -151,8 +151,8 @@ func TestOAuthProfileRotationLockDoesNotBlockProvider(t *testing.T) {
 		return profileTestResponse(`{"id":42}`), nil
 	})}
 	lock := &rotationNoticeLock{entered: make(chan struct{})}
-	srv.SessionRotationLock = lock
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	srv.SessionRotationLock = lock
 	oldRequest := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
 	oldRequest.AddCookie(cookie)
 	old := jw.GetSession(oldRequest)
@@ -513,7 +513,6 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 				req.AddCookie(cookie)
 				sess := jw.GetSession(req)
 				lock := &observedRotationLock{second: make(chan struct{})}
-				srv.SessionRotationLock = lock
 				var logoutEvents atomic.Int32
 				srv.LogoutEvent = func(*jaws.Session, *http.Request) {
 					lock.Lock()
@@ -535,6 +534,7 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 					return 0, nil
 				}
 				_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
+				srv.SessionRotationLock = lock
 				revoke := func() {
 					switch revocation {
 					case "timer":
@@ -653,12 +653,18 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 				protected := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
 				protected.AddCookie(cookie)
 				failedCalls := 0
-				srv.LoginFailed = func(_ http.ResponseWriter, _ *http.Request, status int, failure error, _ string) bool {
+				handleFailure := false
+				srv.LoginFailed = func(hw http.ResponseWriter, _ *http.Request, status int, failure error, _ string) bool {
 					failedCalls++
 					if status != http.StatusConflict || !errors.Is(failure, ErrOAuth2LoginInProgress) || !srv.mu.TryLock() {
 						t.Fatalf("LoginFailed called under lock or with wrong failure: status=%d err=%v", status, failure)
 					}
 					srv.mu.Unlock()
+					if handleFailure {
+						hw.WriteHeader(http.StatusAccepted)
+						_, _ = io.WriteString(hw, "custom response")
+						return true
+					}
 					return false
 				}
 				conflict := httptest.NewRecorder()
@@ -667,6 +673,14 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 				})).ServeHTTP(conflict, protected)
 				if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), ErrOAuth2LoginInProgress.Error()) || failedCalls != 1 {
 					t.Fatalf("pending callback: status=%d body=%q failed_calls=%d", conflict.Code, conflict.Body.String(), failedCalls)
+				}
+				handleFailure = true
+				handled := httptest.NewRecorder()
+				srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					t.Fatal("pending callback reached protected handler")
+				})).ServeHTTP(handled, protected)
+				if handled.Code != http.StatusAccepted || handled.Body.String() != "custom response" || failedCalls != 2 {
+					t.Fatalf("handled callback: status=%d body=%q failed_calls=%d", handled.Code, handled.Body.String(), failedCalls)
 				}
 			}
 			var response *httptest.ResponseRecorder
@@ -1051,7 +1065,7 @@ func TestOAuthProfileAcceptsShortUnexpiredToken(t *testing.T) {
 			t.Fatal("test token should be inside oauth2's refresh skew")
 		}
 		claims, source, expiry, status, err := srv.verifyOAuthIdentity(ctx, token, "")
-		if err != nil || status != http.StatusUnauthorized || calls != 1 || source != nil || claims["sub"] != "42" ||
+		if err != nil || status != 0 || calls != 1 || source != nil || claims["sub"] != "42" ||
 			!expiry.Equal(token.Expiry) {
 			t.Fatalf("short token: claims=%v source=%v expiry=%v status=%d calls=%d err=%v", claims, source, expiry, status, calls, err)
 		}

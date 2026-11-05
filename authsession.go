@@ -427,9 +427,10 @@ func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
 // Logout clears this server's authentication state for sess.
 //
 // It stops the auth timer, clears verified claims, token source, email, expiry
-// and any in-flight OAuth flow keys, then reloads its pages with [jaws.Request.Reload],
-// calls [Server.LogoutEvent] (if set), and marks the session dirty. It returns false for a
-// nil receiver or nil session, and true otherwise. The hr argument may be nil.
+// and any in-flight OAuth flow keys, then marks the session dirty. If auth was
+// present, it reloads its pages and calls [Server.LogoutEvent] (if set). It
+// returns false for a nil receiver or nil session, and true otherwise. The hr
+// argument may be nil.
 //
 // It performs no HTTP redirect. An HTTP handler can build its own post-logout
 // response. A JaWS event handler cannot use [jaws.Request.Redirect] after Logout
@@ -447,6 +448,10 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 		srv.SessionRotationLock.Lock()
 	}
 	srv.mu.Lock()
+	hadAuth := srv.authTimers[sess.ID()] != nil
+	if !hadAuth {
+		_, hadAuth = srv.sessionAuthStatus(sess, nil)
+	}
 	cleared = srv.stopSessionAuthTimerLocked(sess, entry)
 	var requests []*jaws.Request
 	if cleared {
@@ -460,16 +465,20 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 		sess.Set(srv.sessionKey(oauth2AuthExpiryKey), nil)
 		sess.Set(srv.SessionEmailKey, nil)
 		sess.Set(srv.SessionEmailVerifiedKey, nil)
-		requests = sess.Requests()
+		if hadAuth {
+			requests = sess.Requests()
+		}
 	}
 	srv.mu.Unlock()
 	if srv.SessionRotationLock != nil {
 		srv.SessionRotationLock.Unlock()
 	}
 	if cleared {
-		reloadAuthRequests(requests)
-		if srv.LogoutEvent != nil {
-			srv.LogoutEvent(sess, hr)
+		if hadAuth {
+			reloadAuthRequests(requests)
+			if srv.LogoutEvent != nil {
+				srv.LogoutEvent(sess, hr)
+			}
 		}
 		srv.Jaws.Dirty(sess)
 		srv.debugLog("jawsauth: cleared session auth",

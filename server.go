@@ -99,15 +99,16 @@ type Server struct {
 	LogoutEvent             EventFunc           // if not nil, called after auth is cleared; hr may be nil
 	LoginFailed             FailedFunc          // callback failures and protected requests during a running login callback
 	LinkEvent               LinkFunc            // required by HandleLink; register its POST route separately
-	// SessionRotationLock is held during rotation, revocation, HandleLogout,
-	// Logout, and LinkEvent. New supplies a private lock; share one for cross-provider links.
+	// SessionRotationLock is held during flow start, rotation, auth clearing, and LinkEvent.
+	// New supplies a private lock; share one for cross-provider links.
 	SessionRotationLock sync.Locker
 	Options             []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
 
 	// RequireVerifiedAdminEmail requires email_verified for a non-empty admin list.
 	//
-	// It defaults to false. When true, providers that omit email_verified cannot
-	// grant admin access through a non-empty list. Set before serving requests.
+	// It defaults to true in profile mode and false in OIDC mode. When true,
+	// providers that omit email_verified cannot grant admin access through a
+	// non-empty list. Set before serving requests.
 	// Ordinary login is unaffected.
 	RequireVerifiedAdminEmail bool
 
@@ -169,6 +170,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		if srv.oauth2cfg, srv.userinfoUrl, srv.idTokenVerifier, err = cfg.buildContext(setupCtx, overrideUrl); err == nil {
 			srv.httpClient = cfg.HTTPClient
 			srv.profileSubject = cfg.ProfileSubject
+			srv.RequireVerifiedAdminEmail = srv.profileSubject != nil
 			var u *url.URL
 			if u, err = url.Parse(srv.oauth2cfg.RedirectURL); err == nil {
 				srv.ishttps = (u.Scheme == "https")
@@ -187,8 +189,9 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 // New creates a Server providing OIDC or OAuth2 profile authentication for JaWS sessions.
 //
 // It configures the Server from cfg and registers the login, logout and OAuth2
-// callback endpoints via handleFn. A nil jw returns ErrServerNilJaws. Use Valid to
-// test whether authentication was successfully configured.
+// callback endpoints via handleFn. A nil jw returns ErrServerNilJaws. Check both
+// err and Valid before serving protected routes; an invalid Server leaves its
+// wrapped handlers unprotected.
 func New(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc) (srv *Server, err error) {
 	return NewDebug(jw, cfg, handleFn, "")
 }
@@ -331,11 +334,8 @@ func (srv *Server) Valid() bool {
 
 // wrap returns a http.Handler that requires an authenticated user before invoking h.
 //
-// When admin is true the user must additionally be an administrator (see SetAdmins),
-// otherwise the 403 handler is served. Unauthenticated requests are redirected into the
-// configured login flow (HandleLogin), which verifies the provider identity and stores
-// claims in srv.SessionKey before the user returns. If the
-// Server is not Valid, returns h.
+// When admin is true, non-admins receive 403. Unauthenticated GET begins login;
+// other unauthenticated methods receive 405. An invalid Server returns h.
 func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 	rh = h
 	if srv.Valid() {
@@ -347,21 +347,19 @@ func (srv *Server) wrap(h http.Handler, admin bool) (rh http.Handler) {
 // WrapAdmin returns a http.Handler that requires an authenticated administrator
 // before invoking h.
 //
-// Unauthenticated requests are redirected into the configured login flow (HandleLogin);
-// authenticated users whose email is not an admin (see SetAdmins and IsAdmin) are
-// served the 403 handler instead of h. [Server.RequireVerifiedAdminEmail] also
-// applies. A protected request while a login callback runs may return 409.
-// If the Server is not Valid, returns h.
+// Unauthenticated GET begins login; other unauthenticated methods receive 405.
+// Authenticated non-admins receive 403. [Server.RequireVerifiedAdminEmail]
+// applies. A GET request during a running login callback may return 409.
+// An invalid Server returns h.
 func (srv *Server) WrapAdmin(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, true)
 }
 
 // Wrap returns a http.Handler that requires an authenticated user before invoking h.
 //
-// Unauthenticated requests are redirected into the configured login flow
-// (HandleLogin), which stores verified claims in srv.SessionKey before the user
-// returns. A protected request while a login callback runs may return 409.
-// If the Server is not Valid, returns h.
+// Unauthenticated GET begins login; other unauthenticated methods receive 405.
+// A GET request during a running login callback may return 409.
+// An invalid Server returns h.
 func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 	return srv.wrap(h, false)
 }
@@ -369,11 +367,10 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 // HandlerAdmin returns a http.Handler that renders the named jaws.Template with dot
 // and requires an authenticated administrator.
 //
-// Unauthenticated requests are redirected into the configured login flow (HandleLogin);
-// authenticated non-admins (see SetAdmins and IsAdmin) are served the 403 handler.
-// [Server.RequireVerifiedAdminEmail] also applies. A protected request while a login callback runs may return 409.
-// If the Server is not Valid, the template handler is returned without the
-// authentication requirement.
+// Unauthenticated GET begins login; other unauthenticated methods receive 405.
+// Authenticated non-admins receive 403. [Server.RequireVerifiedAdminEmail]
+// applies. A GET request during a running login callback may return 409.
+// An invalid Server returns the unprotected template handler.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
 	return srv.wrap(ui.Handler(srv.Jaws, name, dot), true)
 }
@@ -381,11 +378,9 @@ func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
 // Handler returns a http.Handler that renders the named jaws.Template with dot
 // and requires an authenticated user.
 //
-// Unauthenticated requests are redirected into the configured login flow
-// (HandleLogin), which stores verified claims in srv.SessionKey before the user
-// returns. A protected request while a login callback runs may return 409.
-// If the Server is not Valid, the template
-// handler is returned without the authentication requirement.
+// Unauthenticated GET begins login; other unauthenticated methods receive 405.
+// A GET request during a running login callback may return 409.
+// An invalid Server returns the unprotected template handler.
 func (srv *Server) Handler(name string, dot any) http.Handler {
 	return srv.wrap(ui.Handler(srv.Jaws, name, dot), false)
 }

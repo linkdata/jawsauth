@@ -89,13 +89,12 @@ const maxRedirectTargetLen = 8192
 func normalizeHost(hostport string) (normalized string) {
 	normalized = strings.TrimSpace(hostport)
 	if normalized != "" {
-		normalized = strings.TrimSuffix(normalized, ".")
-		normalized = strings.ToLower(normalized)
 		if strings.Contains(normalized, ":") {
 			if h, _, err := net.SplitHostPort(normalized); err == nil {
 				normalized = h
 			}
 		}
+		normalized = strings.ToLower(strings.TrimSuffix(normalized, "."))
 	}
 	return
 }
@@ -140,8 +139,9 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location s
 //
 // For GET requests it stores the state, PKCE verifier and, for OIDC, nonce in the
 // session, then responds with a 302 redirect to the provider's authorization URL.
+// It replaces any pending flow on this server, canceling a running callback or link.
 // If no session can be created, it returns 503 with Retry-After instead.
-// Non-GET requests receive 405.
+// Non-GET requests receive 405 with Allow: GET.
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	srv.startOAuth(hw, hr, false, false)
 }
@@ -179,11 +179,21 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 	if link || hr.Method == http.MethodGet {
 		oauth2cfg, location := srv.begin(hr)
 		if oauth2cfg != nil {
+			rotationLock := srv.SessionRotationLock
+			if rotationLock != nil {
+				rotationLock.Lock()
+			}
+			unlockRotation := func() {
+				if rotationLock != nil {
+					rotationLock.Unlock()
+				}
+			}
 			sess := srv.Jaws.GetSession(hr)
 			if sess == nil && !link {
 				sess = srv.Jaws.NewSession(hw, hr)
 			}
 			if sess == nil {
+				unlockRotation()
 				missingSession()
 				return
 			}
@@ -197,6 +207,7 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 				flow, _ = sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
 				if flow.state == "" {
 					srv.mu.Unlock()
+					unlockRotation()
 					if srv.LoginFailed != nil {
 						email, _ := sess.Get(srv.SessionEmailKey).(string)
 						if srv.LoginFailed(hw, hr, http.StatusConflict, ErrOAuth2LoginInProgress, email) {
@@ -216,6 +227,7 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 				}
 				if !sess.ExtendGrace(oauth2FlowGrace) {
 					srv.mu.Unlock()
+					unlockRotation()
 					missingSession()
 					return
 				}
@@ -223,6 +235,7 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 				sess.Set(srv.sessionKey(oauth2FlowKey), flow)
 			}
 			srv.mu.Unlock()
+			unlockRotation()
 			authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
 			if flow.nonce != "" {
 				authOptions = append(authOptions, oidc.Nonce(flow.nonce))
@@ -235,6 +248,8 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 		if link {
 			statusCode = http.StatusSeeOther
 		}
+	} else {
+		hw.Header().Set("Allow", http.MethodGet)
 	}
 	SetHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
@@ -242,8 +257,9 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 
 // HandleLogout clears this server's authentication in the session and redirects.
 //
-// For GET requests it clears the auth (firing LogoutEvent if set) and responds with a
-// 302 redirect back to the sanitized referrer (or "/"). Non-GET requests receive 405.
+// For GET requests it clears the auth (firing LogoutEvent when auth was present)
+// and responds with a 302 redirect to the sanitized referrer (or "/").
+// Non-GET requests receive 405 with Allow: GET.
 func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
 	if hr.Method == http.MethodGet {
@@ -253,6 +269,8 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 		}
 		hw.Header().Set("Location", location)
 		statusCode = http.StatusFound
+	} else {
+		hw.Header().Set("Allow", http.MethodGet)
 	}
 	SetHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
@@ -454,21 +472,19 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 		if err = srv.identityExpiryError(idToken.Expiry); err != nil {
 			return nil, nil, time.Time{}, status, err
 		}
-		return claims, tokenSource, idToken.Expiry, status, nil
+		return claims, tokenSource, idToken.Expiry, 0, nil
 	}
 	if srv.profileSubject == nil || !profileTokenUnexpired(token) {
 		return nil, nil, time.Time{}, status, ErrOAuth2InvalidProfile
 	}
-	status = http.StatusBadGateway
 	claims, err = srv.fetchUserInfo(ctx, srv.userinfoUrl, oauth2.StaticTokenSource(token))
 	if err != nil {
-		return nil, nil, time.Time{}, status, err
+		return nil, nil, time.Time{}, http.StatusBadGateway, err
 	}
 	// UserInfo can outlive the token; reject it before calling application code.
 	if !profileTokenUnexpired(token) {
 		return nil, nil, time.Time{}, http.StatusUnauthorized, ErrOAuth2InvalidProfile
 	}
-	status = http.StatusUnauthorized
 	if claims == nil {
 		return nil, nil, time.Time{}, status, ErrOAuth2InvalidProfile
 	}
@@ -486,7 +502,7 @@ func (srv *Server) verifyOAuthIdentity(ctx context.Context, token *oauth2.Token,
 	if err = srv.identityExpiryError(expiry); err != nil {
 		return nil, nil, time.Time{}, status, err
 	}
-	return claims, nil, expiry, status, nil
+	return claims, nil, expiry, 0, nil
 }
 
 func profileTokenUnexpired(token *oauth2.Token) bool {
@@ -527,9 +543,6 @@ func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map
 	if srv.SessionRotationLock != nil {
 		srv.SessionRotationLock.Lock()
 		defer srv.SessionRotationLock.Unlock()
-	}
-	if srv.LinkEvent == nil {
-		return http.StatusInternalServerError, ErrOAuth2NotConfigured
 	}
 	if flow.revoked() || srv.Jaws.GetSession(hr) != sess {
 		return http.StatusForbidden, ErrOAuth2MissingSession
@@ -598,9 +611,6 @@ func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWr
 	}
 	if flow.link {
 		status, err = srv.completeLink(sess, hr, claims, expiry, flow)
-	} else if err = srv.identityExpiryError(expiry); err != nil {
-		// Reject expiry before rotating the session.
-		return sess, http.StatusUnauthorized, err
 	} else {
 		sess, status, err = srv.completeLogin(hw, hr, sess, flow, claims, tokenSource, expiry)
 	}
@@ -623,6 +633,7 @@ func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWr
 // response is 503. The user must restart login after capacity becomes available.
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method != http.MethodGet {
+		hw.Header().Set("Allow", http.MethodGet)
 		srv.writeResult(hw, http.StatusMethodNotAllowed, ErrOAuth2Callback, nil)
 		return
 	}

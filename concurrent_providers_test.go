@@ -61,7 +61,6 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 	defer release()
 	a := newConcurrentProfileProvider(t, jw, client, "a")
 	b := newConcurrentProfileProvider(t, jw, client, "b")
-	a.SessionRotationLock, b.SessionRotationLock = gate, gate
 	cookie, stateA := profileStart(t, a, http.MethodGet, "/auth/a/login", nil)
 	startB := httptest.NewRequest(http.MethodGet, "https://app.example/auth/b/login", nil)
 	startB.AddCookie(cookie)
@@ -75,6 +74,7 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	stateB := locB.Query().Get("state")
+	a.SessionRotationLock, b.SessionRotationLock = gate, gate
 	callback := func(srv *Server, ns, state string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "https://app.example/auth/"+ns+"/callback?state="+url.QueryEscape(state)+"&code=proof", nil)
 		req.AddCookie(cookie)
@@ -161,7 +161,6 @@ func TestLinkedProviderLogoutBeforeLinkWrite(t *testing.T) {
 				t.Fatal("missing first provider authentication")
 			}
 			lock := &holdFirstRotationLock{first: make(chan struct{}), releaseFirst: make(chan struct{})}
-			a.SessionRotationLock, b.SessionRotationLock = lock, lock
 			var writes atomic.Int32
 			b.LinkEvent = func(current *jaws.Session, _ *http.Request, _ map[string]any) (int, error) {
 				if a.CurrentClaims(current) == nil {
@@ -171,6 +170,7 @@ func TestLinkedProviderLogoutBeforeLinkWrite(t *testing.T) {
 				return 0, nil
 			}
 			_, linkState := profileStart(t, b, http.MethodPost, "/auth/b/link", cookie)
+			a.SessionRotationLock, b.SessionRotationLock = lock, lock
 			callbackDone := make(chan *httptest.ResponseRecorder, 1)
 			go func() {
 				callbackRequest := httptest.NewRequest(http.MethodGet, "https://app.example/auth/b/callback?state="+url.QueryEscape(linkState)+"&code=proof", nil)

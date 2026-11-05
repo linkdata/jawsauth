@@ -68,6 +68,50 @@ func TestAdminEmailPolicy(t *testing.T) {
 	}
 }
 
+func TestProfileAdminRequiresVerifiedEmailByDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		optOut bool
+		want   int
+	}{
+		{"default", false, http.StatusForbidden},
+		{"explicit opt-out", true, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jw, err := jaws.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer jw.Close()
+			srv := newProfileTestServer(t, jw, nil)
+			if !srv.RequireVerifiedAdminEmail {
+				t.Fatal("profile mode did not require verified admin email by default")
+			}
+			if tc.optOut {
+				srv.RequireVerifiedAdminEmail = false
+			}
+			srv.SetAdmins([]string{"first@example.com"})
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			login := profileCallback(srv, cookie, state, "first")
+			cookies := login.Result().Cookies()
+			if login.Code != http.StatusFound || len(cookies) != 1 {
+				t.Fatalf("profile login: status=%d cookies=%v", login.Code, cookies)
+			}
+			r := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
+			r.AddCookie(cookies[0])
+			sess := jw.GetSession(r)
+			if sess == nil || sess.Get(srv.SessionEmailVerifiedKey) != false {
+				t.Fatal("profile test did not authenticate an unverified email")
+			}
+			w := httptest.NewRecorder()
+			srv.WrapAdmin(testStatusHandler{http.StatusOK}).ServeHTTP(w, r)
+			if w.Code != tc.want {
+				t.Fatalf("unverified admin email: status=%d, want %d", w.Code, tc.want)
+			}
+		})
+	}
+}
+
 func TestUserInfoClaimProvenance(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

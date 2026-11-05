@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1175,12 +1176,76 @@ func TestServerLogout(t *testing.T) {
 	if !factory.timer(0).isStopped() {
 		t.Fatal("timer was not stopped")
 	}
+	if !srv.Logout(sess, req) || logoutCount != 1 {
+		t.Fatalf("repeated logout: events=%d", logoutCount)
+	}
 
 	if (*Server)(nil).Logout(sess, req) {
 		t.Fatal("nil server should report nothing cleared")
 	}
 	if srv.Logout(nil, req) {
 		t.Fatal("nil session should report nothing cleared")
+	}
+}
+
+type delayedFirstAuthLock struct {
+	sync.Mutex
+	attempts atomic.Int32
+	entered  chan struct{}
+	release  chan struct{}
+}
+
+func (lock *delayedFirstAuthLock) Lock() {
+	if lock.attempts.Add(1) == 1 {
+		close(lock.entered)
+		<-lock.release
+	}
+	lock.Mutex.Lock()
+}
+
+func TestStaleWrapperDoesNotRepeatRotationLogoutEvent(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := newProfileTestServer(t, jw, nil)
+	srv.authTimerAfterFunc = (&testAuthTimerFactory{}).after
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	first := profileCallback(srv, cookie, state, "first")
+	if first.Code != http.StatusFound || len(first.Result().Cookies()) != 1 {
+		t.Fatalf("initial login: status=%d cookies=%v", first.Code, first.Result().Cookies())
+	}
+	cookie = first.Result().Cookies()[0]
+	req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	req.AddCookie(cookie)
+	old := jw.GetSession(req)
+	if old == nil {
+		t.Fatal("authenticated session missing")
+	}
+	_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
+	old.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(-time.Second))
+	lock := &delayedFirstAuthLock{entered: make(chan struct{}), release: make(chan struct{})}
+	srv.SessionRotationLock = lock
+	var oldLogouts atomic.Int32
+	release := sync.OnceFunc(func() { close(lock.release) })
+	defer release()
+	srv.LogoutEvent = func(sess *jaws.Session, _ *http.Request) {
+		if sess == old {
+			oldLogouts.Add(1)
+			release()
+		}
+	}
+	wrapped := make(chan struct{})
+	go func() {
+		srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(httptest.NewRecorder(), req)
+		close(wrapped)
+	}()
+	waitFor(t, lock.entered, "wrapper did not reach auth clear")
+	callback := profileCallback(srv, cookie, state, "second")
+	waitFor(t, wrapped, "stale wrapper did not finish")
+	if callback.Code != http.StatusFound || len(callback.Result().Cookies()) != 1 || oldLogouts.Load() != 1 {
+		t.Fatalf("rotation overlap: status=%d cookies=%v old_logout_events=%d", callback.Code, callback.Result().Cookies(), oldLogouts.Load())
 	}
 }
 

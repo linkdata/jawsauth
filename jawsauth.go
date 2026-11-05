@@ -70,6 +70,7 @@ func (a *JawsAuth) EmailVerified() (yes bool) {
 //
 // It applies [Server.RequireVerifiedAdminEmail] to non-empty admin lists.
 // It does not check login expiry; use [Server.CurrentClaims] for access decisions.
+// With an empty admin list, it can return true without a session.
 // A nil or zero-value JawsAuth follows [Server.IsAdmin]'s nil-server behavior and returns true.
 func (a *JawsAuth) IsAdmin() (yes bool) {
 	if a == nil || a.server == nil {

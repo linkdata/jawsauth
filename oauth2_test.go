@@ -101,6 +101,9 @@ func Test_sanitizeRedirectTarget(t *testing.T) {
 	if s := sanitizeRedirectTarget("example.com:8443", "https://example.com/dashboard"); s != "/dashboard" {
 		t.Fatal(s)
 	}
+	if s := sanitizeRedirectTarget("example.com", "https://example.com.:443/dashboard"); s != "/dashboard" {
+		t.Fatal(s)
+	}
 	if s := sanitizeRedirectTarget("example.com", "section/page"); s != "/section/page" {
 		t.Fatal(s)
 	}
@@ -1604,6 +1607,9 @@ func Test_handlersRejectNonGet(t *testing.T) {
 				closeResponseBody(t, resp)
 				if resp.StatusCode != http.StatusMethodNotAllowed {
 					t.Fatal(resp.Status)
+				}
+				if allow := resp.Header.Get("Allow"); allow != http.MethodGet {
+					t.Fatalf("Allow = %q, want GET", allow)
 				}
 				if loc := resp.Header.Get("Location"); loc != "" {
 					t.Fatalf("unexpected Location header: %q", loc)

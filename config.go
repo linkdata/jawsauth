@@ -47,9 +47,9 @@ type Config struct {
 	// Profile mode sets claims["iss"] to Issuer and claims["sub"] to this subject;
 	// use a distinct Issuer per provider.
 	// JSON numbers arrive as json.Number to preserve large numeric IDs.
-	// Profile emails can be unverified. For a non-empty admin list, set
-	// Server.RequireVerifiedAdminEmail unless the provider guarantees verified
-	// addresses; ProfileSubject may map a provider signal to claims["email_verified"].
+	// ProfileSubject may adjust claims, for example by mapping the provider's
+	// verification signal to claims["email_verified"]. Profile mode requires
+	// verified email for a non-empty admin list by default.
 	ProfileSubject func(map[string]any) (string, error)
 }
 

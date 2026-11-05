@@ -21,6 +21,59 @@ func (hook infoHookLogger) Info(msg string, _ ...any) { hook(msg) }
 func (infoHookLogger) Warn(string, ...any)            {}
 func (infoHookLogger) Error(string, ...any)           {}
 
+type rotationHeaderGate struct {
+	*httptest.ResponseRecorder
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *rotationHeaderGate) Header() http.Header {
+	w.once.Do(func() {
+		close(w.entered)
+		<-w.release
+	})
+	return w.ResponseRecorder.Header()
+}
+
+func TestLoginStartDuringRotationKeepsFirstCallback(t *testing.T) {
+	jw, err := jaws.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jw.Close()
+	srv := newProfileTestServer(t, jw, nil)
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	lock := &observedRotationLock{second: make(chan struct{})}
+	srv.SessionRotationLock = lock
+	gate := &rotationHeaderGate{ResponseRecorder: httptest.NewRecorder(), entered: make(chan struct{}), release: make(chan struct{})}
+	callbackDone := make(chan struct{})
+	go func() {
+		r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/callback?state="+state+"&code=first", nil)
+		r.AddCookie(cookie)
+		srv.HandleAuthResponse(gate, r)
+		close(callbackDone)
+	}()
+	waitFor(t, gate.entered, "callback did not reach session rotation")
+	startDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		srv.HandleLogin(w, r)
+		startDone <- w
+	}()
+	release := sync.OnceFunc(func() { close(gate.release) })
+	defer release()
+	waitFor(t, lock.second, "second login did not wait for rotation")
+	release()
+	waitFor(t, callbackDone, "first callback did not finish")
+	second := waitFor(t, startDone, "second login did not finish")
+	if gate.Code != http.StatusFound || len(gate.Result().Cookies()) != 1 || second.Code != http.StatusFound || len(second.Result().Cookies()) != 1 {
+		t.Fatalf("overlapping logins: first=%d cookies=%v second=%d cookies=%v", gate.Code, gate.Result().Cookies(), second.Code, second.Result().Cookies())
+	}
+}
+
 func TestCallbackRevokedAfterStoreBalancesEvents(t *testing.T) {
 	jw, err := jaws.New()
 	if err != nil {
