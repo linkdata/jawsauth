@@ -372,6 +372,35 @@ func (lock *revokeAfterRotationLock) Unlock() {
 	}
 }
 
+func TestReloginStopsOldTimerBeforeRotationUnlock(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newProfileTestServer(t, jw, nil)
+	factory := &testAuthTimerFactory{}
+	srv.authTimerAfterFunc = factory.after
+	cookie := profileLogin(t, srv)
+	oldRequest := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	oldRequest.AddCookie(cookie)
+	old := jw.GetSession(oldRequest)
+	if old == nil {
+		t.Fatal("old session missing")
+	}
+	_, state := profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
+	timer := factory.timer(0)
+	var logoutRequest *http.Request
+	logouts := 0
+	srv.LogoutEvent = func(sess *jaws.Session, hr *http.Request) {
+		if sess == old {
+			logouts++
+			logoutRequest = hr
+		}
+	}
+	srv.SessionRotationLock = &revokeAfterRotationLock{logout: timer.fire}
+	response := profileCallback(srv, cookie, state, "second")
+	if response.Code != http.StatusFound || logouts != 1 || logoutRequest == nil || !timer.isStopped() {
+		t.Fatalf("re-login: status=%d logouts=%d request=%v timer_stopped=%t", response.Code, logouts, logoutRequest != nil, timer.isStopped())
+	}
+}
+
 func TestCallbackRevokedAfterRotationClosesNewSession(t *testing.T) {
 	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)

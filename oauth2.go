@@ -544,16 +544,22 @@ func profileTokenUnexpired(token *oauth2.Token) bool {
 	return token.Expiry.After(time.Now())
 }
 
-func (srv *Server) rotateOAuthSession(hw http.ResponseWriter, hr *http.Request, old *jaws.Session, flow pendingOAuthFlow) (rotated *jaws.Session, stale bool) {
+func (srv *Server) rotateOAuthSession(hw http.ResponseWriter, hr *http.Request, old *jaws.Session, flow pendingOAuthFlow) (rotated *jaws.Session, hadTimer, stale bool) {
 	rotationLock := srv.SessionRotationLock
 	if rotationLock != nil {
 		rotationLock.Lock()
 		defer rotationLock.Unlock()
 	}
 	if flow.revoked() || srv.Jaws.GetSession(hr) != old {
-		return nil, true
+		return nil, false, true
 	}
-	return srv.Jaws.NewSession(hw, hr), false
+	if rotated = srv.Jaws.NewSession(hw, hr); rotated != nil {
+		srv.mu.Lock()
+		hadTimer = srv.authTimers[old.ID()] != nil
+		srv.stopSessionAuthTimerLocked(old, nil)
+		srv.mu.Unlock()
+	}
+	return
 }
 
 func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map[string]any, expiry time.Time, flow pendingOAuthFlow) (status int, err error) {
@@ -580,7 +586,7 @@ func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map
 
 func (srv *Server) completeLogin(hw http.ResponseWriter, hr *http.Request, old *jaws.Session, flow pendingOAuthFlow, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time) (sess *jaws.Session, status int, err error) {
 	sess, status, err = old, http.StatusServiceUnavailable, ErrOAuth2MissingSession
-	rotated, stale := srv.rotateOAuthSession(hw, hr, old, flow)
+	rotated, hadTimer, stale := srv.rotateOAuthSession(hw, hr, old, flow)
 	if rotated == nil {
 		if stale {
 			status = http.StatusForbidden
@@ -589,10 +595,6 @@ func (srv *Server) completeLogin(hw http.ResponseWriter, hr *http.Request, old *
 		}
 		return
 	}
-	srv.mu.Lock()
-	hadTimer := srv.authTimers[old.ID()] != nil
-	srv.stopSessionAuthTimerLocked(old, nil)
-	srv.mu.Unlock()
 	if hadTimer && srv.LogoutEvent != nil {
 		srv.LogoutEvent(old, hr)
 	}
@@ -636,9 +638,6 @@ func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWr
 		status, err = srv.completeLink(sess, hr, claims, expiry, flow)
 	} else {
 		sess, status, err = srv.completeLogin(hw, hr, sess, flow, claims, tokenSource, expiry)
-	}
-	if err == nil {
-		hw.Header().Set("Location", flow.referrer)
 	}
 	return sess, status, err
 }
@@ -689,10 +688,12 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		if flow.revoked() || !current || !sessionAlive(sess) {
 			srv.clearSessionAuth(sess, hr, nil, false)
 			http.SetCookie(hw, sess.Close())
-			hw.Header().Del("Location")
 			err = ErrOAuth2MissingSession
 			statusCode = http.StatusForbidden
 		}
+	}
+	if err == nil {
+		hw.Header().Set("Location", flow.referrer)
 	}
 	if err != nil && srv.LoginFailed != nil {
 		if srv.LoginFailed(hw, hr, statusCode, err, sessEmail) {

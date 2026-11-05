@@ -66,8 +66,8 @@ type HandleFunc func(uri string, handler http.Handler)
 // events; clearing auth during it defers LogoutEvent until it returns.
 // LogoutEvent receives a nil request for timer cleanup, deferred delivery, or
 // a call to [Server.Logout] with a nil request.
-// During re-login, LogoutEvent runs on the old session before the new sign-in
-// is stored; calling Logout on that session cancels the new sign-in.
+// When re-login replaces existing auth, its LogoutEvent runs on the old session
+// before the new sign-in is stored; calling Logout there cancels the new sign-in.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
 // FailedFunc is called on callback failures and when a protected request meets

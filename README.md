@@ -52,9 +52,9 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
   register it. Authorize the session before calling it. In `LinkEvent`, recheck
   the original provider's `CurrentClaims` before writing the link. Linking keeps
   the session; an ordinary login rotates it and signs out other providers.
-  A re-login calls its `LogoutEvent` before storing the new sign-in; calling
-  `Logout` on that event session cancels the new sign-in. Other providers'
-  `LogoutEvent` may run later with a nil request.
+  A re-login replacing existing auth calls its `LogoutEvent` before storing
+  the new sign-in. Calling `Logout` on that event session cancels it. Other
+  providers' `LogoutEvent` may run later with a nil request.
   Starting a link replaces this server's pending flow, including a running
   login callback.
 - `New` shares one process-wide `SessionRotationLock` by default. To coordinate
