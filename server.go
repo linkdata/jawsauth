@@ -68,6 +68,8 @@ type HandleFunc func(uri string, handler http.Handler)
 // a call to [Server.Logout] with a nil request.
 // When re-login replaces existing auth, its LogoutEvent runs on the old session
 // before the new sign-in is stored; calling Logout there cancels the new sign-in.
+// For cross-provider cleanup, check the other Server's CurrentClaims before
+// calling Logout on the old session; that call can revoke a running sign-in.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
 // FailedFunc is called on callback failures and when a protected request meets

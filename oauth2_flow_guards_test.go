@@ -209,6 +209,7 @@ func TestLinkRejectsInvalidEventResults(t *testing.T) {
 		{"error without status", 0, errors.New("secret persistence detail"), http.StatusForbidden},
 		{"success status without acceptance", http.StatusOK, nil, http.StatusForbidden},
 		{"conflict status", http.StatusConflict, errors.New("secret persistence detail"), http.StatusConflict},
+		{"out of range status", 600, errors.New("secret persistence detail"), http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			jw := newTestJaws(t)
@@ -421,14 +422,16 @@ func TestCallbackRevokedAfterRotationClosesNewSession(t *testing.T) {
 		t.Fatal("old session missing")
 	}
 	_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
+	logins := 0
+	srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
 	revoked := false
 	srv.SessionRotationLock = &revokeAfterRotationLock{logout: func() {
 		revoked = srv.Logout(old, nil)
 	}}
 	w := profileCallback(srv, cookie, state, "second")
 	cookies := w.Result().Cookies()
-	if !revoked || w.Code != http.StatusForbidden || w.Header().Get("Location") != "" ||
+	if !revoked || logins != 0 || w.Code != http.StatusForbidden || w.Header().Get("Location") != "" ||
 		len(cookies) != 2 || cookies[1].MaxAge >= 0 || cookies[1].Value != cookies[0].Value {
-		t.Fatalf("revoked after rotation: revoked=%t status=%d location=%q cookies=%v", revoked, w.Code, w.Header().Get("Location"), cookies)
+		t.Fatalf("revoked after rotation: revoked=%t logins=%d status=%d location=%q cookies=%v", revoked, logins, w.Code, w.Header().Get("Location"), cookies)
 	}
 }

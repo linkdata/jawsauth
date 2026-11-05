@@ -310,7 +310,8 @@ func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error
 	hw.WriteHeader(statusCode)
 	if err != nil {
 		const tmpl = `<html><body><h2>%03d %s</h2><p>%s</p></body></html>`
-		_, _ = fmt.Fprintf(hw, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
+		body := fmt.Appendf(nil, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
+		_, _ = hw.Write(body)
 	}
 }
 

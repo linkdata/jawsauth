@@ -249,6 +249,10 @@ func newTimerTestServer(t *testing.T, jw *jaws.Jaws, issuer string, factory *tes
 }
 
 func TestStoreSessionAuthClaimsSchedulesTimer(t *testing.T) {
+	synctest.Test(t, testStoreSessionAuthClaimsSchedulesTimer)
+}
+
+func testStoreSessionAuthClaimsSchedulesTimer(t *testing.T) {
 	jw := newTestJaws(t)
 
 	factory := &testAuthTimerFactory{}
@@ -347,6 +351,26 @@ func TestStoreSessionAuthClaimsErrors(t *testing.T) {
 	err = srv.storeSessionAuthClaims(sess, map[string]any{}, nil, time.Now().Add(time.Hour), nil)
 	if !errors.Is(err, ErrOAuth2MissingSession) {
 		t.Fatal(err)
+	}
+}
+
+func TestRefreshDoesNotQueueLoginEvent(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newTimerTestServer(t, jw, "https://issuer.example", &testAuthTimerFactory{})
+	sess := jw.NewSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	expiry := time.Now().Add(time.Hour)
+	if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "one"}, nil, expiry, nil); err != nil {
+		t.Fatal(err)
+	}
+	entry := srv.authTimers[sess.ID()]
+	logins, logouts := 0, 0
+	srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
+	srv.LogoutEvent = func(*jaws.Session, *http.Request) { logouts++ }
+	if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "one"}, nil, expiry, entry); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.Logout(sess, nil) || logins != 0 || logouts != 1 {
+		t.Fatalf("refresh and logout: logins=%d logouts=%d", logins, logouts)
 	}
 }
 
@@ -1170,6 +1194,19 @@ func TestServerLogout(t *testing.T) {
 	}
 	if srv.Logout(nil, req) {
 		t.Fatal("nil session should report nothing cleared")
+	}
+}
+
+func TestLogoutWithoutTimerReportsEvent(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newTimerTestServer(t, jw, "https://issuer.example", &testAuthTimerFactory{})
+	sess := jw.NewSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	sess.Set(srv.SessionKey, map[string]any{"iss": srv.issuer, "sub": "one"})
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
+	logouts := 0
+	srv.LogoutEvent = func(*jaws.Session, *http.Request) { logouts++ }
+	if !srv.Logout(sess, nil) || logouts != 1 || sess.Get(srv.SessionKey) != nil {
+		t.Fatalf("logout without timer: events=%d claims=%v", logouts, sess.Get(srv.SessionKey))
 	}
 }
 

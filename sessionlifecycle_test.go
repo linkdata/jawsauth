@@ -52,10 +52,7 @@ func TestAuthTimerDiscardsClosedSession(t *testing.T) {
 
 func testAuthTimerDiscardsClosedSession(t *testing.T) {
 	for _, duringRefresh := range []bool{false, true} {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
+		jw := newTestJaws(t)
 		factory := &testAuthTimerFactory{}
 		srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -68,7 +65,7 @@ func testAuthTimerDiscardsClosedSession(t *testing.T) {
 			sess.Close()
 			return makeOAuth2Token("access", raw, "refresh"), nil
 		})
-		if err = srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, source, expiry, nil); err != nil {
+		if err := srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, source, expiry, nil); err != nil {
 			t.Fatal(err)
 		}
 		if !duringRefresh {
@@ -83,11 +80,10 @@ func testAuthTimerDiscardsClosedSession(t *testing.T) {
 			t.Fatalf("calls=%d timers=%d scheduled=%d", calls, len(srv.authTimers), factory.len())
 		}
 		assertWrapperAuthCleared(t, srv, sess)
-		jw.Close()
 	}
 }
 
-func TestOIDCTimerReleasesSessionRotatedByOtherProvider(t *testing.T) {
+func TestOIDCTimerReleasesRotatedSession(t *testing.T) {
 	jw := newTestJaws(t)
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
@@ -114,7 +110,7 @@ func TestOIDCTimerReleasesSessionRotatedByOtherProvider(t *testing.T) {
 	}
 	factory.timer(1).fire()
 	if len(srv.authTimers) != 0 {
-		t.Fatal("other provider retained the rotated session")
+		t.Fatal("OIDC timer retained the rotated session")
 	}
 }
 
@@ -259,7 +255,7 @@ func TestLoginRotationExistingAuth(t *testing.T) {
 		rec := httptest.NewRecorder()
 		srv.HandleAuthResponse(rec, req)
 		if limit == 1 {
-			if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Location") != "" {
+			if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Location") != "" || rec.Header().Get("Retry-After") != "60" {
 				t.Fatalf("status=%d headers=%v", rec.Code, rec.Header())
 			}
 			if jw.GetSession(req) != sess || !srv.sessionAuthTimerCurrent(sess, entry) || sess.Get(srv.SessionEmailKey) != "existing@example.com" {

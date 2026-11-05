@@ -398,6 +398,47 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 	}
 }
 
+func TestOAuthProfileAuthExpiryCancelsRunningLink(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newProfileTestServer(t, jw, nil)
+	factory := &testAuthTimerFactory{}
+	srv.authTimerAfterFunc = factory.after
+	cookie := profileLogin(t, srv)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseProvider := sync.OnceFunc(func() { close(release) })
+	defer releaseProvider()
+	transport := srv.httpClient.Transport
+	srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/token" {
+			close(entered)
+			<-release
+		}
+		return transport.RoundTrip(r)
+	})}
+	links := 0
+	srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) { links++; return 0, nil }
+	_, state := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() { result <- profileCallback(srv, cookie, state, "second") }()
+	waitFor(t, entered, "link callback did not reach provider")
+	req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	req.AddCookie(cookie)
+	sess := jw.GetSession(req)
+	if sess == nil {
+		t.Fatal("authenticated session missing")
+	}
+	srv.mu.Lock()
+	srv.authTimers[sess.ID()].expiry = time.Now().Add(-time.Second)
+	srv.mu.Unlock()
+	factory.timer(0).fire()
+	releaseProvider()
+	response := waitFor(t, result, "expired link callback did not finish")
+	if response.Code != http.StatusForbidden || links != 0 || sess.Get(srv.SessionKey) != nil {
+		t.Fatalf("expired link: status=%d links=%d claims=%v", response.Code, links, sess.Get(srv.SessionKey))
+	}
+}
+
 func TestOAuthProfileLinkRejectsReplacedSession(t *testing.T) {
 	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
@@ -483,6 +524,9 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 					}
 					close(checked)
 					<-release
+					if sess.Get(srv.SessionKey) == nil {
+						return http.StatusForbidden, ErrOAuth2MissingSession
+					}
 					writes++ // durable application write
 					return 0, nil
 				}
@@ -504,6 +548,7 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 				}
 				if revocationFirst {
 					revoke()
+					releaseEvent()
 					response := profileCallback(srv, cookie, linkState, "second")
 					if response.Code != http.StatusBadRequest || writes != 0 || logoutEvents.Load() != 1 {
 						t.Fatalf("revocation won: status=%d writes=%d logout events=%d", response.Code, writes, logoutEvents.Load())
@@ -611,6 +656,7 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 					}
 					return false
 				}
+				defer func() { srv.LoginFailed = nil }()
 				conflict := httptest.NewRecorder()
 				srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 					t.Fatal("pending callback reached protected handler")
@@ -626,6 +672,7 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 				if handled.Code != http.StatusAccepted || handled.Body.String() != "custom response" || failedCalls != 2 {
 					t.Fatalf("handled callback: status=%d body=%q failed_calls=%d", handled.Code, handled.Body.String(), failedCalls)
 				}
+				srv.LoginFailed = nil
 			}
 			var response *httptest.ResponseRecorder
 			if phase == "callback" {
@@ -946,13 +993,14 @@ func TestOAuthProfileUserInfoCallbackDeadline(t *testing.T) {
 		var userinfoErr error
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			if r.URL.Path == "/token" {
+				time.Sleep(10 * time.Second)
 				return jsonResponse(`{"access_token":"access","token_type":"Bearer"}`), nil
 			}
 			select {
 			case <-r.Context().Done():
 				userinfoErr = r.Context().Err()
 				return nil, userinfoErr
-			case <-time.After(oauth2ProviderTimeout + time.Second):
+			case <-time.After(6 * time.Second):
 				userinfoErr = errors.New("UserInfo missed callback deadline")
 				return nil, userinfoErr
 			}
@@ -1072,6 +1120,9 @@ func TestOAuthProfileExpiresWithoutRefresh(t *testing.T) {
 	factory.timer(0).fire()
 	if sess.Get(srv.SessionKey) == nil || factory.len() != 2 {
 		t.Fatal("profile auth cleared before its expiry")
+	}
+	if delay := factory.timer(1).delay; delay <= 0 || delay > authSessionCheckInterval {
+		t.Fatalf("profile auth rearm interval: %s", delay)
 	}
 	srv.mu.Lock()
 	srv.authTimers[sess.ID()].expiry = time.Now().Add(-time.Second)

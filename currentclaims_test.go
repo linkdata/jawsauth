@@ -60,6 +60,10 @@ func TestCurrentClaimsRejectsOtherIssuerWithSameNamespace(t *testing.T) {
 	if social.CurrentClaims(sess) == nil || corp.CurrentClaims(sess) != nil {
 		t.Fatal("another provider accepted claims from the shared namespace")
 	}
+	sess.Set(social.SessionKey, "not claims")
+	if social.CurrentClaims(sess) != nil {
+		t.Fatal("non-map claims were accepted")
+	}
 }
 
 func TestCurrentClaimsAcceptsGoogleIssuerAlias(t *testing.T) {

@@ -867,7 +867,11 @@ func TestServer_fetchUserInfoUsesClientTimeoutAsRequestDeadline(t *testing.T) {
 		Timeout: timeout,
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			requestDeadline, _ = r.Context().Deadline()
-			<-r.Context().Done()
+			select {
+			case <-r.Context().Done():
+			case <-time.After(time.Second):
+				return nil, errors.New("UserInfo request did not time out")
+			}
 			return nil, r.Context().Err()
 		}),
 	}
