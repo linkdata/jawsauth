@@ -252,7 +252,7 @@ func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, li
 	if fromWrapper && srv.pendingOrdinaryLoginLocked(sess, 2*time.Minute) {
 		// Reissue one pending transaction without replacing the first tab's state.
 		flow, _ = sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
-		if flow.state == "" {
+		if flow.state == "" || flow.owner != srv {
 			status = http.StatusConflict
 		}
 		return

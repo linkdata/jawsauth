@@ -4,8 +4,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/linkdata/jaws"
 	"golang.org/x/oauth2"
 )
@@ -141,5 +144,75 @@ func TestOAuthFlowDefaultNamespaceRejectsForeignServer(t *testing.T) {
 	}
 	if _, err := gitlab.takeOAuthFlow(sess, flow.state); err != nil {
 		t.Fatalf("gitlab lost its own state: %v", err)
+	}
+}
+
+func TestOAuthFlowDefaultNamespaceWrapperDoesNotReissueForeignFlow(t *testing.T) {
+	for _, inFlight := range []bool{false, true} {
+		name := "pending"
+		if inFlight {
+			name = "callback_in_flight"
+		}
+		t.Run(name, func(t *testing.T) {
+			jw := newTestJaws(t)
+			newServer := func(clientID string) *Server {
+				srv, err := New(jw, &Config{}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				srv.oauth2cfg = &oauth2.Config{
+					ClientID: clientID, RedirectURL: "https://app.example/auth/" + clientID + "/callback",
+					Endpoint: oauth2.Endpoint{AuthURL: "https://" + clientID + ".example/authorize", TokenURL: "https://" + clientID + ".example/token"},
+				}
+				srv.idTokenVerifier = oidc.NewVerifier("https://"+clientID+".example", passthroughKeySet{}, &oidc.Config{ClientID: clientID})
+				return srv
+			}
+			github, gitlab := newServer("github"), newServer("gitlab")
+			sessionResponse := httptest.NewRecorder()
+			sess := jw.NewSession(sessionResponse, httptest.NewRequest(http.MethodGet, "https://app.example/", nil))
+			cookie := sessionResponse.Result().Cookies()[0]
+			start := func(srv *Server, path string) *httptest.ResponseRecorder {
+				request := httptest.NewRequest(http.MethodGet, "https://app.example"+path, nil)
+				request.AddCookie(cookie)
+				response := httptest.NewRecorder()
+				srv.HandleLogin(response, request)
+				if response.Code != http.StatusFound {
+					t.Fatalf("%s login: %d", path, response.Code)
+				}
+				return response
+			}
+			if inFlight {
+				start(github, "/auth/github/login")
+				flow := testOAuthFlow(sess, github)
+				if _, err := github.takeOAuthFlow(sess, flow.state); err != nil {
+					t.Fatalf("github callback start: %v", err)
+				}
+			}
+			gitlabLogin := start(gitlab, "/auth/gitlab/login")
+			gitlabFlow := testOAuthFlow(sess, gitlab)
+			gitlabURL, err := url.Parse(gitlabLogin.Header().Get("Location"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
+			request.AddCookie(cookie)
+			response := httptest.NewRecorder()
+			github.Wrap(testStatusHandler{statusCode: http.StatusOK}).ServeHTTP(response, request)
+			if response.Code != http.StatusConflict || response.Header().Get("Location") != "" {
+				t.Fatalf("foreign flow reissued: status %d, location %q", response.Code, response.Header().Get("Location"))
+			}
+			for _, key := range []string{"state", "nonce", "code_challenge"} {
+				value := gitlabURL.Query().Get(key)
+				if value == "" || strings.Contains(response.Body.String(), value) {
+					t.Fatalf("foreign %s missing or exposed in response body", key)
+				}
+			}
+			if got := testOAuthFlow(sess, gitlab); got != gitlabFlow {
+				t.Fatal("foreign wrapper changed gitlab flow")
+			}
+			if _, err := gitlab.takeOAuthFlow(sess, gitlabFlow.state); err != nil {
+				t.Fatalf("gitlab lost its own state: %v", err)
+			}
+		})
 	}
 }
