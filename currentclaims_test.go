@@ -40,3 +40,38 @@ func TestServerCurrentClaimsChecksExpiryAndJaWSSession(t *testing.T) {
 		t.Fatal("closed session returned claims")
 	}
 }
+
+func TestCurrentClaimsRejectsOtherIssuerWithSameNamespace(t *testing.T) {
+	jw := newTestJaws(t)
+	social, err := New(jw, &Config{Namespace: "shared", Issuer: "https://social.example"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corp, err := New(jw, &Config{Namespace: "shared", Issuer: "https://corp.example"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if social.SessionKey != corp.SessionKey {
+		t.Fatal("test providers do not share session keys")
+	}
+	sess := jw.NewSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "https://app.example/", nil))
+	sess.Set(social.SessionKey, map[string]any{"iss": social.issuer, "sub": "person"})
+	sess.Set(social.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
+	if social.CurrentClaims(sess) == nil || corp.CurrentClaims(sess) != nil {
+		t.Fatal("another provider accepted claims from the shared namespace")
+	}
+}
+
+func TestCurrentClaimsAcceptsGoogleIssuerAlias(t *testing.T) {
+	jw := newTestJaws(t)
+	srv, err := New(jw, &Config{Issuer: "https://accounts.google.com"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := jw.NewSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "https://app.example/", nil))
+	sess.Set(srv.SessionKey, map[string]any{"iss": "accounts.google.com", "sub": "person"})
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
+	if srv.CurrentClaims(sess) == nil {
+		t.Fatal("go-oidc Google issuer alias was rejected")
+	}
+}

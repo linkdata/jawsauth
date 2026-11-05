@@ -947,12 +947,16 @@ func TestAuthTimerStaleCallbackNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstTimer := factory.timer(0)
+	firstEntry := srv.authTimers[sess.ID()]
 	err = srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":   time.Now().Add(time.Hour).Unix(),
 		"email": "second@example.com",
 	}, oauth2.StaticTokenSource(makeOAuth2Token("access", "", "")), time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if srv.clearSessionAuth(sess, nil, firstEntry, true) {
+		t.Fatal("stale timer cleared newer authentication")
 	}
 
 	firstTimer.fire()

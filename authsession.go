@@ -102,6 +102,14 @@ func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (
 		authValue := sess.Get(srv.SessionKey)
 		present = authValue != nil || expiryValue != nil
 		if authValue != nil && now != nil {
+			if srv.issuer != "" {
+				claims, ok := authValue.(map[string]any)
+				issuer, _ := claims["iss"].(string)
+				// go-oidc accepts Google's scheme-less issuer.
+				if !ok || (issuer != srv.issuer && (srv.issuer != "https://accounts.google.com" || issuer != "accounts.google.com")) {
+					return
+				}
+			}
 			if expiry, _ := expiryValue.(time.Time); !expiry.IsZero() {
 				current = expiry.After(now())
 			}
@@ -463,11 +471,11 @@ func (srv *Server) clearSessionOAuthFlowLocked(sess *jaws.Session) {
 
 // Logout clears this server's authentication state for sess.
 //
-// It stops the auth timer, clears stored claims, token source, email, expiry
-// and any in-flight OAuth flow keys, then marks the session dirty. If auth was
-// present, it reloads its pages and may call [Server.LogoutEvent] under
-// [EventFunc]'s ordering rules. It returns false for a nil receiver or session,
-// and true otherwise. The hr argument may be nil.
+// It stops the auth timer and clears claims, token source, email and its
+// verification flag, expiry, and in-flight OAuth flow keys, then marks the
+// session dirty. If auth was present, it reloads its pages and may call
+// [Server.LogoutEvent] under [EventFunc]'s ordering rules. It returns false for
+// a nil receiver or session, and true otherwise. The hr argument may be nil.
 //
 // It performs no HTTP redirect. An HTTP handler can build its own post-logout
 // response. A JaWS event handler cannot use [jaws.Request.Redirect] after Logout
