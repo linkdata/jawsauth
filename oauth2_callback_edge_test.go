@@ -231,26 +231,35 @@ func TestConcurrentLogoutWaitsForLoginEvent(t *testing.T) {
 	releaseOnce := sync.OnceFunc(func() { close(release) })
 	defer releaseOnce()
 	events := make(chan string, 2)
+	logoutRequests := make(chan *http.Request, 1)
 	srv.LoginEvent = func(sess *jaws.Session, _ *http.Request) {
 		events <- "login"
 		entered <- sess
 		<-release
 	}
-	srv.LogoutEvent = func(*jaws.Session, *http.Request) { events <- "logout" }
+	srv.LogoutEvent = func(_ *jaws.Session, request *http.Request) {
+		events <- "logout"
+		logoutRequests <- request
+	}
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	result := make(chan *httptest.ResponseRecorder, 1)
 	go func() { result <- profileCallback(srv, cookie, state, "first") }()
 	rotated := waitFor(t, entered, "LoginEvent did not start")
 	loggedOut := make(chan bool, 1)
-	go func() { loggedOut <- srv.Logout(rotated, nil) }()
+	logoutContext, cancelLogout := context.WithCancel(t.Context())
+	defer cancelLogout()
+	logoutRequest := httptest.NewRequest(http.MethodGet, "https://app.example/logout", nil).WithContext(logoutContext)
+	go func() { loggedOut <- srv.Logout(rotated, logoutRequest) }()
 	if !waitFor(t, loggedOut, "concurrent logout blocked") || len(events) != 1 {
 		t.Fatalf("logout before LoginEvent returned: events=%d", len(events))
 	}
+	cancelLogout()
 	releaseOnce()
 	response := waitFor(t, result, "callback did not finish")
 	first := waitFor(t, events, "missing LoginEvent")
 	second := waitFor(t, events, "missing LogoutEvent")
-	if response.Code != http.StatusForbidden || first != "login" || second != "logout" || srv.CurrentClaims(rotated) != nil {
-		t.Fatalf("status=%d events=%s,%s claims=%v", response.Code, first, second, srv.CurrentClaims(rotated))
+	deferredRequest := waitFor(t, logoutRequests, "missing LogoutEvent request")
+	if response.Code != http.StatusForbidden || first != "login" || second != "logout" || deferredRequest != nil || srv.CurrentClaims(rotated) != nil {
+		t.Fatalf("status=%d events=%s,%s request=%v claims=%v", response.Code, first, second, deferredRequest, srv.CurrentClaims(rotated))
 	}
 }

@@ -61,9 +61,10 @@ type HandleFunc func(uri string, handler http.Handler)
 
 // EventFunc is called for login and logout lifecycle events.
 //
-// For [Server.LogoutEvent], hr may be nil. jawsauth calls it after releasing
-// SessionRotationLock. When LoginEvent is set, clearing auth before it begins
-// suppresses both events; clearing auth during it defers LogoutEvent until it returns.
+// jawsauth calls [Server.LogoutEvent] after releasing SessionRotationLock.
+// When LoginEvent is set, clearing auth before it begins suppresses both
+// events; clearing auth during it defers LogoutEvent until it returns. A
+// deferred LogoutEvent receives a nil request.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
 // FailedFunc is called on callback failures and when a protected request meets
@@ -97,7 +98,7 @@ type Server struct {
 	SessionEmailVerifiedKey string              // default is "email_verified", value will be of type bool
 	HandledPaths            map[string]struct{} // URI paths excluded from OAuth return targets
 	LoginEvent              EventFunc           // called after claims are stored; revocation may suppress or follow it
-	LogoutEvent             EventFunc           // if not nil, called after auth is cleared; hr may be nil
+	LogoutEvent             EventFunc           // auth-clear callback; see EventFunc for ordering and nil requests
 	LoginFailed             FailedFunc          // callback failures and protected requests during a running login callback
 	LinkEvent               LinkFunc            // required by HandleLink; register its POST route separately
 	// SessionRotationLock is held during flow start, rotation, auth clearing, and LinkEvent.

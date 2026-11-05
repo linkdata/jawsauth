@@ -19,16 +19,16 @@ import (
 //
 // RedirectURL, Issuer and ClientID are required. Setting ProfileSubject selects
 // profile mode and requires AuthURL, TokenURL and UserInfoURL. Otherwise OIDC
-// mode discovers endpoints; URL fields may override them.
+// mode discovers endpoints; those three URLs may override them.
 type Config struct {
 	RedirectURL string // required. e.g. "https://application.example.com/oauth2/callback"
 	Issuer      string // required. e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
 	// Namespace isolates providers sharing one JaWS instance. New appends it to
 	// the four exported Server session-key fields; use a distinct value per provider.
 	Namespace   string
-	AuthURL     string // OIDC override
-	TokenURL    string // OIDC override
-	UserInfoURL string // OIDC override
+	AuthURL     string
+	TokenURL    string
+	UserInfoURL string
 	// AllowInsecureIssuer permits HTTP issuer and provider endpoints and is only for tests/dev.
 	AllowInsecureIssuer bool
 	// HTTPClient is used for OIDC discovery and JWKS, and by default for token

@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -32,7 +31,7 @@ const oauth2ProviderTimeout = 15 * time.Second
 const profileAuthLifetime = 24 * time.Hour
 const maxUserInfoBytes = 32 << 10
 
-// Leave one second after the provider deadline for the callback to finish.
+// Allow provider I/O after the flow lifetime, with one second of extra grace.
 const oauth2FlowGrace = oauth2FlowLifetime + oauth2ProviderTimeout + time.Second
 
 type pendingOAuthFlow struct {
@@ -64,7 +63,7 @@ func (srv *Server) takeOAuthFlow(sess *jaws.Session, gotState string) (flow pend
 	if gotState != flow.state {
 		return flow, ErrOAuth2WrongState
 	}
-	srv.clearSessionOAuthFlow(sess)
+	srv.clearSessionOAuthFlowLocked(sess)
 	if !time.Now().Before(flow.expiry) {
 		return flow, ErrOAuth2ExpiredState
 	}
@@ -134,7 +133,7 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location s
 	}
 	location = sanitizeRedirectTarget(hr.Host, location)
 	if target, err := url.Parse(location); err == nil {
-		if _, handled := srv.HandledPaths[path.Clean(target.Path)]; handled {
+		if _, handled := srv.HandledPaths[callbackPathFromURL(target)]; handled {
 			location = "/"
 		}
 	}
@@ -151,8 +150,7 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location s
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method != http.MethodGet {
 		hw.Header().Set("Allow", http.MethodGet)
-		SetHeaders(hw, srv.ishttps)
-		hw.WriteHeader(http.StatusMethodNotAllowed)
+		srv.writeResult(hw, http.StatusMethodNotAllowed, nil, nil)
 		return
 	}
 	srv.startOAuth(hw, hr, false, false)
@@ -163,7 +161,8 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 // recheck that identity in LinkEvent when the provider returns. On success it
 // responds with a 303 redirect to the provider. It returns 405 with Allow: POST
 // for other methods, 403 for a cross-origin or missing session, and 500 when
-// linking is not configured.
+// linking is not configured. Starting a link replaces any pending flow on this
+// server, including a running login callback.
 func (srv *Server) HandleLink(hw http.ResponseWriter, hr *http.Request) {
 	switch {
 	case hr.Method != http.MethodPost:
@@ -188,20 +187,20 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 		}
 		flow, sess, status := srv.prepareOAuthFlow(hw, hr, link, preservePendingLogin, location)
 		if status != 0 {
-			if status == http.StatusConflict {
+			failure := ErrOAuth2MissingSession
+			switch status {
+			case http.StatusConflict:
+				failure = ErrOAuth2LoginInProgress
 				if srv.LoginFailed != nil {
 					email, _ := sess.Get(srv.SessionEmailKey).(string)
-					if srv.LoginFailed(hw, hr, status, ErrOAuth2LoginInProgress, email) {
+					if srv.LoginFailed(hw, hr, status, failure, email) {
 						return
 					}
 				}
-				srv.writeResult(hw, status, ErrOAuth2LoginInProgress, nil)
-			} else {
-				if status == http.StatusServiceUnavailable {
-					hw.Header().Set("Retry-After", "60")
-				}
-				srv.writeResult(hw, status, ErrOAuth2MissingSession, nil)
+			case http.StatusServiceUnavailable:
+				hw.Header().Set("Retry-After", "60")
 			}
+			srv.writeResult(hw, status, failure, nil)
 			return
 		}
 		authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
@@ -261,15 +260,15 @@ func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, li
 		}
 		return
 	}
-	srv.clearSessionOAuthFlow(sess)
+	srv.clearSessionOAuthFlowLocked(sess)
 	sess.Set(srv.sessionKey(oauth2FlowKey), flow)
 	return
 }
 
 // HandleLogout clears this server's authentication in the session and redirects.
 //
-// For GET requests it clears the auth (firing LogoutEvent when auth was present)
-// and responds with a 302 redirect to the sanitized referrer (or "/").
+// For GET requests it clears auth and responds with a 302 redirect to the
+// sanitized referrer (or "/"). LogoutEvent follows [EventFunc]'s ordering rules.
 // Non-GET requests receive 405 with Allow: GET.
 func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
@@ -547,6 +546,7 @@ func (srv *Server) rotateOAuthSession(hw http.ResponseWriter, hr *http.Request, 
 
 func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map[string]any, expiry time.Time, flow pendingOAuthFlow) (status int, err error) {
 	var linkErr error
+	// Log after releasing SessionRotationLock.
 	defer func() {
 		if linkErr != nil {
 			_ = srv.Jaws.Log(linkErr)

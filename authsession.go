@@ -33,9 +33,8 @@ type authTimerState struct {
 
 // pendingLoginEvent orders callbacks when authentication is cleared before login notification finishes.
 type pendingLoginEvent struct {
-	started       bool
-	cleared       bool
-	logoutRequest *http.Request
+	started bool
+	cleared bool
 }
 
 func authTimerEntryExpiry(entry *authTimerState) (expiry time.Time) {
@@ -146,7 +145,7 @@ func (srv *Server) storeSessionAuthClaims(sess *jaws.Session, claims map[string]
 	return srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, entry, nil)
 }
 
-func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState, canceled <-chan struct{}) error {
+func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState, loginCanceled <-chan struct{}) error {
 	if srv == nil {
 		return ErrOAuth2NotConfigured
 	}
@@ -160,7 +159,7 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 	claims["email_verified"] = verified
 	srv.mu.Lock()
 	select {
-	case <-canceled:
+	case <-loginCanceled:
 		srv.mu.Unlock()
 		return ErrOAuth2MissingSession
 	default:
@@ -196,7 +195,7 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 	sess.Set(srv.SessionEmailKey, email)
 	sess.Set(srv.SessionEmailVerifiedKey, verified)
 	delay, replaced := srv.scheduleSessionAuthTimerLocked(sess, expiry)
-	if canceled != nil && srv.LoginEvent != nil {
+	if loginCanceled != nil && srv.LoginEvent != nil {
 		if srv.loginEvents == nil {
 			srv.loginEvents = make(map[*jaws.Session]*pendingLoginEvent)
 		}
@@ -234,10 +233,10 @@ func (srv *Server) emitLoginEvent(sess *jaws.Session, hr *http.Request) {
 	defer func() {
 		srv.mu.Lock()
 		delete(srv.loginEvents, sess)
-		cleared, request := pending.cleared, pending.logoutRequest
+		cleared := pending.cleared
 		srv.mu.Unlock()
 		if cleared && srv.LogoutEvent != nil {
-			srv.LogoutEvent(sess, request)
+			srv.LogoutEvent(sess, nil)
 		}
 	}()
 	srv.LoginEvent(sess, hr)
@@ -454,7 +453,7 @@ func (srv *Server) pendingOrdinaryLoginLocked(sess *jaws.Session) bool {
 	return flow.state != "" && !flow.link && time.Now().Before(flow.expiry)
 }
 
-func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
+func (srv *Server) clearSessionOAuthFlowLocked(sess *jaws.Session) {
 	if flow := srv.oauthCallbacks[sess]; flow.canceled != nil {
 		close(flow.canceled)
 		delete(srv.oauthCallbacks, sess)
@@ -464,11 +463,11 @@ func (srv *Server) clearSessionOAuthFlow(sess *jaws.Session) {
 
 // Logout clears this server's authentication state for sess.
 //
-// It stops the auth timer, clears verified claims, token source, email, expiry
+// It stops the auth timer, clears stored claims, token source, email, expiry
 // and any in-flight OAuth flow keys, then marks the session dirty. If auth was
-// present, it reloads its pages and calls [Server.LogoutEvent] (if set). It
-// returns false for a nil receiver or nil session, and true otherwise. The hr
-// argument may be nil.
+// present, it reloads its pages. [Server.LogoutEvent] follows [EventFunc]'s
+// ordering rules. It returns false for a nil receiver or session, and true
+// otherwise. The hr argument may be nil.
 //
 // It performs no HTTP redirect. An HTTP handler can build its own post-logout
 // response. A JaWS event handler cannot use [jaws.Request.Redirect] after Logout
@@ -498,7 +497,7 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 		// Auth expiry must not cancel an ordinary login already in progress.
 		// Explicit logout and link flows still revoke their pending callbacks.
 		if !preservePendingLogin || !srv.pendingOrdinaryLoginLocked(sess) {
-			srv.clearSessionOAuthFlow(sess)
+			srv.clearSessionOAuthFlowLocked(sess)
 		}
 		sess.Set(srv.SessionKey, nil)
 		sess.Set(srv.SessionTokenKey, nil)
@@ -509,7 +508,6 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 			requests = sess.Requests()
 			if pending != nil {
 				pending.cleared = true
-				pending.logoutRequest = hr
 				if !pending.started {
 					delete(srv.loginEvents, sess)
 				}

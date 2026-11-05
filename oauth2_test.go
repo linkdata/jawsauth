@@ -173,6 +173,22 @@ func Test_beginReferrerHandling(t *testing.T) {
 	}
 }
 
+func TestBeginExcludesTrailingSlashCallback(t *testing.T) {
+	srv := &Server{HandledPaths: map[string]struct{}{"/oauth2/callback/": {}}}
+	hr := httptest.NewRequest(http.MethodGet, "https://example.com/oauth2/login", nil)
+	for _, referer := range []string{
+		"https://example.com/oauth2/callback/",
+		"https://example.com/oauth2//callback/",
+		"https://example.com/oauth2/./callback/",
+	} {
+		hr.Header.Set("Referer", referer)
+		_, location := srv.begin(hr)
+		if location != "/" {
+			t.Fatalf("callback return target %q kept as %q", referer, location)
+		}
+	}
+}
+
 // Test_beginPathBoundary verifies that handled paths only rewrite exact
 // registered endpoints. Referrers that merely share a suffix remain valid
 // redirect targets.

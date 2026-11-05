@@ -51,6 +51,8 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
   the original provider's `CurrentClaims` before writing the link. Linking keeps
   the session; an ordinary login rotates it and signs out other providers.
   Their `LogoutEvent` may run later with a nil request.
+  Starting a link replaces this server's pending flow, including a running
+  login callback.
 - `New` gives each server a private `SessionRotationLock`. For cross-provider
   linking, assign one shared lock before serving. jawsauth holds it during
   flow start, rotation, authentication clearing and `LinkEvent`. Do not take it
