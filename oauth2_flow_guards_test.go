@@ -394,10 +394,14 @@ func TestReloginStopsOldTimerBeforeRotationUnlock(t *testing.T) {
 			logoutRequest = hr
 		}
 	}
-	srv.SessionRotationLock = &revokeAfterRotationLock{logout: timer.fire}
+	var stoppedBeforeFire bool
+	srv.SessionRotationLock = &revokeAfterRotationLock{logout: func() {
+		stoppedBeforeFire = timer.isStopped()
+		timer.fire()
+	}}
 	response := profileCallback(srv, cookie, state, "second")
-	if response.Code != http.StatusFound || logouts != 1 || logoutRequest == nil || !timer.isStopped() {
-		t.Fatalf("re-login: status=%d logouts=%d request=%v timer_stopped=%t", response.Code, logouts, logoutRequest != nil, timer.isStopped())
+	if response.Code != http.StatusFound || logouts != 1 || logoutRequest == nil || !stoppedBeforeFire {
+		t.Fatalf("re-login: status=%d logouts=%d request=%v timer_stopped_before_fire=%t", response.Code, logouts, logoutRequest != nil, stoppedBeforeFire)
 	}
 }
 

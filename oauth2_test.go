@@ -68,10 +68,10 @@ func makeIDToken(t *testing.T, claims map[string]any) string {
 	return header + "." + payload + "." + signature
 }
 
-func Test_errtext(t *testing.T) {
-	var sb strings.Builder
-	writeBody(&sb, http.StatusForbidden, ErrOAuth2WrongState)
-	s := sb.String()
+func TestWriteResultError(t *testing.T) {
+	hw := httptest.NewRecorder()
+	(&Server{}).writeResult(hw, http.StatusForbidden, ErrOAuth2WrongState)
+	s := hw.Body.String()
 	if !strings.Contains(s, "403 Forbidden") {
 		t.Fatal()
 	}

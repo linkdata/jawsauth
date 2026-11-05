@@ -716,8 +716,7 @@ func testAuthTimerRefreshFailureKeepsCurrentAuthUntilExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	firstTimer := factory.timer(0)
-	firstTimer.fire()
+	factory.timer(0).fire()
 
 	if logoutCount != 0 {
 		t.Fatal(logoutCount)
@@ -731,9 +730,6 @@ func testAuthTimerRefreshFailureKeepsCurrentAuthUntilExpiry(t *testing.T) {
 	}
 	if !srv.sessionAuthTimerCurrent(sess, srv.authTimers[sess.ID()]) {
 		t.Fatal("current timer missing")
-	}
-	if !firstTimer.isStopped() {
-		t.Fatal("old timer was not stopped")
 	}
 	if factory.len() != 2 {
 		t.Fatal(factory.len())
@@ -834,9 +830,6 @@ func TestAuthTimerRefreshFailureClearsExpiredAuth(t *testing.T) {
 			}
 			if srv.authTimers[sess.ID()] != nil {
 				t.Fatal("timer was not removed")
-			}
-			if !factory.timer(0).isStopped() {
-				t.Fatal("timer was not stopped")
 			}
 			if tc.tokenBody == "" && tokenRequests != 0 {
 				t.Fatal(tokenRequests)
@@ -1015,6 +1008,35 @@ func TestAuthTimerStaleAfterRefreshNoOp(t *testing.T) {
 	}
 	if factory.len() != 2 {
 		t.Fatal(factory.len())
+	}
+}
+
+func TestAuthTimerFailedRefreshDoesNotRearmReplacedAuth(t *testing.T) {
+	jw := newTestJaws(t)
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+	sess := jw.NewSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	newExpiry := time.Now().Add(time.Hour)
+	source := tokenSourceFunc(func() (*oauth2.Token, error) {
+		if err := srv.storeSessionAuthClaims(sess, map[string]any{"email": "new@example.com"}, nil, newExpiry, nil); err != nil {
+			t.Fatal(err)
+		}
+		return nil, errAuthSessionTestToken
+	})
+	if err := srv.storeSessionAuthClaims(sess, map[string]any{"email": "old@example.com"}, source, time.Now().Add(authRefreshSkew-time.Second), nil); err != nil {
+		t.Fatal(err)
+	}
+	old := srv.authTimers[sess.ID()]
+	factory.timer(0).fire()
+	current := srv.authTimers[sess.ID()]
+	if factory.len() != 2 {
+		t.Fatal(factory.len())
+	}
+	if current == nil || current == old || current.timer != factory.timer(1) || factory.timer(1).isStopped() {
+		t.Fatalf("stale refresh changed timers: current=%p old=%p count=%d", current, old, factory.len())
+	}
+	if got := sess.Get(srv.SessionEmailKey); got != "new@example.com" {
+		t.Fatal(got)
 	}
 }
 

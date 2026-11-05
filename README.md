@@ -31,10 +31,10 @@ authentication expires after 24 hours or the access token's earlier expiry.
 An explicit `expires_in: 0` in the token response is rejected.
 
 Set `Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound sessions created by
-unauthenticated requests; both limits are unlimited by default. An unauthenticated
-protected GET starts a login flow and can retain its session for about ten minutes
-while the user visits the provider. Login rotates the session and discards its
-application data; rotation needs a free slot under both limits.
+unauthenticated requests; both limits are unlimited by default. A login start,
+including an unauthenticated protected GET, can retain its session for about ten
+minutes even if the client never reaches the provider. Login rotates the session
+and discards its application data; rotation needs a free slot under both limits.
 `MaxSessionsPerIP = 1` prevents login. If a slot is unavailable,
 login returns 503 with `Retry-After: 60` and preserves the existing session.
 
@@ -44,9 +44,10 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
   directories; a shared namespace can clear another provider's login. Add each
   provider's registered paths to the other servers' `HandledPaths` so return
   targets cannot enter another provider's auth endpoints.
-- `New` replaces `Jaws.MakeAuth`. When servers share JaWS, capture `jw.MakeAuth`
-  immediately after each `New`, then install a composite function so templates
-  use the intended provider's authentication and admin policy. Each
+- `New` replaces `Jaws.MakeAuth` when it configures authentication. When servers
+  share JaWS, capture `jw.MakeAuth` immediately after each configured `New`, then
+  install a composite function so templates use the intended provider's
+  authentication and admin policy. Each
   server's `Wrap`, `Handler` and `CurrentClaims` check that provider's
   authentication.
 - Register `HandleLink` as a POST handler to enable linking; `New` does not
@@ -92,16 +93,16 @@ method proves a live login; check `CurrentClaims` before protected actions.
 ## Session lifetime
 
 Pending OAuth flows expire after ten minutes. jawsauth extends the original
-JaWS session's grace while the user visits the provider. Unauthenticated
+JaWS session's grace for the pending flow. Unauthenticated
 protected GETs reuse a pending login's state, return target and grace deadline
 while more than two minutes remain; near expiry, they start a new flow and
-extend grace. While a callback runs and before session rotation, protected GETs
-with its session cookie return 409 unless `LoginFailed` handles them. After
-rotation, the old cookie starts a new flow. Logout and auth expiry clear this
-server's credentials and reload every JaWS page in the session.
-Auth expiry preserves a pending login but cancels a pending link. Explicit
-logout cancels either flow. A new login on the same server, including one
-started by `Wrap` or `Handler`, cancels a pending link.
+extend grace. While a login callback runs before session rotation, protected GETs
+with that session cookie return 409 unless `LoginFailed` handles them. After
+rotation, the old cookie starts a new flow and cannot cancel that sign-in. Logout
+and auth expiry clear this server's credentials and reload every JaWS page in the
+session. Auth expiry preserves a pending login but cancels a pending link. Explicit
+logout on the live session cancels either flow. A new login on the same server,
+including one started by `Wrap` or `Handler`, cancels a pending link.
 
 Use an HTTP endpoint for a post-logout redirect. When `Server.Logout` clears
 authentication, it reloads pages and closes their sockets, so a later JaWS

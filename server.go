@@ -71,7 +71,8 @@ type HandleFunc func(uri string, handler http.Handler)
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
 // FailedFunc is called on callback failures and when a protected request meets
-// a running login callback. Other flow-start failures write their own response.
+// a running login callback before session rotation. Other flow-start failures
+// write their own response.
 //
 // It returns true if it wrote the HTTP response itself, in which case jawsauth writes
 // nothing further. Errors can contain untrusted browser-supplied text. Quote errors
@@ -102,7 +103,7 @@ type Server struct {
 	HandledPaths            map[string]struct{} // URI paths excluded from OAuth return targets
 	LoginEvent              EventFunc           // called after claims are stored; revocation may suppress or follow it
 	LogoutEvent             EventFunc           // auth-clear callback; see EventFunc for ordering and nil requests
-	LoginFailed             FailedFunc          // callback failures and protected requests during a running login callback
+	LoginFailed             FailedFunc          // callback failures and protected requests during a login callback before rotation
 	LinkEvent               LinkFunc            // required by HandleLink; register its POST route separately
 	// SessionRotationLock is held during flow start, rotation, auth clearing, and LinkEvent.
 	// New supplies a shared package lock; set the same custom lock on servers using

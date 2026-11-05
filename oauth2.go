@@ -293,13 +293,6 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	hw.WriteHeader(statusCode)
 }
 
-func writeBody(w io.Writer, statusCode int, err error) {
-	if err != nil {
-		const tmpl = `<html><body><h2>%03d %s</h2><p>%s</p></body></html>`
-		_, _ = fmt.Fprintf(w, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
-	}
-}
-
 // SetHeaders writes the HTTP response headers for all OAuth endpoint responses.
 //
 // It defaults to DefaultSetHeaders and may be reassigned at startup to customize
@@ -315,7 +308,10 @@ func DefaultSetHeaders(hw http.ResponseWriter, ishttps bool) {
 func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error) {
 	SetHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
-	writeBody(hw, statusCode, err)
+	if err != nil {
+		const tmpl = `<html><body><h2>%03d %s</h2><p>%s</p></body></html>`
+		_, _ = fmt.Fprintf(hw, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
+	}
 }
 
 // ErrOAuth2NotConfigured means OAuth2/OIDC is not configured on the Server.
