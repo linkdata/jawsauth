@@ -18,7 +18,7 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 			w.server.clearSessionAuth(sess, hr, nil, true)
 		}
 		if hr.Method != http.MethodGet {
-			w.server.writeResult(hw, http.StatusForbidden, nil, nil)
+			w.server.writeResult(hw, http.StatusForbidden, nil)
 			return
 		}
 		w.server.startOAuth(hw, hr, false, true)

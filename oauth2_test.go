@@ -70,7 +70,7 @@ func makeIDToken(t *testing.T, claims map[string]any) string {
 
 func Test_errtext(t *testing.T) {
 	var sb strings.Builder
-	writeBody(&sb, http.StatusForbidden, ErrOAuth2WrongState, nil)
+	writeBody(&sb, http.StatusForbidden, ErrOAuth2WrongState)
 	s := sb.String()
 	if !strings.Contains(s, "403 Forbidden") {
 		t.Fatal()

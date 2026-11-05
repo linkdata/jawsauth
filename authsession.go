@@ -232,7 +232,6 @@ func (srv *Server) emitLoginEvent(sess *jaws.Session, hr *http.Request) {
 	srv.mu.Lock()
 	pending := srv.loginEvents[sess]
 	if pending == nil {
-		delete(srv.loginEvents, sess)
 		srv.mu.Unlock()
 		return
 	}
@@ -376,6 +375,18 @@ func (srv *Server) stopSessionAuthTimerLocked(sess *jaws.Session, entry *authTim
 	return true
 }
 
+func (srv *Server) rearmSessionAuthTimer(sess *jaws.Session, entry *authTimerState, delay time.Duration) bool {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.authTimers[sess.ID()] != entry {
+		return false
+	}
+	entry.timer = srv.authTimerAfterFunc(delay, func() {
+		srv.handleSessionAuthTimer(sess, entry)
+	})
+	return true
+}
+
 func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerState) {
 	if srv.sessionAuthTimerCurrent(sess, entry) {
 		remaining := time.Until(srv.authTimerDue(entry.expiry))
@@ -384,13 +395,7 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 			return
 		}
 		if remaining > 0 {
-			srv.mu.Lock()
-			if srv.authTimers[sess.ID()] == entry {
-				entry.timer = srv.authTimerAfterFunc(min(remaining, authSessionCheckInterval), func() {
-					srv.handleSessionAuthTimer(sess, entry)
-				})
-			}
-			srv.mu.Unlock()
+			srv.rearmSessionAuthTimer(sess, entry, min(remaining, authSessionCheckInterval))
 			return
 		}
 		current, present := srv.sessionAuthStatus(sess, time.Now)
@@ -409,19 +414,7 @@ func (srv *Server) handleSessionAuthTimer(sess *jaws.Session, entry *authTimerSt
 			current, present = srv.sessionAuthStatus(sess, time.Now)
 			if current && present {
 				retryDelay := max(time.Until(entry.expiry), 0)
-				retryScheduled := false
-				srv.mu.Lock()
-				if srv.authTimers[sess.ID()] == entry {
-					if entry.timer != nil {
-						entry.timer.Stop()
-					}
-					entry.timer = srv.authTimerAfterFunc(retryDelay, func() {
-						srv.handleSessionAuthTimer(sess, entry)
-					})
-					retryScheduled = true
-				}
-				srv.mu.Unlock()
-				if retryScheduled {
+				if srv.rearmSessionAuthTimer(sess, entry, retryDelay) {
 					srv.debugErrorLog("jawsauth: auth refresh timer failed; keeping current auth", err,
 						"session_prefix", debugSessionPrefix(sess),
 						"entry_expiry", authTimerEntryExpiry(entry),

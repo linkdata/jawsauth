@@ -37,6 +37,7 @@ func (timer *testAuthTimer) Stop() bool {
 
 func (timer *testAuthTimer) fire() {
 	timer.mu.Lock()
+	timer.stopped = true
 	callback := timer.callback
 	timer.mu.Unlock()
 	callback()

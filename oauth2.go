@@ -154,7 +154,7 @@ func (srv *Server) returnTarget(hr *http.Request, location string) string {
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method != http.MethodGet {
 		hw.Header().Set("Allow", http.MethodGet)
-		srv.writeResult(hw, http.StatusMethodNotAllowed, nil, nil)
+		srv.writeResult(hw, http.StatusMethodNotAllowed, nil)
 		return
 	}
 	srv.startOAuth(hw, hr, false, false)
@@ -171,11 +171,11 @@ func (srv *Server) HandleLink(hw http.ResponseWriter, hr *http.Request) {
 	switch {
 	case hr.Method != http.MethodPost:
 		hw.Header().Set("Allow", http.MethodPost)
-		srv.writeResult(hw, http.StatusMethodNotAllowed, nil, nil)
+		srv.writeResult(hw, http.StatusMethodNotAllowed, nil)
 	case linkOriginCheck.Check(hr) != nil:
-		srv.writeResult(hw, http.StatusForbidden, ErrOAuth2InvalidOrigin, nil)
+		srv.writeResult(hw, http.StatusForbidden, ErrOAuth2InvalidOrigin)
 	case srv.oauth2cfg == nil || srv.LinkEvent == nil:
-		srv.writeResult(hw, http.StatusInternalServerError, ErrOAuth2NotConfigured, nil)
+		srv.writeResult(hw, http.StatusInternalServerError, ErrOAuth2NotConfigured)
 	default:
 		srv.startOAuth(hw, hr, true, false)
 	}
@@ -210,7 +210,7 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, fr
 			case http.StatusServiceUnavailable:
 				hw.Header().Set("Retry-After", "60")
 			}
-			srv.writeResult(hw, status, failure, nil)
+			srv.writeResult(hw, status, failure)
 			return
 		}
 		authOptions := append([]oauth2.AuthCodeOption{}, srv.Options...)
@@ -293,14 +293,11 @@ func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	hw.WriteHeader(statusCode)
 }
 
-func writeBody(w io.Writer, statusCode int, err error, body []byte) {
-	const tmpl = `<html><body><h2>%03d %s</h2><p>%s</p></body></html>`
-	if body == nil {
-		if err != nil {
-			body = fmt.Appendf(nil, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
-		}
+func writeBody(w io.Writer, statusCode int, err error) {
+	if err != nil {
+		const tmpl = `<html><body><h2>%03d %s</h2><p>%s</p></body></html>`
+		_, _ = fmt.Fprintf(w, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
 	}
-	_, _ = w.Write(body)
 }
 
 // SetHeaders writes the HTTP response headers for all OAuth endpoint responses.
@@ -315,10 +312,10 @@ func DefaultSetHeaders(hw http.ResponseWriter, ishttps bool) {
 	hw.Header().Set("Cache-Control", "no-store")
 }
 
-func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error, body []byte) {
+func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error) {
 	SetHeaders(hw, srv.ishttps)
 	hw.WriteHeader(statusCode)
-	writeBody(hw, statusCode, err, body)
+	writeBody(hw, statusCode, err)
 }
 
 // ErrOAuth2NotConfigured means OAuth2/OIDC is not configured on the Server.
@@ -656,7 +653,7 @@ func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWr
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method != http.MethodGet {
 		hw.Header().Set("Allow", http.MethodGet)
-		srv.writeResult(hw, http.StatusMethodNotAllowed, ErrOAuth2Callback, nil)
+		srv.writeResult(hw, http.StatusMethodNotAllowed, ErrOAuth2Callback)
 		return
 	}
 	providerCtx, cancel := context.WithTimeout(hr.Context(), oauth2ProviderTimeout)
@@ -700,5 +697,5 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			return
 		}
 	}
-	srv.writeResult(hw, statusCode, err, nil)
+	srv.writeResult(hw, statusCode, err)
 }

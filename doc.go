@@ -1,4 +1,4 @@
-// Package jawsauth provides verified OIDC and OAuth2 profile authentication for JaWS sessions.
+// Package jawsauth provides OIDC and OAuth2 profile authentication for JaWS sessions.
 //
 // OIDC mode uses discovery, PKCE, nonce and ID token verification. Profile mode
 // uses explicit provider endpoints, PKCE and an authenticated profile response
