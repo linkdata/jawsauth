@@ -251,7 +251,7 @@ func TestLoginRotationExistingAuth(t *testing.T) {
 				t.Fatal("login reused old session")
 			}
 		}
-		setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce", verifier: oauth2.GenerateVerifier()})
+		setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce", verifier: oauth2.GenerateVerifier()})
 		rec := httptest.NewRecorder()
 		srv.HandleAuthResponse(rec, req)
 		if limit == 1 {
@@ -412,7 +412,7 @@ func TestLoginUserInfoDeadlineKeepsOIDCFallbackOptional(t *testing.T) {
 		logins, logouts := 0, 0
 		srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
 		srv.LogoutEvent = func(*jaws.Session, *http.Request) { logouts++ }
-		setTestOAuthFlow(sess, nil, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce", verifier: oauth2.GenerateVerifier()})
+		setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce", verifier: oauth2.GenerateVerifier()})
 		hw := httptest.NewRecorder()
 		srv.HandleAuthResponse(hw, hr)
 		current := jw.GetSession(hr)

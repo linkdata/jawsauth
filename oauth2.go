@@ -35,6 +35,7 @@ const maxUserInfoBytes = 32 << 10
 const oauth2FlowGrace = oauth2FlowLifetime + oauth2ProviderTimeout + time.Second
 
 type pendingOAuthFlow struct {
+	owner    *Server
 	state    string
 	expiry   time.Time
 	verifier string
@@ -60,7 +61,7 @@ func (srv *Server) takeOAuthFlow(sess *jaws.Session, gotState string) (flow pend
 	if flow.state == "" {
 		return flow, ErrOAuth2MissingState
 	}
-	if gotState != flow.state {
+	if gotState != flow.state || flow.owner != srv {
 		return flow, ErrOAuth2WrongState
 	}
 	srv.clearSessionOAuthFlowLocked(sess)
@@ -257,6 +258,7 @@ func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, li
 		return
 	}
 	flow = pendingOAuthFlow{
+		owner: srv,
 		state: rand.Text(), expiry: time.Now().Add(oauth2FlowLifetime),
 		link: link, verifier: oauth2.GenerateVerifier(), referrer: location,
 	}
@@ -311,7 +313,7 @@ func (srv *Server) writeResult(hw http.ResponseWriter, statusCode int, err error
 	if err != nil {
 		const tmpl = `<html><body><h2>%03d %s</h2><p>%s</p></body></html>`
 		body := fmt.Appendf(nil, tmpl, statusCode, http.StatusText(statusCode), html.EscapeString(err.Error()))
-		_, _ = hw.Write(body)
+		_, _ = hw.Write(body) // #nosec G705 -- error text is HTML-escaped
 	}
 }
 

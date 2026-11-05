@@ -923,7 +923,7 @@ func TestOAuthProfileRejectsInvalidSubjectAndOversizedResponse(t *testing.T) {
 	jw := newTestJaws(t)
 	calls := 0
 	srv := newProfileTestServer(t, jw, &calls)
-	srv.profileSubject = func(map[string]any) (string, error) { return "", ErrOAuth2InvalidProfile }
+	srv.profileSubject = func(map[string]any) (string, error) { return "", nil }
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	response := profileCallback(srv, cookie, state, "first")
 	if response.Code != http.StatusUnauthorized || calls != 2 || len(response.Result().Cookies()) != 0 {

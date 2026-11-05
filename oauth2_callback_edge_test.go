@@ -40,7 +40,7 @@ func TestOIDCCallbackRejectsEmptySubject(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state&code=code", nil)
 			w := httptest.NewRecorder()
 			sess := jw.NewSession(w, req)
-			setTestOAuthFlow(sess, nil, pendingOAuthFlow{
+			setTestOAuthFlow(sess, srv, pendingOAuthFlow{
 				state: "state", expiry: time.Now().Add(oauth2FlowLifetime),
 				verifier: oauth2.GenerateVerifier(), nonce: "nonce", link: link,
 			})
@@ -90,7 +90,7 @@ func TestOIDCExpiryDuringUserInfoRejected(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state&code=code", nil)
 		w := httptest.NewRecorder()
 		sess := jw.NewSession(w, req)
-		setTestOAuthFlow(sess, nil, pendingOAuthFlow{
+		setTestOAuthFlow(sess, srv, pendingOAuthFlow{
 			state: "state", expiry: time.Now().Add(oauth2FlowLifetime),
 			verifier: oauth2.GenerateVerifier(), nonce: "nonce",
 		})

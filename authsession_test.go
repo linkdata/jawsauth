@@ -1018,6 +1018,7 @@ func TestAuthTimerStaleAfterRefreshNoOp(t *testing.T) {
 	})
 	err := srv.storeSessionAuthClaims(sess, map[string]any{
 		"exp":   oldExpiry.Unix(),
+		"sub":   "sub-123",
 		"email": "old@example.com",
 	}, tokenSource, oldExpiry, nil)
 	if err != nil {

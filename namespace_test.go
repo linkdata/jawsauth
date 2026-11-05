@@ -20,11 +20,8 @@ func testOAuthFlow(sess *jaws.Session, srv *Server) pendingOAuthFlow {
 }
 
 func setTestOAuthFlow(sess *jaws.Session, srv *Server, flow pendingOAuthFlow) {
-	key := oauth2FlowKey
-	if srv != nil {
-		key = srv.sessionKey(key)
-	}
-	sess.Set(key, flow)
+	flow.owner = srv
+	sess.Set(srv.sessionKey(oauth2FlowKey), flow)
 }
 
 func TestOAuthFlowNamespacesShareSessionWithoutSharingState(t *testing.T) {
@@ -93,5 +90,56 @@ func TestOAuthFlowNamespacesShareSessionWithoutSharingState(t *testing.T) {
 	}
 	if read(github).state != "" {
 		t.Fatal("github flow remained after consumption")
+	}
+}
+
+func TestOAuthFlowDefaultNamespaceRejectsForeignServer(t *testing.T) {
+	jw := newTestJaws(t)
+	newServer := func(clientID string) *Server {
+		srv, err := New(jw, &Config{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv.oauth2cfg = &oauth2.Config{
+			ClientID:    clientID,
+			RedirectURL: "https://app.example/auth/" + clientID + "/callback",
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://" + clientID + ".example/authorize",
+				TokenURL: "https://" + clientID + ".example/token",
+			},
+		}
+		return srv
+	}
+	github, gitlab := newServer("github"), newServer("gitlab")
+	loginRequest := httptest.NewRequest(http.MethodGet, "https://app.example/auth/gitlab/login", nil)
+	login := httptest.NewRecorder()
+	gitlab.HandleLogin(login, loginRequest)
+	if login.Code != http.StatusFound {
+		t.Fatalf("gitlab start: %d", login.Code)
+	}
+	sess := jw.GetSession(loginRequest)
+	flow := testOAuthFlow(sess, gitlab)
+	if flow.state == "" {
+		t.Fatal("gitlab state missing")
+	}
+	exchanges := 0
+	github.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		exchanges++
+		return nil, errors.New("unexpected token exchange")
+	})}
+	callbackRequest := httptest.NewRequest(http.MethodGet, "https://app.example/auth/github/callback?code=foreign&state="+flow.state, nil)
+	for _, cookie := range login.Result().Cookies() {
+		callbackRequest.AddCookie(cookie)
+	}
+	callback := httptest.NewRecorder()
+	github.HandleAuthResponse(callback, callbackRequest)
+	if callback.Code != http.StatusBadRequest || exchanges != 0 {
+		t.Fatalf("foreign callback: status %d, token exchanges %d", callback.Code, exchanges)
+	}
+	if got := testOAuthFlow(sess, gitlab); got != flow {
+		t.Fatal("foreign callback changed gitlab flow")
+	}
+	if _, err := gitlab.takeOAuthFlow(sess, flow.state); err != nil {
+		t.Fatalf("gitlab lost its own state: %v", err)
 	}
 }
