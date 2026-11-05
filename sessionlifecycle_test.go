@@ -24,23 +24,19 @@ func (l logoutOnWarnLogger) Error(string, ...any) {}
 func (l logoutOnWarnLogger) Warn(string, ...any)  { l.onWarn() }
 
 func TestLogoutDuringClaimPreparation(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	factory := &testAuthTimerFactory{}
 	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
 	expiry := time.Now().Add(time.Hour)
-	if err = srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, nil, expiry, nil); err != nil {
+	if err := srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, nil, expiry, nil); err != nil {
 		t.Fatal(err)
 	}
 	entry := srv.authTimers[sess.ID()]
 	jw.Logger = logoutOnWarnLogger{onWarn: func() { srv.Logout(sess, req) }}
 	// Claim preparation may invoke application logging while logout completes.
-	err = srv.storeSessionAuthClaims(sess, map[string]any{"sub": "one"}, nil, expiry, entry)
+	err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "one"}, nil, expiry, entry)
 	if !errors.Is(err, errAuthTimerStale) {
 		t.Fatalf("got %v, want stale refresh", err)
 	}
@@ -51,16 +47,17 @@ func TestLogoutDuringClaimPreparation(t *testing.T) {
 }
 
 func TestAuthTimerDiscardsClosedSession(t *testing.T) {
+	synctest.Test(t, testAuthTimerDiscardsClosedSession)
+}
+
+func testAuthTimerDiscardsClosedSession(t *testing.T) {
 	for _, duringRefresh := range []bool{false, true} {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
+		jw := newTestJaws(t)
 		factory := &testAuthTimerFactory{}
 		srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		sess := jw.NewSession(httptest.NewRecorder(), req)
-		expiry := time.Now().Add(time.Hour)
+		expiry := time.Now().Add(authRefreshSkew - time.Second)
 		raw := makeIDToken(t, map[string]any{"iss": "https://issuer.example", "aud": "client", "sub": "one", "exp": expiry.Add(time.Hour).Unix(), "email": "user@example.com"})
 		calls := 0
 		source := tokenSourceFunc(func() (*oauth2.Token, error) {
@@ -68,7 +65,7 @@ func TestAuthTimerDiscardsClosedSession(t *testing.T) {
 			sess.Close()
 			return makeOAuth2Token("access", raw, "refresh"), nil
 		})
-		if err = srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, source, expiry, nil); err != nil {
+		if err := srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, source, expiry, nil); err != nil {
 			t.Fatal(err)
 		}
 		if !duringRefresh {
@@ -83,8 +80,86 @@ func TestAuthTimerDiscardsClosedSession(t *testing.T) {
 			t.Fatalf("calls=%d timers=%d scheduled=%d", calls, len(srv.authTimers), factory.len())
 		}
 		assertWrapperAuthCleared(t, srv, sess)
-		jw.Close()
 	}
+}
+
+func TestOIDCTimerReleasesRotatedSession(t *testing.T) {
+	jw := newTestJaws(t)
+	factory := &testAuthTimerFactory{}
+	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	first := httptest.NewRecorder()
+	old := jw.NewSession(first, req)
+	if old == nil {
+		t.Fatal("initial session missing")
+	}
+	if err := srv.storeSessionAuthClaims(old, map[string]any{"sub": "one"}, nil, time.Now().Add(4*time.Hour), nil); err != nil {
+		t.Fatal(err)
+	}
+	if delay := factory.timer(0).delay; delay <= 0 || delay > time.Minute {
+		t.Fatalf("old session cleanup delay = %s", delay)
+	}
+	factory.timer(0).fire()
+	if factory.len() != 2 || !srv.sessionAuthTimerCurrent(old, srv.authTimers[old.ID()]) {
+		t.Fatal("live OIDC session did not schedule its next liveness check")
+	}
+	replace := httptest.NewRequest(http.MethodGet, "/", nil)
+	replace.AddCookie(first.Result().Cookies()[0])
+	if next := jw.NewSession(httptest.NewRecorder(), replace); next == nil || next == old || sessionAlive(old) {
+		t.Fatal("session was not rotated")
+	}
+	factory.timer(1).fire()
+	if len(srv.authTimers) != 0 {
+		t.Fatal("OIDC timer retained the rotated session")
+	}
+}
+
+func TestOIDCRefreshTimeoutClearsExpiredAuth(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		jw := newTestJaws(t)
+		factory := &testAuthTimerFactory{}
+		srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+		started := make(chan struct{}, 1)
+		srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-req.Context().Done()
+			return nil, req.Context().Err()
+		})}
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		sess := jw.NewSession(httptest.NewRecorder(), req)
+		if sess == nil {
+			t.Fatal("initial session missing")
+		}
+		source := srv.oauth2cfg.TokenSource(srv.oauth2Context(context.Background()), &oauth2.Token{RefreshToken: "refresh"})
+		if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "one"}, source, time.Now().Add(5*time.Second), nil); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() {
+			factory.timer(0).fire()
+			close(done)
+		}()
+		<-started
+		time.Sleep(oauth2ProviderTimeout - time.Second)
+		select {
+		case <-done:
+			t.Fatal("refresh completed before the provider timeout")
+		default:
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("stalled refresh did not time out")
+		}
+		if len(srv.authTimers) != 0 || sess.Get(srv.SessionKey) != nil {
+			t.Fatal("stalled refresh retained expired auth")
+		}
+	})
 }
 
 func TestAuthorizationWithdrawalCancelsRequests(t *testing.T) {
@@ -104,11 +179,15 @@ func TestAuthorizationWithdrawalCancelsRequests(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
 			expiry := time.Now().Add(time.Hour)
-			if action == "expiry" {
-				expiry = time.Now().Add(-time.Second)
-			}
 			if err = srv.storeSessionAuthClaims(sess, map[string]any{"email": "user@example.com"}, nil, expiry, nil); err != nil {
 				t.Fatal(err)
+			}
+			if action == "expiry" {
+				expired := time.Now().Add(-time.Second)
+				sess.Set(srv.sessionKey(oauth2AuthExpiryKey), expired)
+				srv.mu.Lock()
+				srv.authTimers[sess.ID()].expiry = expired
+				srv.mu.Unlock()
 			}
 			rq := newLiveAuthRequest(t, jw, req)
 			ctx := rq.Context()
@@ -172,13 +251,11 @@ func TestLoginRotationExistingAuth(t *testing.T) {
 				t.Fatal("login reused old session")
 			}
 		}
-		sess.Set(oauth2StateKey, "state")
-		sess.Set(oauth2NonceKey, "nonce")
-		sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+		setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce", verifier: oauth2.GenerateVerifier()})
 		rec := httptest.NewRecorder()
 		srv.HandleAuthResponse(rec, req)
 		if limit == 1 {
-			if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Location") != "" {
+			if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Location") != "" || rec.Header().Get("Retry-After") != "60" {
 				t.Fatalf("status=%d headers=%v", rec.Code, rec.Header())
 			}
 			if jw.GetSession(req) != sess || !srv.sessionAuthTimerCurrent(sess, entry) || sess.Get(srv.SessionEmailKey) != "existing@example.com" {
@@ -200,11 +277,7 @@ func TestLoginRotationExistingAuth(t *testing.T) {
 }
 
 func TestSetAdminsLeavesAnonymousRequestsOpen(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	req := httptest.NewRequest(http.MethodGet, "/public", nil)
 	jw.NewSession(httptest.NewRecorder(), req)
@@ -300,21 +373,16 @@ func TestSetAdminsUsesSessionPolicy(t *testing.T) {
 	}
 }
 
-func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
-	// UserInfo latency can exceed a new session's one-minute idle lifetime.
-	// synctest covers that interval without a wall-clock delay.
+func TestLoginUserInfoDeadlineKeepsOIDCFallbackOptional(t *testing.T) {
+	// A slow UserInfo fallback must stop at the callback deadline before rotation.
 	synctest.Test(t, func(t *testing.T) {
-		jw, err := jaws.New()
-		if err != nil {
-			t.Fatal(err)
-		}
+		jw := newTestJaws(t)
 		go jw.ServeWithTimeout(2 * time.Minute)
-		t.Cleanup(jw.Close)
 		srv := newWrapperTestServer(jw, "https://issuer.example")
 		expiry := time.Now().Add(time.Hour)
 		hr := httptest.NewRequest(http.MethodGet, "/callback?state=state&code=code", nil)
 		sess := jw.NewSession(httptest.NewRecorder(), hr)
-		if err = srv.storeSessionAuthClaims(sess, map[string]any{"sub": "user", "email": "user@example.com"}, nil, expiry, nil); err != nil {
+		if err := srv.storeSessionAuthClaims(sess, map[string]any{"sub": "user", "email": "user@example.com"}, nil, expiry, nil); err != nil {
 			t.Fatal(err)
 		}
 		defer srv.Logout(sess, nil)
@@ -324,37 +392,43 @@ func TestLoginPreparesUserInfoBeforeRotation(t *testing.T) {
 		})).ServeHTTP(httptest.NewRecorder(), hr)
 		raw := makeIDToken(t, map[string]any{"iss": "https://issuer.example", "aud": "client", "sub": "user", "exp": expiry.Unix(), "nonce": "nonce", "email": "user@example.com"})
 		userinfoCalls := 0
+		var userinfoErr error
 		srv.userinfoUrl = "https://provider.example/userinfo"
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(hr *http.Request) (*http.Response, error) {
 			body := `{"access_token":"dummy","token_type":"Bearer","expires_in":3600,"id_token":"` + raw + `"}`
 			if hr.URL.Path == "/userinfo" {
 				userinfoCalls++
-				time.Sleep(61 * time.Second)
-				body = `{"sub":"user","email":"user@example.com","email_verified":true}`
+				select {
+				case <-hr.Context().Done():
+					userinfoErr = hr.Context().Err()
+					return nil, userinfoErr
+				case <-time.After(oauth2ProviderTimeout + time.Second):
+					userinfoErr = errors.New("UserInfo missed callback deadline")
+					return nil, userinfoErr
+				}
 			}
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
 		})}
 		logins, logouts := 0, 0
 		srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
 		srv.LogoutEvent = func(*jaws.Session, *http.Request) { logouts++ }
-		sess.Set(oauth2StateKey, "state")
-		sess.Set(oauth2NonceKey, "nonce")
-		sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
+		setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce", verifier: oauth2.GenerateVerifier()})
 		hw := httptest.NewRecorder()
 		srv.HandleAuthResponse(hw, hr)
 		current := jw.GetSession(hr)
 		if current != nil {
 			defer srv.Logout(current, nil)
 		}
-		if hw.Code != http.StatusFound || logins != 1 || logouts != 1 || userinfoCalls != 1 {
+		if hw.Code != http.StatusFound || logins != 1 || logouts != 1 || userinfoCalls != 1 ||
+			!errors.Is(userinfoErr, context.DeadlineExceeded) {
 			t.Fatalf("status=%d logins=%d logouts=%d userinfo=%d", hw.Code, logins, logouts, userinfoCalls)
 		}
 		waitAuthRequestCancelled(t, ctx)
 		if current == nil || current == sess || sess.Cookie().MaxAge >= 0 || !errors.Is(ctx.Err(), context.Canceled) {
 			t.Fatal("login did not retire the old session and request")
 		}
-		if current.Get(srv.SessionEmailVerifiedKey) != true {
-			t.Fatal("login did not store prepared UserInfo claims")
+		if current.Get(srv.SessionEmailVerifiedKey) == true {
+			t.Fatal("expired UserInfo fallback supplied verification")
 		}
 	})
 }

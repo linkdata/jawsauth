@@ -3,7 +3,6 @@ package jawsauth
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,10 +68,10 @@ func makeIDToken(t *testing.T, claims map[string]any) string {
 	return header + "." + payload + "." + signature
 }
 
-func Test_errtext(t *testing.T) {
-	var sb strings.Builder
-	writeBody(&sb, http.StatusForbidden, ErrOAuth2WrongState, nil)
-	s := sb.String()
+func TestWriteResultError(t *testing.T) {
+	hw := httptest.NewRecorder()
+	(&Server{}).writeResult(hw, http.StatusForbidden, ErrOAuth2WrongState)
+	s := hw.Body.String()
 	if !strings.Contains(s, "403 Forbidden") {
 		t.Fatal()
 	}
@@ -102,6 +101,18 @@ func Test_sanitizeRedirectTarget(t *testing.T) {
 	if s := sanitizeRedirectTarget("example.com:8443", "https://example.com/dashboard"); s != "/dashboard" {
 		t.Fatal(s)
 	}
+	if s := sanitizeRedirectTarget("example.com", "https://example.com.:443/dashboard"); s != "/dashboard" {
+		t.Fatal(s)
+	}
+	if s := sanitizeRedirectTarget("[::1]", "https://[::1]:443/dashboard"); s != "/dashboard" {
+		t.Fatal(s)
+	}
+	if s := sanitizeRedirectTarget("[::1]:443", "https://[::1]/dashboard"); s != "/dashboard" {
+		t.Fatal(s)
+	}
+	if s := sanitizeRedirectTarget("::1:443", "https://[::1]/dashboard"); s != "/" {
+		t.Fatalf("malformed host accepted: %q", s)
+	}
 	if s := sanitizeRedirectTarget("example.com", "section/page"); s != "/section/page" {
 		t.Fatal(s)
 	}
@@ -117,9 +128,24 @@ func Test_beginSanitizesReferrer(t *testing.T) {
 	srv := &Server{HandledPaths: make(map[string]struct{})}
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	hr.Header.Set("Referer", "https://evil.com/wrong")
-	_, location := srv.begin(hr)
+	location := srv.begin(hr)
 	if location != "/" {
 		t.Fatal(location)
+	}
+}
+
+func TestProtectedRequestReturnsToRequestedPage(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newWrapperTestServer(jw, "https://issuer.example")
+	hr := httptest.NewRequest(http.MethodGet, "http://example.com/protected?tab=one", nil)
+	hr.Header.Set("Referer", "http://example.com/home")
+	hw := httptest.NewRecorder()
+	srv.Wrap(testStatusHandler{statusCode: http.StatusOK}).ServeHTTP(hw, hr)
+	if hw.Code != http.StatusFound {
+		t.Fatalf("protected request status = %d", hw.Code)
+	}
+	if got := testOAuthFlow(jw.GetSession(hr), srv).referrer; got != "/protected?tab=one" {
+		t.Fatalf("OAuth return target = %q", got)
 	}
 }
 
@@ -127,14 +153,54 @@ func Test_beginReferrerHandling(t *testing.T) {
 	srv := &Server{HandledPaths: map[string]struct{}{"/oauth2/login": {}}}
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	hr.Header.Set("Referer", "https://example.com/oauth2/login")
-	_, location := srv.begin(hr)
+	location := srv.begin(hr)
 	if location != "/" {
 		t.Fatal(location)
 	}
 	hr.Header.Set("Referer", "https://example.com/app/home")
-	_, location = srv.begin(hr)
+	location = srv.begin(hr)
 	if location != "/app/home" {
 		t.Fatal(location)
+	}
+	hr = httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login?next=x", nil)
+	location = srv.begin(hr)
+	if location != "/" {
+		t.Fatalf("query-bearing login loops to %q", location)
+	}
+	hr.Header.Set("Referer", "https://example.com/oauth2/login?next=x")
+	location = srv.begin(hr)
+	if location != "/" {
+		t.Fatalf("query-bearing referrer loops to %q", location)
+	}
+	hr.Header.Set("Referer", "https://example.com/app/home?next=x")
+	location = srv.begin(hr)
+	if location != "/app/home?next=x" {
+		t.Fatalf("unhandled target changed to %q", location)
+	}
+	for _, referer := range []string{
+		"https://example.com/oauth2//login", "https://example.com/oauth2/./login",
+	} {
+		hr.Header.Set("Referer", referer)
+		location = srv.begin(hr)
+		if location != "/" {
+			t.Fatalf("handled path %q returned to %q", referer, location)
+		}
+	}
+}
+
+func TestBeginExcludesTrailingSlashCallback(t *testing.T) {
+	srv := &Server{HandledPaths: map[string]struct{}{"/oauth2/callback/": {}}}
+	hr := httptest.NewRequest(http.MethodGet, "https://example.com/oauth2/login", nil)
+	for _, referer := range []string{
+		"https://example.com/oauth2/callback/",
+		"https://example.com/oauth2//callback/",
+		"https://example.com/oauth2/./callback/",
+	} {
+		hr.Header.Set("Referer", referer)
+		location := srv.begin(hr)
+		if location != "/" {
+			t.Fatalf("callback return target %q kept as %q", referer, location)
+		}
 	}
 }
 
@@ -146,7 +212,7 @@ func Test_beginPathBoundary(t *testing.T) {
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	hr.Header.Set("Referer", "https://example.com/admin/login")
 	for range 50 {
-		_, location := srv.begin(hr)
+		location := srv.begin(hr)
 		if location != "/" {
 			t.Fatal(location)
 		}
@@ -154,18 +220,14 @@ func Test_beginPathBoundary(t *testing.T) {
 
 	srv = &Server{HandledPaths: map[string]struct{}{"/login": {}}}
 	hr.Header.Set("Referer", "https://example.com/admin/login")
-	_, location := srv.begin(hr)
+	location := srv.begin(hr)
 	if location != "/admin/login" {
 		t.Fatal(location)
 	}
 }
 
 func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{"/oauth2/login": {}},
@@ -194,14 +256,12 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	if sess == nil {
 		t.Fatal("missing session")
 	}
-	state, _ := sess.Get(oauth2StateKey).(string)
-	if len(state) != 64 {
-		t.Fatal(state)
+	flow := testOAuthFlow(sess, nil)
+	state := flow.state
+	if len(state) != 26 {
+		t.Fatalf("state length = %d, want 26", len(state))
 	}
-	if _, err = hex.DecodeString(state); err != nil {
-		t.Fatal(err)
-	}
-	verifier, _ := sess.Get(oauth2PKCEVerifierKey).(string)
+	verifier := flow.verifier
 	if verifier == "" {
 		t.Fatal("missing pkce verifier")
 	}
@@ -216,25 +276,21 @@ func Test_handleLoginGeneratesOpaqueState(t *testing.T) {
 	if gotMethod := values.Get("code_challenge_method"); gotMethod != "S256" {
 		t.Fatal(gotMethod)
 	}
-	nonce, _ := sess.Get(oauth2NonceKey).(string)
-	if len(nonce) != 64 {
-		t.Fatal(nonce)
+	nonce := flow.nonce
+	if len(nonce) != 26 || nonce == state {
+		t.Fatalf("nonce %q is missing or matches state", nonce)
 	}
 	if gotNonce := values.Get("nonce"); gotNonce != nonce {
 		t.Fatal(gotNonce)
 	}
-	referrer, _ := sess.Get(oauth2ReferrerKey).(string)
+	referrer := flow.referrer
 	if referrer != "/secure" {
 		t.Fatal(referrer)
 	}
 }
 
 func Test_handleLoginCreatesSessionAndRotatesState(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{"/oauth2/login": {}},
@@ -263,14 +319,14 @@ func Test_handleLoginCreatesSessionAndRotatesState(t *testing.T) {
 	if sess == nil {
 		t.Fatal("missing session")
 	}
-	firstState, _ := sess.Get(oauth2StateKey).(string)
+	firstState := testOAuthFlow(sess, nil).state
 	if firstState == "" {
 		t.Fatal("missing state")
 	}
 
 	rec = httptest.NewRecorder()
 	srv.HandleLogin(rec, req)
-	secondState, _ := sess.Get(oauth2StateKey).(string)
+	secondState := testOAuthFlow(sess, nil).state
 	if secondState == "" {
 		t.Fatal("missing replacement state")
 	}
@@ -280,11 +336,7 @@ func Test_handleLoginCreatesSessionAndRotatesState(t *testing.T) {
 }
 
 func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:                    jw,
 		SessionKey:              "oauth2userinfo",
@@ -295,13 +347,10 @@ func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/logout", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2PKCEVerifierKey, "verifier123")
-	sess.Set(oauth2NonceKey, "nonce123")
-	sess.Set(oauth2ReferrerKey, "/protected")
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: "verifier123", nonce: "nonce123", referrer: "/protected"})
 	sess.Set(srv.SessionKey, map[string]any{"email": "user@example.com"})
 	sess.Set(srv.SessionTokenKey, oauth2.StaticTokenSource(makeOAuth2Token("access", "", "")))
-	sess.Set(oauth2IDTokenExpiryKey, time.Now().Add(time.Hour))
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 	sess.Set(srv.SessionEmailVerifiedKey, true)
 
@@ -314,29 +363,16 @@ func Test_handleLogoutClearsPendingOAuthState(t *testing.T) {
 		t.Fatal(resp.Status)
 	}
 	closeResponseBody(t, resp)
-	if value := sess.Get(oauth2StateKey); value != nil {
+	if value := sess.Get(srv.sessionKey(oauth2FlowKey)); value != nil {
 		t.Fatal(value)
 	}
-	if value := sess.Get(oauth2PKCEVerifierKey); value != nil {
-		t.Fatal(value)
-	}
-	if value := sess.Get(oauth2NonceKey); value != nil {
-		t.Fatal(value)
-	}
-	if value := sess.Get(oauth2ReferrerKey); value != nil {
-		t.Fatal(value)
-	}
-	if value := sess.Get(oauth2IDTokenExpiryKey); value != nil {
+	if value := sess.Get(srv.sessionKey(oauth2AuthExpiryKey)); value != nil {
 		t.Fatal(value)
 	}
 }
 
 func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	var mu sync.Mutex
 	var gotVerifier string
@@ -425,10 +461,7 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state="+wantState+"&code="+wantCode, nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, wantState)
-	sess.Set(oauth2PKCEVerifierKey, verifier)
-	sess.Set(oauth2NonceKey, wantNonce)
-	sess.Set(oauth2ReferrerKey, "/secure")
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: wantState, expiry: time.Now().Add(oauth2FlowLifetime), verifier: verifier, nonce: wantNonce, referrer: "/secure"})
 
 	oldSession := sess
 	srv.HandleAuthResponse(rec, req)
@@ -470,14 +503,8 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	if receivedProviderErr != nil {
 		t.Fatal(receivedProviderErr)
 	}
-	if gotState, _ := sess.Get(oauth2StateKey).(string); gotState != "" {
-		t.Fatal(gotState)
-	}
-	if gotVerifier, _ := sess.Get(oauth2PKCEVerifierKey).(string); gotVerifier != "" {
-		t.Fatal(gotVerifier)
-	}
-	if gotNonce, _ := sess.Get(oauth2NonceKey).(string); gotNonce != "" {
-		t.Fatal(gotNonce)
+	if value := sess.Get(srv.sessionKey(oauth2FlowKey)); value != nil {
+		t.Fatal(value)
 	}
 	if gotEmail, _ := sess.Get(srv.SessionEmailKey).(string); gotEmail != "idtoken@example.com" {
 		t.Fatal(gotEmail)
@@ -503,11 +530,7 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 // the TokenSource stored in the session uses a request-independent context.
 // Scheduled refreshes can run after the callback request finishes.
 func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	const wantNonce = "nonce123"
@@ -555,9 +578,7 @@ func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state&code=code", nil).WithContext(ctx)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state")
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, wantNonce)
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: wantNonce})
 
 	oldSession := sess
 	srv.HandleAuthResponse(rec, req)
@@ -585,11 +606,7 @@ func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T)
 }
 
 func Test_handleAuthResponseMissingPKCEVerifier(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	var tokenRequests int
 	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
@@ -622,8 +639,7 @@ func Test_handleAuthResponseMissingPKCEVerifier(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -645,11 +661,7 @@ func Test_handleAuthResponseMissingPKCEVerifier(t *testing.T) {
 }
 
 func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	rec := httptest.NewRecorder()
@@ -662,13 +674,10 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 	expiry := time.Now().Add(time.Hour).Truncate(time.Second)
 	sess.Set(srv.SessionKey, claims)
 	sess.Set(srv.SessionTokenKey, tokenSource)
-	sess.Set(oauth2IDTokenExpiryKey, expiry)
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), expiry)
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 	sess.Set(srv.SessionEmailVerifiedKey, true)
-	sess.Set(oauth2StateKey, "legit")
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce")
-	sess.Set(oauth2ReferrerKey, "/secure")
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "legit", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce", referrer: "/secure"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -690,7 +699,7 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 	if got := sess.Get(srv.SessionTokenKey); got != tokenSource {
 		t.Fatal(got)
 	}
-	if got, _ := sess.Get(oauth2IDTokenExpiryKey).(time.Time); !got.Equal(expiry) {
+	if got, _ := sess.Get(srv.sessionKey(oauth2AuthExpiryKey)).(time.Time); !got.Equal(expiry) {
 		t.Fatal(got)
 	}
 	if got, _ := sess.Get(srv.SessionEmailKey).(string); got != "user@example.com" {
@@ -699,16 +708,17 @@ func Test_handleAuthResponseWrongStatePreservesCurrentAuth(t *testing.T) {
 	if got, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool); !got {
 		t.Fatal(got)
 	}
-	if got := sess.Get(oauth2StateKey); got != nil {
+	flow := testOAuthFlow(sess, nil)
+	if got := flow.state; got != "legit" {
 		t.Fatal(got)
 	}
-	if got := sess.Get(oauth2PKCEVerifierKey); got != nil {
+	if got := flow.verifier; got == "" {
 		t.Fatal(got)
 	}
-	if got := sess.Get(oauth2NonceKey); got != nil {
+	if got := flow.nonce; got != "nonce" {
 		t.Fatal(got)
 	}
-	if got := sess.Get(oauth2ReferrerKey); got != nil {
+	if got := flow.referrer; got != "/secure" {
 		t.Fatal(got)
 	}
 }
@@ -730,10 +740,20 @@ func Test_extractEmailVerified(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "profile numeric",
+			claims: map[string]any{"email_verified": json.Number("1.0")},
+			want:   true,
+		},
+		{
 			name:   "float",
 			claims: map[string]any{"email_verified": float64(1)},
 			want:   true,
 		},
+		{name: "numeric zero", claims: map[string]any{"email_verified": json.Number("0")}},
+		{name: "invalid number", claims: map[string]any{"email_verified": json.Number("x")}},
+		{name: "false string", claims: map[string]any{"email_verified": "false"}},
+		{name: "invalid string", claims: map[string]any{"email_verified": "junk"}},
+		{name: "float zero", claims: map[string]any{"email_verified": float64(0)}},
 	}
 
 	for _, tc := range testCases {
@@ -746,8 +766,7 @@ func Test_extractEmailVerified(t *testing.T) {
 }
 
 func TestServer_fetchUserInfoStatusError(t *testing.T) {
-	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
-		_ = hr
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
 		hw.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer provider.Close()
@@ -767,6 +786,218 @@ func TestServer_fetchUserInfoStatusError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "userinfo status 401 Unauthorized") {
 		t.Fatal(err)
+	}
+}
+
+func TestTokenExchangeFailureStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		providerStatus int
+		transportError error
+		want           int
+	}{
+		{"network failure", 0, errors.New("provider unavailable"), http.StatusBadGateway},
+		{"timeout", 0, context.DeadlineExceeded, http.StatusBadGateway},
+		{"provider bad request", http.StatusBadRequest, nil, http.StatusBadRequest},
+		{"invalid client", http.StatusUnauthorized, nil, http.StatusBadGateway},
+		{"provider unavailable", http.StatusServiceUnavailable, nil, http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jw := newTestJaws(t)
+			srv := newProfileTestServer(t, jw, nil)
+			srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path != "/token" {
+					t.Errorf("unexpected provider request %s", r.URL.Path)
+					return nil, errors.New("unexpected provider request")
+				}
+				if tc.transportError != nil {
+					return nil, tc.transportError
+				}
+				w := httptest.NewRecorder()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.providerStatus)
+				errorCode := "invalid_grant"
+				if tc.providerStatus == http.StatusUnauthorized {
+					errorCode = "invalid_client"
+				}
+				_, _ = fmt.Fprintf(w, "{\"error\":%q}", errorCode)
+				return w.Result(), nil
+			})}
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			response := profileCallback(srv, cookie, state, "code")
+			if response.Code != tc.want {
+				t.Fatalf("token exchange status = %d, want %d", response.Code, tc.want)
+			}
+		})
+	}
+}
+
+func TestServer_fetchUserInfoRespectsRequestCancellation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		case <-release:
+			return nil, errors.New("transport released without cancellation")
+		}
+	})}
+	ctx, cancel := context.WithCancel(context.WithValue(t.Context(), oauth2.HTTPClient, client))
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := (&Server{}).fetchUserInfo(ctx, "https://provider.example/userinfo",
+			oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "access"}))
+		result <- err
+	}()
+	waitFor(t, started, "UserInfo request did not start")
+	cancel()
+	if err := waitFor(t, result, "UserInfo request ignored cancellation"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled UserInfo request: %v", err)
+	}
+}
+
+func TestServer_fetchUserInfoUsesClientTimeoutAsRequestDeadline(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+	var requestDeadline time.Time
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requestDeadline, _ = r.Context().Deadline()
+			select {
+			case <-r.Context().Done():
+			case <-time.After(time.Second):
+				return nil, errors.New("UserInfo request did not time out")
+			}
+			return nil, r.Context().Err()
+		}),
+	}
+	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, client)
+	started := time.Now()
+	_, err := (&Server{}).fetchUserInfo(ctx, "https://provider.example/userinfo",
+		oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "access"}))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("UserInfo timeout: %v", err)
+	}
+	if requestDeadline.Before(started) || requestDeadline.After(started.Add(time.Second)) {
+		t.Fatalf("UserInfo request deadline %s, want a short bounded deadline", requestDeadline)
+	}
+	if client.Timeout != timeout {
+		t.Fatalf("configured client timeout changed to %s", client.Timeout)
+	}
+}
+
+func TestServer_fetchUserInfoOversizedStatusError(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
+		hw.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(hw, strings.Repeat("x", maxUserInfoBytes+1))
+	}))
+	defer provider.Close()
+
+	_, err := (&Server{}).fetchUserInfo(t.Context(), provider.URL,
+		oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "token", TokenType: "Bearer"}))
+	if !errors.Is(err, ErrUserInfoStatus) || errors.Is(err, ErrUserInfoTooLarge) || !strings.Contains(err.Error(), "503 Service Unavailable") {
+		t.Fatalf("oversized error response = %v, want status error", err)
+	}
+}
+
+func TestServer_fetchUserInfoDoesNotFollowBearerRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("UserInfo redirect target received the bearer token request")
+	}))
+	defer target.Close()
+	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		if hr.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("original UserInfo authorization = %q", hr.Header.Get("Authorization"))
+		}
+		http.Redirect(hw, hr, target.URL+"/profile", http.StatusFound)
+	}))
+	defer provider.Close()
+
+	_, err := (&Server{}).fetchUserInfo(t.Context(), provider.URL+"/userinfo",
+		oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "secret", TokenType: "Bearer"}))
+	if !errors.Is(err, ErrUserInfoStatus) || !strings.Contains(err.Error(), "302 Found") {
+		t.Fatalf("redirect response = %v, want 302 without following", err)
+	}
+}
+
+func TestOAuthOfflineOptionUsesAuthorizationOnly(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newWrapperTestServer(jw, "https://issuer.example")
+	srv.Options = []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
+	var idToken string
+	var tokenAccessType, tokenVerifier, tokenCode string
+	srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/token" {
+			t.Fatalf("unexpected provider request %s", r.URL)
+		}
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		tokenAccessType = r.PostForm.Get("access_type")
+		tokenVerifier = r.PostForm.Get("code_verifier")
+		tokenCode = r.PostForm.Get("code")
+		return jsonResponse(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`), nil
+	})}
+	start := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
+	startResult := httptest.NewRecorder()
+	srv.HandleLogin(startResult, start)
+	if startResult.Code != http.StatusFound || len(startResult.Result().Cookies()) != 1 {
+		t.Fatalf("login start: status=%d cookies=%v", startResult.Code, startResult.Result().Cookies())
+	}
+	location, err := url.Parse(startResult.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if location.Query().Get("access_type") != "offline" || location.Query().Get("state") == "" || location.Query().Get("nonce") == "" {
+		t.Fatalf("authorization location = %s", location)
+	}
+	idToken = makeIDToken(t, map[string]any{
+		"iss": "https://issuer.example", "aud": "client", "sub": "person", "nonce": location.Query().Get("nonce"),
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	callback := httptest.NewRequest(http.MethodGet,
+		"http://example.com/oauth2/callback?state="+url.QueryEscape(location.Query().Get("state"))+"&code=example-code", nil)
+	callback.AddCookie(startResult.Result().Cookies()[0])
+	result := httptest.NewRecorder()
+	srv.HandleAuthResponse(result, callback)
+	if result.Code != http.StatusFound || tokenAccessType != "" || tokenVerifier == "" || tokenCode != "example-code" {
+		t.Fatalf("exchange: status=%d access_type=%q verifier=%q code=%q body=%q", result.Code, tokenAccessType, tokenVerifier, tokenCode, result.Body.String())
+	}
+}
+
+func TestVerifyOIDCUserInfoDoesNotRefreshDuringCallback(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newWrapperTestServer(jw, "https://issuer.example")
+	srv.userinfoUrl = "https://provider.example/userinfo"
+	userinfoCalls, refreshCalls := 0, 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/userinfo":
+			userinfoCalls++
+			return jsonResponse(`{"sub":"one","email":"user@example.com"}`), nil
+		case "/token":
+			refreshCalls++
+			return jsonResponse(`{"access_token":"refreshed","token_type":"Bearer"}`), nil
+		default:
+			t.Fatalf("unexpected provider request %s", req.URL)
+			return nil, nil
+		}
+	})}
+	srv.httpClient = client
+	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, client)
+	raw := makeIDToken(t, map[string]any{
+		"iss": "https://issuer.example", "aud": "client", "sub": "one", "nonce": "nonce",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	token := makeOAuth2Token("access", raw, "refresh")
+	token.Expiry = time.Now().Add(time.Second) // Inside oauth2's refresh skew.
+	claims, source, _, _, err := srv.verifyOAuthIdentity(ctx, token, "nonce")
+	if err != nil || source == nil || claims["email"] != "user@example.com" || userinfoCalls != 1 || refreshCalls != 0 {
+		t.Fatalf("claims=%v source=%t userinfo=%d refresh=%d err=%v", claims, source != nil, userinfoCalls, refreshCalls, err)
 	}
 }
 
@@ -796,11 +1027,7 @@ func TestServer_fetchUserInfoCloseError(t *testing.T) {
 }
 
 func Test_handleAuthResponseMissingIDToken(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	provider := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
@@ -832,9 +1059,7 @@ func Test_handleAuthResponseMissingIDToken(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -853,11 +1078,7 @@ func Test_handleAuthResponseMissingIDToken(t *testing.T) {
 }
 
 func Test_handleAuthResponseInvalidIDToken(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	idToken := makeIDToken(t, map[string]any{
@@ -898,9 +1119,7 @@ func Test_handleAuthResponseInvalidIDToken(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -919,11 +1138,7 @@ func Test_handleAuthResponseInvalidIDToken(t *testing.T) {
 }
 
 func Test_handleAuthResponseAudienceMismatch(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	idToken := makeIDToken(t, map[string]any{
@@ -964,9 +1179,7 @@ func Test_handleAuthResponseAudienceMismatch(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -985,11 +1198,7 @@ func Test_handleAuthResponseAudienceMismatch(t *testing.T) {
 }
 
 func Test_handleAuthResponseNonceMismatch(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	idToken := makeIDToken(t, map[string]any{
@@ -1030,9 +1239,7 @@ func Test_handleAuthResponseNonceMismatch(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	sess.Set(oauth2NonceKey, "nonce123")
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: "nonce123"})
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -1051,11 +1258,7 @@ func Test_handleAuthResponseNonceMismatch(t *testing.T) {
 }
 
 func Test_handleAuthResponseWithoutSession(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{},
@@ -1085,11 +1288,7 @@ func Test_handleAuthResponseWithoutSession(t *testing.T) {
 }
 
 func Test_handleAuthResponseLoginFailedFallsBack(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{Jaws: jw}
 	var callbackCount int
 	var callbackStatus int
@@ -1133,11 +1332,7 @@ func Test_handleAuthResponseLoginFailedFallsBack(t *testing.T) {
 }
 
 func Test_handleAuthResponseLoginFailedHandlesResponse(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{Jaws: jw}
 	const customBody = "handled by callback"
 	srv.LoginFailed = func(hw http.ResponseWriter, hr *http.Request, httpCode int, callErr error, email string) bool {
@@ -1175,11 +1370,7 @@ func Test_handleAuthResponseLoginFailedHandlesResponse(t *testing.T) {
 }
 
 func TestServerExtractEmail(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	testCases := []struct {
 		name       string
@@ -1265,17 +1456,8 @@ func TestServerExtractEmail(t *testing.T) {
 				if handler.message != "jawsauth: no email found" {
 					t.Fatalf("unexpected log message: %s", handler.message)
 				}
-				var attrFound bool
-				for _, attr := range handler.attrs {
-					if attr.Key == "userinfo" {
-						attrFound = true
-						if !reflect.DeepEqual(attr.Value.Any(), tc.userinfo) {
-							t.Fatalf("logged userinfo mismatch: %#v", attr.Value.Any())
-						}
-					}
-				}
-				if !attrFound {
-					t.Fatal("userinfo attribute missing from log entry")
+				if len(handler.attrs) != 0 {
+					t.Fatalf("profile claims leaked to log: %#v", handler.attrs)
 				}
 			} else {
 				if handler.called {
@@ -1319,11 +1501,7 @@ func (h *recordingHandler) WithGroup(string) slog.Handler {
 }
 
 func Test_handleAuthResponseMissingState(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv := &Server{
 		Jaws:         jw,
 		HandledPaths: map[string]struct{}{},
@@ -1354,11 +1532,7 @@ func Test_handleAuthResponseMissingState(t *testing.T) {
 }
 
 func Test_handleAuthResponseMissingNonce(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	const issuer = "https://issuer.example"
 	idToken := makeIDToken(t, map[string]any{
@@ -1399,9 +1573,8 @@ func Test_handleAuthResponseMissingNonce(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state123&code=authcode123", nil)
 	sess := jw.NewSession(rec, req)
-	sess.Set(oauth2StateKey, "state123")
-	sess.Set(oauth2PKCEVerifierKey, oauth2.GenerateVerifier())
-	// deliberately leave oauth2NonceKey unset to exercise the missing-nonce branch
+	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier()})
+	// deliberately leave nonce unset to exercise the missing-nonce branch
 
 	srv.HandleAuthResponse(rec, req)
 
@@ -1419,12 +1592,23 @@ func Test_handleAuthResponseMissingNonce(t *testing.T) {
 	}
 }
 
-func Test_handlersRejectNonGet(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
+func TestHandleLinkWithoutOAuthConfigReturnsError(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := &Server{Jaws: jw, LinkEvent: func(*jaws.Session, *http.Request, map[string]any) (int, error) { return 0, nil }}
+	req := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link/provider", nil)
+	if jw.NewSession(httptest.NewRecorder(), req) == nil {
+		t.Fatal("missing session")
 	}
-	defer jw.Close()
+	w := httptest.NewRecorder()
+	srv.HandleLink(w, req)
+	if w.Code != http.StatusInternalServerError || w.Header().Get("Location") != "" ||
+		!strings.Contains(w.Body.String(), ErrOAuth2NotConfigured.Error()) {
+		t.Fatalf("unconfigured link: status=%d location=%q body=%q", w.Code, w.Header().Get("Location"), w.Body.String())
+	}
+}
+
+func Test_handlersRejectNonGet(t *testing.T) {
+	jw := newTestJaws(t)
 
 	newServer := func() *Server {
 		return &Server{
@@ -1454,9 +1638,7 @@ func Test_handlersRejectNonGet(t *testing.T) {
 				rec := httptest.NewRecorder()
 				req := httptest.NewRequest(method, "http://example.com/oauth2/callback", nil)
 				sess := jw.NewSession(rec, req)
-				sess.Set(oauth2StateKey, "state123")
-				sess.Set(oauth2PKCEVerifierKey, "verifier123")
-				sess.Set(oauth2NonceKey, "nonce123")
+				setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state123", expiry: time.Now().Add(oauth2FlowLifetime), verifier: "verifier123", nonce: "nonce123"})
 
 				h.handler(srv)(rec, req)
 
@@ -1465,16 +1647,20 @@ func Test_handlersRejectNonGet(t *testing.T) {
 				if resp.StatusCode != http.StatusMethodNotAllowed {
 					t.Fatal(resp.Status)
 				}
+				if allow := resp.Header.Get("Allow"); allow != http.MethodGet {
+					t.Fatalf("Allow = %q, want GET", allow)
+				}
 				if loc := resp.Header.Get("Location"); loc != "" {
 					t.Fatalf("unexpected Location header: %q", loc)
 				}
-				if got, _ := sess.Get(oauth2StateKey).(string); got != "state123" {
+				flow := testOAuthFlow(sess, nil)
+				if got := flow.state; got != "state123" {
 					t.Fatal(got)
 				}
-				if got, _ := sess.Get(oauth2PKCEVerifierKey).(string); got != "verifier123" {
+				if got := flow.verifier; got != "verifier123" {
 					t.Fatal(got)
 				}
-				if got, _ := sess.Get(oauth2NonceKey).(string); got != "nonce123" {
+				if got := flow.nonce; got != "nonce123" {
 					t.Fatal(got)
 				}
 			})
@@ -1532,7 +1718,7 @@ func TestRedirectTargetBounds(t *testing.T) {
 			if !tc.accepted {
 				want = "/"
 			}
-			if got := jw.GetSession(req).Get(oauth2ReferrerKey); got != want {
+			if got := testOAuthFlow(jw.GetSession(req), nil).referrer; got != want {
 				t.Errorf("referer=%v length=%d: unexpected stored target", referer, tc.length)
 			}
 			jw.Close()
@@ -1543,11 +1729,7 @@ func TestRedirectTargetBounds(t *testing.T) {
 func TestLoginSessionUnavailable(t *testing.T) {
 	for _, limit := range []string{"global", "perIP", "closed"} {
 		t.Run(limit, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			switch limit {
 			case "global":
 				jw.MaxSessions = 1

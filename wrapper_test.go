@@ -24,11 +24,7 @@ func (h testStatusHandler) ServeHTTP(hw http.ResponseWriter, _ *http.Request) {
 // TestWrapperServeHTTPSet403HandlerConcurrent verifies that Set403Handler and
 // ServeHTTP can run concurrently under the race detector.
 func TestWrapperServeHTTPSet403HandlerConcurrent(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	srv := &Server{
 		Jaws:            jw,
@@ -45,7 +41,7 @@ func TestWrapperServeHTTPSet403HandlerConcurrent(t *testing.T) {
 		"exp": time.Now().Add(time.Hour).Unix(),
 		"ok":  true,
 	})
-	sess.Set(oauth2IDTokenExpiryKey, time.Now().Add(time.Hour))
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
 	sess.Set(srv.SessionEmailKey, "user@example.com")
 
 	w := wrapper{
@@ -79,11 +75,7 @@ func TestWrapperServeHTTPSet403HandlerConcurrent(t *testing.T) {
 }
 
 func TestWrapperServeHTTPAllowsPresentAuthData(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
@@ -92,7 +84,7 @@ func TestWrapperServeHTTPAllowsPresentAuthData(t *testing.T) {
 		"exp":   time.Now().Add(time.Hour).Unix(),
 		"email": "user@example.com",
 	})
-	sess.Set(oauth2IDTokenExpiryKey, time.Now().Add(time.Hour))
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
 
 	w := wrapper{
 		server:  srv,
@@ -104,6 +96,25 @@ func TestWrapperServeHTTPAllowsPresentAuthData(t *testing.T) {
 
 	if code := rec.Result().StatusCode; code != http.StatusOK {
 		t.Fatal(code)
+	}
+}
+
+func TestWrapperUnauthenticatedPostReturnsForbidden(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newWrapperTestServer(jw, "https://issuer.example")
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/protected", nil)
+	rec := httptest.NewRecorder()
+	(wrapper{server: srv, handler: testStatusHandler{statusCode: http.StatusOK}}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || rec.Header().Get("Allow") != "" {
+		t.Fatalf("protected POST: status=%d Allow=%q", rec.Code, rec.Header().Get("Allow"))
+	}
+	sess := jw.NewSession(httptest.NewRecorder(), req)
+	sess.Set(srv.SessionKey, map[string]any{"sub": "user"})
+	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(time.Hour))
+	rec = httptest.NewRecorder()
+	(wrapper{server: srv, handler: testStatusHandler{statusCode: http.StatusOK}}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated POST: status=%d", rec.Code)
 	}
 }
 
@@ -130,17 +141,13 @@ func TestWrapperServeHTTPClearsInvalidAuthData(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 
 			srv := newWrapperTestServer(jw, "https://issuer.example")
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
 			sess.Set(srv.SessionKey, tc.authValue)
-			sess.Set(oauth2IDTokenExpiryKey, tc.expiry)
+			sess.Set(srv.sessionKey(oauth2AuthExpiryKey), tc.expiry)
 
 			w := wrapper{
 				server:  srv,
@@ -212,17 +219,13 @@ func TestSessionAuthStatus(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 
 			srv := &Server{SessionKey: "claims"}
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
 			sess.Set(srv.SessionKey, tc.authValue)
-			sess.Set(oauth2IDTokenExpiryKey, tc.expiryValue)
+			sess.Set(srv.sessionKey(oauth2AuthExpiryKey), tc.expiryValue)
 
 			gotCurrent, gotPresent := srv.sessionAuthStatus(sess, func() time.Time { return now })
 			if gotCurrent != tc.wantCurrent {
@@ -236,11 +239,7 @@ func TestSessionAuthStatus(t *testing.T) {
 }
 
 func TestWrapperServeHTTPRedirectsWhenAuthDataMissing(t *testing.T) {
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 
 	srv := newWrapperTestServer(jw, "https://issuer.example")
 	tests := []struct {
@@ -269,19 +268,36 @@ func TestWrapperServeHTTPRedirectsWhenAuthDataMissing(t *testing.T) {
 }
 
 func TestOAuth2ContextUsesServerHTTPClient(t *testing.T) {
-	client := &http.Client{}
+	client := &http.Client{Transport: &http.Transport{}, Timeout: time.Second}
 	srv := &Server{httpClient: client}
 
 	ctx := srv.oauth2Context(t.Context())
-	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got != client {
+	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got == nil || got == client ||
+		got.Transport != client.Transport || got.Timeout != client.Timeout || got.CheckRedirect == nil {
 		t.Fatal(got)
 	}
 
-	otherClient := &http.Client{}
+	otherClient := &http.Client{Transport: &http.Transport{}, Timeout: 2 * time.Second}
 	base := context.WithValue(t.Context(), oauth2.HTTPClient, otherClient)
 	ctx = srv.oauth2Context(base)
-	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got != otherClient {
+	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got == nil || got == otherClient ||
+		got.Transport != otherClient.Transport || got.Timeout != otherClient.Timeout || got.CheckRedirect == nil {
 		t.Fatal(got)
+	}
+
+	for _, timeout := range []time.Duration{0, 2 * oauth2ProviderTimeout} {
+		client := &http.Client{Timeout: timeout}
+		srv.httpClient = client
+		ctx = srv.oauth2Context(t.Context())
+		got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
+		if got == nil || got.Timeout != oauth2ProviderTimeout || client.Timeout != timeout {
+			t.Fatalf("configured=%s copied=%v", timeout, got)
+		}
+	}
+	srv.httpClient = nil
+	ctx = srv.oauth2Context(t.Context())
+	if got, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); got == nil || got.Timeout != oauth2ProviderTimeout {
+		t.Fatalf("default OAuth client: %v", got)
 	}
 }
 
@@ -316,7 +332,7 @@ func assertWrapperAuthCleared(t *testing.T, srv *Server, sess *jaws.Session) {
 	if value := sess.Get(srv.SessionTokenKey); value != nil {
 		t.Fatal(value)
 	}
-	if value := sess.Get(oauth2IDTokenExpiryKey); value != nil {
+	if value := sess.Get(srv.sessionKey(oauth2AuthExpiryKey)); value != nil {
 		t.Fatal(value)
 	}
 	if value := sess.Get(srv.SessionEmailKey); value != nil {

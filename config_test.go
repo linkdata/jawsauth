@@ -2,11 +2,15 @@ package jawsauth
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -15,8 +19,7 @@ func newOIDCDiscoveryServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	var server *httptest.Server
 	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/openid-configuration", func(hw http.ResponseWriter, hr *http.Request) {
-		_ = hr
+	mux.HandleFunc("/.well-known/openid-configuration", func(hw http.ResponseWriter, _ *http.Request) {
 		data := map[string]any{
 			"issuer":                 server.URL,
 			"authorization_endpoint": server.URL + "/oauth2/auth",
@@ -27,8 +30,7 @@ func newOIDCDiscoveryServer(t *testing.T) *httptest.Server {
 		hw.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(hw).Encode(data)
 	})
-	mux.HandleFunc("/oauth2/jwks", func(hw http.ResponseWriter, hr *http.Request) {
-		_ = hr
+	mux.HandleFunc("/oauth2/jwks", func(hw http.ResponseWriter, _ *http.Request) {
 		hw.Header().Set("Content-Type", "application/json")
 		_, _ = hw.Write([]byte(`{"keys":[]}`))
 	})
@@ -222,5 +224,285 @@ func TestConfig_buildContextWithHTTPClient(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected oauth2 config")
+	}
+}
+
+func TestConfigValidateRejectsInsecureOIDCOverrides(t *testing.T) {
+	for _, field := range []string{"AuthURL", "TokenURL", "UserInfoURL"} {
+		t.Run(field, func(t *testing.T) {
+			cfg := Config{RedirectURL: "https://app.example/callback", Issuer: "https://issuer.example", ClientID: "client"}
+			var endpoint *string
+			switch field {
+			case "AuthURL":
+				endpoint = &cfg.AuthURL
+			case "TokenURL":
+				endpoint = &cfg.TokenURL
+			case "UserInfoURL":
+				endpoint = &cfg.UserInfoURL
+			}
+			*endpoint = "http://provider.example/endpoint"
+			err := cfg.Validate()
+			var configErr errConfig
+			if !errors.Is(err, ErrConfigEndpointMustBeHTTPS) || !errors.As(err, &configErr) || configErr.field != field {
+				t.Fatalf("%s override validation: %v", field, err)
+			}
+			cfg.AllowInsecureIssuer = true
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("dev override validation: %v", err)
+			}
+			*endpoint = "ftp://provider.example/endpoint"
+			if err := cfg.Validate(); !errors.Is(err, ErrConfigEndpointMustBeHTTPS) {
+				t.Fatalf("non-HTTP dev override validation: %v", err)
+			}
+		})
+	}
+}
+
+func TestConfigBuildContextRejectsInsecureOIDCMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		key, value    string
+		allowInsecure bool
+	}{
+		{"authorization_endpoint", "http://provider.example/auth", false},
+		{"token_endpoint", "http://provider.example/token", false},
+		{"userinfo_endpoint", "http://provider.example/userinfo", false},
+		{"jwks_uri", "http://provider.example/jwks", false},
+		{"jwks_uri", "", false},
+		{"jwks_uri", "", true},
+		{"jwks_uri", "ftp://provider.example/jwks", true},
+	} {
+		name := tc.key + "/" + tc.value
+		if tc.allowInsecure {
+			name += "/dev"
+		}
+		t.Run(name, func(t *testing.T) {
+			var issuer string
+			provider := httptest.NewTLSServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
+				metadata := map[string]string{
+					"issuer": issuer, "authorization_endpoint": issuer + "/auth", "token_endpoint": issuer + "/token",
+					"userinfo_endpoint": issuer + "/userinfo", "jwks_uri": issuer + "/jwks",
+				}
+				metadata[tc.key] = tc.value
+				_ = json.NewEncoder(hw).Encode(metadata)
+			}))
+			defer provider.Close()
+			issuer = provider.URL
+			cfg := Config{RedirectURL: "https://app.example/callback", Issuer: issuer, ClientID: "client", HTTPClient: provider.Client(),
+				AllowInsecureIssuer: tc.allowInsecure}
+			_, _, _, err := cfg.buildContext(t.Context(), "")
+			var configErr errConfig
+			if !errors.Is(err, ErrOIDCProviderMetadata) || !errors.As(err, &configErr) || configErr.field != tc.key {
+				t.Fatalf("%s metadata validation: %v", tc.key, err)
+			}
+			if tc.value != "" && !errors.Is(err, ErrConfigEndpointMustBeHTTPS) {
+				t.Fatalf("%s did not reject HTTP: %v", tc.key, err)
+			}
+		})
+	}
+}
+
+func TestConfigBuildContextUsesSecureOverridesForInsecureMetadata(t *testing.T) {
+	var issuer string
+	provider := httptest.NewTLSServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(hw).Encode(map[string]string{
+			"issuer": issuer, "authorization_endpoint": "http://provider.example/auth",
+			"token_endpoint":    "http://provider.example/token",
+			"userinfo_endpoint": "http://provider.example/userinfo", "jwks_uri": issuer + "/jwks",
+		})
+	}))
+	defer provider.Close()
+	issuer = provider.URL
+	cfg := Config{RedirectURL: "https://app.example/callback", Issuer: issuer, ClientID: "client", HTTPClient: provider.Client(),
+		AuthURL: "https://override.example/auth", TokenURL: "https://override.example/token", UserInfoURL: "https://override.example/userinfo"}
+	got, userInfoURL, _, err := cfg.buildContext(t.Context(), "")
+	if err != nil || got == nil || got.Endpoint.AuthURL != cfg.AuthURL || got.Endpoint.TokenURL != cfg.TokenURL || userInfoURL != cfg.UserInfoURL {
+		t.Fatalf("secure overrides: config=%v userInfoURL=%q err=%v", got, userInfoURL, err)
+	}
+}
+
+func TestConfigBuildContextDiscoveryRedirectScheme(t *testing.T) {
+	for _, tc := range []struct {
+		name, target  string
+		allowInsecure bool
+		wantSuccess   bool
+	}{
+		{"https", "https", false, true},
+		{"http blocked", "http", false, false},
+		{"http dev", "http", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var issuer string
+			var insecureHits atomic.Int32
+			insecure := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
+				insecureHits.Add(1)
+				_ = json.NewEncoder(hw).Encode(map[string]string{
+					"issuer": issuer, "authorization_endpoint": issuer + "/auth",
+					"token_endpoint": issuer + "/token", "jwks_uri": issuer + "/jwks",
+				})
+			}))
+			defer insecure.Close()
+			var secureHits atomic.Int32
+			provider := httptest.NewTLSServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+				if hr.URL.Path == "/metadata" {
+					secureHits.Add(1)
+					_ = json.NewEncoder(hw).Encode(map[string]string{
+						"issuer": issuer, "authorization_endpoint": issuer + "/auth",
+						"token_endpoint": issuer + "/token", "jwks_uri": issuer + "/jwks",
+					})
+					return
+				}
+				location := issuer + "/metadata"
+				if tc.target == "http" {
+					location = insecure.URL + "/metadata"
+				}
+				http.Redirect(hw, hr, location, http.StatusFound)
+			}))
+			defer provider.Close()
+			issuer = provider.URL
+			client := provider.Client()
+			var redirectChecks atomic.Int32
+			client.CheckRedirect = func(*http.Request, []*http.Request) error {
+				redirectChecks.Add(1)
+				return nil
+			}
+			cfg := Config{RedirectURL: "https://app.example/callback", Issuer: issuer, ClientID: "client",
+				AllowInsecureIssuer: tc.allowInsecure, HTTPClient: client}
+			_, _, _, err := cfg.buildContext(t.Context(), "")
+			if (err == nil) != tc.wantSuccess {
+				t.Fatalf("discovery redirect: %v, want success %t", err, tc.wantSuccess)
+			}
+			if !tc.wantSuccess && !errors.Is(err, ErrOIDCDiscovery) {
+				t.Fatalf("discovery error kind: %v", err)
+			}
+			if tc.target == "https" && (secureHits.Load() != 1 || redirectChecks.Load() != 1) {
+				t.Fatalf("HTTPS redirect not followed: hits=%d checks=%d", secureHits.Load(), redirectChecks.Load())
+			}
+			wantInsecureHits := int32(0)
+			if tc.allowInsecure {
+				wantInsecureHits = 1
+			}
+			if tc.target == "http" && insecureHits.Load() != wantInsecureHits {
+				t.Fatalf("HTTP redirect hits=%d, allow insecure=%t", insecureHits.Load(), tc.allowInsecure)
+			}
+		})
+	}
+}
+
+func TestConfigBuildContextDiscoveryRedirectLimit(t *testing.T) {
+	var hits atomic.Int32
+	provider := httptest.NewTLSServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+		hits.Add(1)
+		http.Redirect(hw, hr, "/again", http.StatusFound)
+	}))
+	defer provider.Close()
+	cfg := Config{RedirectURL: "https://app.example/callback", Issuer: provider.URL,
+		ClientID: "client", HTTPClient: provider.Client()}
+	_, _, _, err := cfg.buildContext(t.Context(), "")
+	if !errors.Is(err, ErrOIDCDiscovery) || hits.Load() != 10 || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("discovery redirect limit: err=%v hits=%d", err, hits.Load())
+	}
+}
+
+func TestConfigBuildContextJWKSRedirectScheme(t *testing.T) {
+	for _, secure := range []bool{false, true} {
+		name := "http blocked"
+		if secure {
+			name = "https allowed"
+		}
+		t.Run(name, func(t *testing.T) {
+			var insecureHits atomic.Int32
+			insecure := httptest.NewServer(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
+				insecureHits.Add(1)
+				_, _ = hw.Write([]byte(`{"keys":[]}`))
+			}))
+			defer insecure.Close()
+			var issuer string
+			var secureHits atomic.Int32
+			provider := httptest.NewTLSServer(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
+				switch hr.URL.Path {
+				case "/.well-known/openid-configuration":
+					_ = json.NewEncoder(hw).Encode(map[string]string{
+						"issuer": issuer, "authorization_endpoint": issuer + "/auth",
+						"token_endpoint": issuer + "/token", "jwks_uri": issuer + "/jwks",
+					})
+				case "/jwks":
+					location := issuer + "/keys"
+					if !secure {
+						location = insecure.URL + "/keys"
+					}
+					http.Redirect(hw, hr, location, http.StatusFound)
+				case "/keys":
+					secureHits.Add(1)
+					_, _ = hw.Write([]byte(`{"keys":[]}`))
+				}
+			}))
+			defer provider.Close()
+			issuer = provider.URL
+			cfg := Config{RedirectURL: "https://app.example/callback", Issuer: issuer, ClientID: "client", HTTPClient: provider.Client()}
+			_, _, verifier, err := cfg.buildContext(t.Context(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			token := makeIDToken(t, map[string]any{"iss": issuer, "aud": "client", "exp": time.Now().Add(time.Hour).Unix()})
+			_, err = verifier.Verify(t.Context(), token)
+			if err == nil {
+				t.Fatal("unsigned test token unexpectedly verified")
+			}
+			if secure && secureHits.Load() != 1 {
+				t.Fatalf("HTTPS JWKS redirect hits=%d, error=%v", secureHits.Load(), err)
+			}
+			if !secure && (insecureHits.Load() != 0 || !strings.Contains(err.Error(), "oidc redirect must use https")) {
+				t.Fatalf("HTTP JWKS redirect hits=%d, error=%v", insecureHits.Load(), err)
+			}
+		})
+	}
+}
+
+func TestConfigBuildContextJWKSTimeout(t *testing.T) {
+	for _, configuredTimeout := range []time.Duration{0, 100 * time.Millisecond} {
+		t.Run(configuredTimeout.String(), func(t *testing.T) {
+			const issuer = "https://issuer.example"
+			var jwksHits atomic.Int32
+			type observedDeadline struct {
+				remaining time.Duration
+				ok        bool
+			}
+			deadlineObserved := make(chan observedDeadline, 1)
+			client := &http.Client{Timeout: configuredTimeout, Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/.well-known/openid-configuration":
+					return jsonResponse(`{"issuer":"https://issuer.example","authorization_endpoint":"https://issuer.example/auth","token_endpoint":"https://issuer.example/token","jwks_uri":"https://issuer.example/jwks"}`), nil
+				case "/jwks":
+					jwksHits.Add(1)
+					deadline, ok := req.Context().Deadline()
+					deadlineObserved <- observedDeadline{time.Until(deadline), ok}
+					if !ok {
+						return nil, errors.New("JWKS request has no deadline")
+					}
+					if configuredTimeout > 0 {
+						<-req.Context().Done()
+						return nil, req.Context().Err()
+					}
+					return nil, errors.New("JWKS request stopped by test")
+				}
+				return nil, errors.New("unexpected provider request")
+			})}
+			cfg := Config{RedirectURL: "https://app.example/callback", Issuer: issuer, ClientID: "client", HTTPClient: client}
+			_, _, verifier, err := cfg.buildContext(t.Context(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = verifier.Verify(t.Context(), makeIDToken(t, map[string]any{"iss": issuer, "aud": "client", "exp": time.Now().Add(time.Hour).Unix()}))
+			if err == nil || jwksHits.Load() != 1 || client.Timeout != configuredTimeout {
+				t.Fatalf("JWKS verify: err=%v hits=%d original timeout=%s", err, jwksHits.Load(), client.Timeout)
+			}
+			want := configuredTimeout
+			if want == 0 {
+				want = oauth2ProviderTimeout
+			}
+			if observed := <-deadlineObserved; !observed.ok || observed.remaining > want {
+				t.Fatalf("JWKS deadline %+v, want at most %s", observed, want)
+			}
+		})
 	}
 }

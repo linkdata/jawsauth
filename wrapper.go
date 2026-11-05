@@ -15,9 +15,13 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 	sess := w.server.Jaws.GetSession(hr)
 	if current, present := w.server.sessionAuthStatus(sess, time.Now); !current {
 		if present {
-			w.server.clearSessionAuth(sess, hr, nil)
+			w.server.clearSessionAuth(sess, hr, nil, true)
 		}
-		w.server.HandleLogin(hw, hr)
+		if hr.Method != http.MethodGet {
+			w.server.writeResult(hw, http.StatusForbidden, nil)
+			return
+		}
+		w.server.startOAuth(hw, hr, false, true)
 		return
 	}
 

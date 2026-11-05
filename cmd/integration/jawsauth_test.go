@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -104,9 +105,19 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	var logincount int
-	asrv.LoginEvent = func(sess *jaws.Session, hr *http.Request) { logincount++ }
-	asrv.LogoutEvent = func(sess *jaws.Session, hr *http.Request) { logincount-- }
+	var logincount atomic.Int32
+	asrv.LoginEvent = func(sess *jaws.Session, hr *http.Request) { logincount.Add(1) }
+	asrv.LogoutEvent = func(sess *jaws.Session, hr *http.Request) { logincount.Add(-1) }
+	var linkcount atomic.Int32
+	asrv.LinkEvent = func(sess *jaws.Session, _ *http.Request, claims map[string]any) (int, error) {
+		current := asrv.CurrentClaims(sess)
+		if current == nil || current["sub"] != claims["sub"] {
+			return http.StatusForbidden, nil
+		}
+		linkcount.Add(1)
+		return 0, nil
+	}
+	mux.Handle(http.MethodPost+" /oauth2/link", asrv.Wrap(http.HandlerFunc(asrv.HandleLink)))
 
 	if !asrv.Valid() {
 		t.Fatal()
@@ -131,8 +142,8 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(initialresp.Status)
 	}
 
-	if logincount != 0 {
-		t.Error(logincount)
+	if logincount.Load() != 0 {
+		t.Error(logincount.Load())
 	}
 
 	b, err := io.ReadAll(initialresp.Body)
@@ -169,8 +180,8 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(resp.Status)
 	}
 
-	if logincount != 1 {
-		t.Error(logincount)
+	if logincount.Load() != 1 {
+		t.Error(logincount.Load())
 	}
 
 	b, err = io.ReadAll(resp.Body)
@@ -201,6 +212,15 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(resphtml)
 	}
 
+	resp, err = client.Post(hsrv.URL+"/oauth2/link", "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Request.URL.Path != "/" || linkcount.Load() != 1 || logincount.Load() != 1 {
+		t.Fatalf("OIDC link: status=%s path=%q links=%d logins=%d", resp.Status, resp.Request.URL.Path, linkcount.Load(), logincount.Load())
+	}
+
 	resp, err = client.Get(hsrv.URL + "/needauth")
 	if err != nil {
 		t.Fatal(err)
@@ -211,8 +231,8 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(resp.Status)
 	}
 
-	if logincount != 1 {
-		t.Error(logincount)
+	if logincount.Load() != 1 {
+		t.Error(logincount.Load())
 	}
 
 	resp, err = client.Get(hsrv.URL + "/oauth2/logout")
@@ -225,8 +245,8 @@ func serverHandlerTest(t *testing.T, baseURL, realm, clientID, clientSecret stri
 		t.Fatal(resp.Status)
 	}
 
-	if logincount != 0 {
-		t.Error(logincount)
+	if logincount.Load() != 0 {
+		t.Error(logincount.Load())
 	}
 
 	if !asrv.IsAdmin("testuser@example.com") {

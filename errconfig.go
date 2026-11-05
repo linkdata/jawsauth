@@ -16,8 +16,11 @@ var ErrConfigURLNotAbsolute = errors.New("url is not absolute")
 // ErrConfigURLMissingHost means a configured URL does not include a host.
 var ErrConfigURLMissingHost = errors.New("url host is missing")
 
-// ErrConfigIssuerMustBeHTTPS means Issuer must use the https scheme unless AllowInsecureIssuer is enabled.
+// ErrConfigIssuerMustBeHTTPS means Issuer must use HTTPS, or HTTP when AllowInsecureIssuer is enabled.
 var ErrConfigIssuerMustBeHTTPS = errors.New("issuer url must use https")
+
+// ErrConfigEndpointMustBeHTTPS means a provider endpoint must use HTTPS, or HTTP when AllowInsecureIssuer is enabled.
+var ErrConfigEndpointMustBeHTTPS = errors.New("provider endpoint must use https")
 
 type errConfig struct {
 	field string

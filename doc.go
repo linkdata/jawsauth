@@ -1,10 +1,10 @@
-// Package jawsauth provides OIDC-verified authentication for JaWS HTTP sessions.
+// Package jawsauth provides OIDC and OAuth2 profile authentication for JaWS sessions.
 //
-// It uses OIDC discovery from a configured issuer to run the OAuth2
-// authorization-code flow with PKCE and nonce verification, verifies the
-// returned id_token, and stores the identity claims in the JaWS session. It
-// also refreshes the id_token in the background before it expires and supports
-// gating handlers to administrator emails.
+// OIDC mode uses discovery, PKCE, nonce and ID token verification. Profile mode
+// uses explicit provider endpoints, PKCE and an authenticated profile response
+// with an application-supplied subject extractor. The resulting claims are
+// stored in a JaWS session. OIDC attempts refresh before expiry; profile auth
+// expires after a bounded lifetime. Both modes support admin email gates.
 //
 // Create a [Server] with [New] (or [NewDebug]) and protect handlers with
 // [Server.Wrap], [Server.WrapAdmin], [Server.Handler] or [Server.HandlerAdmin].

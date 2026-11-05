@@ -3,7 +3,9 @@ package jawsauth
 //gosec:disable G117
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"slices"
@@ -15,24 +17,34 @@ import (
 
 // Config holds the OIDC/OAuth2 settings used by New and NewDebug to construct a Server.
 //
-// RedirectURL, Issuer and ClientID are required; AuthURL, TokenURL and UserInfoURL
-// override values otherwise obtained via OIDC discovery, and the remaining fields
-// are optional.
+// RedirectURL, Issuer and ClientID are required. Setting ProfileSubject selects
+// profile mode and requires AuthURL, TokenURL and UserInfoURL. Otherwise OIDC
+// mode discovers endpoints; those three URLs may override them.
 type Config struct {
 	RedirectURL string // required. e.g. "https://application.example.com/oauth2/callback"
 	Issuer      string // required. e.g. "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
-	AuthURL     string // optional override for discovered authorization_endpoint
-	TokenURL    string // optional override for discovered token_endpoint
-	UserInfoURL string // optional override for discovered userinfo_endpoint
-	// AllowInsecureIssuer permits "http://" Issuer URLs and should only be used for tests/dev.
+	// Namespace isolates providers sharing one JaWS instance. New appends it to
+	// the four exported Server session-key fields; use a distinct value per provider.
+	Namespace   string
+	AuthURL     string
+	TokenURL    string
+	UserInfoURL string
+	// AllowInsecureIssuer permits HTTP issuer and provider endpoints and is only for tests/dev.
 	AllowInsecureIssuer bool
-	// HTTPClient is used for OIDC discovery at startup and, unless a per-request
-	// oauth2.HTTPClient is supplied via the request context, as the default client
-	// for token exchange/refresh and UserInfo requests.
+	// HTTPClient handles discovery, JWKS, token exchange/refresh and UserInfo.
+	// Requests cap its timeout at 15 seconds. Discovery/JWKS follow only HTTPS
+	// redirects unless AllowInsecureIssuer is set; token and UserInfo follow none.
+	// A request's oauth2.HTTPClient can override code exchange and UserInfo;
+	// background refresh uses HTTPClient.
 	HTTPClient   *http.Client
-	Scopes       []string // optional additional scopes, "openid" and "email" are always ensured
+	Scopes       []string // optional; OIDC adds "openid" and "email"; profile mode adds none
 	ClientID     string
 	ClientSecret string
+	// ProfileSubject enables OAuth2 profile mode and returns a stable, non-empty
+	// subject from the authenticated profile. It may map provider verification
+	// data to claims["email_verified"] for admin checks. Profile JSON numbers
+	// arrive as json.Number.
+	ProfileSubject func(map[string]any) (string, error)
 }
 
 func requireLen(k string, n int) (err error) {
@@ -46,63 +58,61 @@ func requireStr(k, u string) error {
 	return requireLen(k, len(strings.TrimSpace(u)))
 }
 
-func validateUrl(k, u, defaultURL string, optional bool) (value string, err error) {
-	value = u
-	if value == "" {
-		value = defaultURL
-	}
+func validateUrl(k, value string, optional bool) (*url.URL, error) {
 	if optional && value == "" {
-		return
+		return nil, nil
 	}
-	if err = requireStr(k, value); err == nil {
-		var parsed *url.URL
-		if parsed, err = url.Parse(value); err == nil {
-			err = ErrConfigURLNotAbsolute
-			if parsed.IsAbs() {
-				err = ErrConfigURLMissingHost
-				if parsed.Hostname() != "" {
-					err = nil
-				}
-			}
-			if err != nil {
-				err = errConfig{field: k, cause: err}
-			}
-		} else {
-			err = errConfig{field: k, cause: err}
-		}
+	if err := requireStr(k, value); err != nil {
+		return nil, err
 	}
-	return
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return nil, errConfig{field: k, cause: err}
+	}
+	if !parsed.IsAbs() {
+		return nil, errConfig{field: k, cause: ErrConfigURLNotAbsolute}
+	}
+	if parsed.Hostname() == "" {
+		return nil, errConfig{field: k, cause: ErrConfigURLMissingHost}
+	}
+	return parsed, nil
+}
+
+func validateEndpoint(field, value string, optional, allowInsecure bool) error {
+	parsed, err := validateUrl(field, value, optional)
+	if err != nil || parsed == nil {
+		return err
+	}
+	if parsed.Scheme != "https" && (!allowInsecure || parsed.Scheme != "http") {
+		return errConfig{field: field, cause: ErrConfigEndpointMustBeHTTPS}
+	}
+	return nil
 }
 
 // Validate checks whether cfg contains usable OIDC/OAuth2 settings.
 //
-// RedirectURL, Issuer and ClientID must be present. URL fields must be absolute
-// and include a host; AuthURL, TokenURL and UserInfoURL are optional and
-// validated only when set. Issuer must use https unless AllowInsecureIssuer is
-// true. Returned validation failures match [ErrConfig].
-func (cfg *Config) Validate() (err error) {
-	if _, err = validateUrl("RedirectURL", cfg.RedirectURL, "", false); err == nil {
-		if _, err = validateUrl("Issuer", cfg.Issuer, "", false); err == nil {
-			if !cfg.AllowInsecureIssuer {
-				var issuer *url.URL
-				if issuer, err = url.Parse(cfg.Issuer); err == nil {
-					if issuer.Scheme != "https" {
-						err = errConfig{field: "Issuer", cause: ErrConfigIssuerMustBeHTTPS}
-					}
-				}
-			}
-			if err == nil {
-				if _, err = validateUrl("AuthURL", cfg.AuthURL, "", true); err == nil {
-					if _, err = validateUrl("TokenURL", cfg.TokenURL, "", true); err == nil {
-						if _, err = validateUrl("UserInfoURL", cfg.UserInfoURL, "", true); err == nil {
-							err = requireStr("ClientID", cfg.ClientID)
-						}
-					}
-				}
-			}
+// It checks required fields and absolute URLs with hosts. Configured issuer and
+// provider endpoints require HTTPS unless AllowInsecureIssuer permits HTTP.
+// Returned failures match [ErrConfig].
+func (cfg *Config) Validate() error {
+	if _, err := validateUrl("RedirectURL", cfg.RedirectURL, false); err != nil {
+		return err
+	}
+	issuer, err := validateUrl("Issuer", cfg.Issuer, false)
+	if err != nil {
+		return err
+	}
+	if issuer.Scheme != "https" && (!cfg.AllowInsecureIssuer || issuer.Scheme != "http") {
+		return errConfig{field: "Issuer", cause: ErrConfigIssuerMustBeHTTPS}
+	}
+	for _, field := range []struct{ name, value string }{
+		{"AuthURL", cfg.AuthURL}, {"TokenURL", cfg.TokenURL}, {"UserInfoURL", cfg.UserInfoURL},
+	} {
+		if err := validateEndpoint(field.name, field.value, cfg.ProfileSubject == nil, cfg.AllowInsecureIssuer); err != nil {
+			return err
 		}
 	}
-	return
+	return requireStr("ClientID", cfg.ClientID)
 }
 
 func overrideStr(a *string, b string) {
@@ -111,9 +121,8 @@ func overrideStr(a *string, b string) {
 	}
 }
 
-func ensureScopes(rawScopes []string) (scopes []string) {
-	scopes = append(scopes, "openid")
-	scopes = append(scopes, "email")
+func ensureScopes(rawScopes []string, required ...string) (scopes []string) {
+	scopes = append(scopes, required...)
 	for _, set := range rawScopes {
 		for scope := range strings.FieldsSeq(set) {
 			scopes = append(scopes, scope)
@@ -124,11 +133,50 @@ func ensureScopes(rawScopes []string) (scopes []string) {
 	return
 }
 
+func boundedProviderClient(client *http.Client) (bounded http.Client) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	bounded = *client
+	if bounded.Timeout <= 0 || bounded.Timeout > oauth2ProviderTimeout {
+		bounded.Timeout = oauth2ProviderTimeout
+	}
+	return
+}
+
 func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2cfg *oauth2.Config, userInfoURL string, verifier *oidc.IDTokenVerifier, err error) {
 	if err = cfg.Validate(); err == nil {
-		if cfg.HTTPClient != nil {
-			ctx = context.WithValue(ctx, oauth2.HTTPClient, cfg.HTTPClient)
+		redir, _ := url.Parse(cfg.RedirectURL)
+		if u, parseErr := url.Parse(overrideUrl); parseErr == nil {
+			overrideStr(&redir.Scheme, u.Scheme)
+			overrideStr(&redir.Host, u.Host)
 		}
+		if cfg.ProfileSubject != nil {
+			scopes := ensureScopes(cfg.Scopes)
+			oauth2cfg = &oauth2.Config{
+				ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
+				Endpoint:    oauth2.Endpoint{AuthURL: cfg.AuthURL, TokenURL: cfg.TokenURL},
+				RedirectURL: redir.String(), Scopes: scopes,
+			}
+			return oauth2cfg, cfg.UserInfoURL, nil, nil
+		}
+		clientCopy := boundedProviderClient(cfg.HTTPClient)
+		if !cfg.AllowInsecureIssuer {
+			checkRedirect := clientCopy.CheckRedirect
+			clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+				if req.URL.Scheme != "https" {
+					return errors.New("oidc redirect must use https")
+				}
+				if checkRedirect != nil {
+					return checkRedirect(req, via)
+				}
+				if len(via) >= 10 {
+					return errors.New("stopped after 10 redirects")
+				}
+				return nil
+			}
+		}
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, &clientCopy)
 
 		var provider *oidc.Provider
 		if provider, err = oidc.NewProvider(ctx, cfg.Issuer); wrapOIDC(ErrOIDCDiscovery, &err) == nil {
@@ -136,34 +184,36 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 				AuthorizationEndpoint string `json:"authorization_endpoint"`
 				TokenEndpoint         string `json:"token_endpoint"`
 				UserinfoEndpoint      string `json:"userinfo_endpoint"`
+				JWKSURI               string `json:"jwks_uri"`
 			}
 			if err = provider.Claims(&metadata); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
-				var authURL string
-				var tokenURL string
-				if authURL, err = validateUrl("AuthURL", cfg.AuthURL, metadata.AuthorizationEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
-					if tokenURL, err = validateUrl("TokenURL", cfg.TokenURL, metadata.TokenEndpoint, false); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
-						if userInfoURL, err = validateUrl("UserInfoURL", cfg.UserInfoURL, metadata.UserinfoEndpoint, true); wrapOIDC(ErrOIDCProviderMetadata, &err) == nil {
-							var redir *url.URL
-							if redir, err = url.Parse(cfg.RedirectURL); err == nil {
-								if u, e := url.Parse(overrideUrl); e == nil {
-									overrideStr(&redir.Scheme, u.Scheme)
-									overrideStr(&redir.Host, u.Host)
-								}
-								oauth2cfg = &oauth2.Config{
-									ClientID:     cfg.ClientID,
-									ClientSecret: cfg.ClientSecret,
-									Endpoint: oauth2.Endpoint{
-										AuthURL:  authURL,
-										TokenURL: tokenURL,
-									},
-									RedirectURL: redir.String(),
-									Scopes:      ensureScopes(cfg.Scopes),
-								}
-								verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
-							}
-						}
+				authURL := cmp.Or(cfg.AuthURL, metadata.AuthorizationEndpoint)
+				tokenURL := cmp.Or(cfg.TokenURL, metadata.TokenEndpoint)
+				userInfoURL = cmp.Or(cfg.UserInfoURL, metadata.UserinfoEndpoint)
+				for _, field := range []struct {
+					name, value string
+					optional    bool
+				}{
+					{"authorization_endpoint", authURL, false},
+					{"token_endpoint", tokenURL, false},
+					{"userinfo_endpoint", userInfoURL, true},
+					{"jwks_uri", metadata.JWKSURI, false},
+				} {
+					if err = validateEndpoint(field.name, field.value, field.optional, cfg.AllowInsecureIssuer); wrapOIDC(ErrOIDCProviderMetadata, &err) != nil {
+						return
 					}
 				}
+				oauth2cfg = &oauth2.Config{
+					ClientID:     cfg.ClientID,
+					ClientSecret: cfg.ClientSecret,
+					Endpoint: oauth2.Endpoint{
+						AuthURL:  authURL,
+						TokenURL: tokenURL,
+					},
+					RedirectURL: redir.String(),
+					Scopes:      ensureScopes(cfg.Scopes, "openid", "email"),
+				}
+				verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 			}
 		}
 	}

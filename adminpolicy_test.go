@@ -6,8 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/linkdata/jaws"
 )
 
 func TestAdminEmailPolicy(t *testing.T) {
@@ -27,16 +25,12 @@ func TestAdminEmailPolicy(t *testing.T) {
 		{"quotedLocalPart", map[string]any{"email": `"\"quoted\""@example.com`, "email_verified": true}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			jw, err := jaws.New()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer jw.Close()
+			jw := newTestJaws(t)
 			srv := newTimerTestServer(t, jw, "https://issuer.example", &testAuthTimerFactory{})
 			srv.SetAdmins([]string{"admin@example.com", "kate@example.com", "Åsa@example.com", `"\"quoted\""@example.com`})
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			sess := jw.NewSession(httptest.NewRecorder(), req)
-			if err = srv.storeSessionAuthClaims(sess, tc.claims, nil, time.Now().Add(time.Hour), nil); err != nil {
+			if err := srv.storeSessionAuthClaims(sess, tc.claims, nil, time.Now().Add(time.Hour), nil); err != nil {
 				t.Fatal(err)
 			}
 			auth := &JawsAuth{server: srv, sess: sess}
@@ -63,6 +57,52 @@ func TestAdminEmailPolicy(t *testing.T) {
 			srv.SetAdmins(nil)
 			if !auth.IsAdmin() {
 				t.Fatal("empty list should allow authenticated users")
+			}
+		})
+	}
+}
+
+func TestProfileAdminRequiresVerifiedEmailByDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		verified, optOut bool
+		want             int
+	}{
+		{"default", false, false, http.StatusForbidden},
+		{"verified by profile", true, false, http.StatusOK},
+		{"explicit opt-out", false, true, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jw := newTestJaws(t)
+			srv := newProfileTestServer(t, jw, nil)
+			originalSubject := srv.profileSubject
+			srv.profileSubject = func(claims map[string]any) (string, error) {
+				if tc.verified {
+					claims["email_verified"] = true
+				}
+				return originalSubject(claims)
+			}
+			if !srv.RequireVerifiedAdminEmail {
+				t.Fatal("profile mode did not require verified admin email by default")
+			}
+			if tc.optOut {
+				srv.RequireVerifiedAdminEmail = false
+			}
+			srv.SetAdmins([]string{"first@example.com"})
+			cookie := profileLogin(t, srv)
+			r := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
+			r.AddCookie(cookie)
+			sess := jw.GetSession(r)
+			if sess == nil {
+				t.Fatal("missing profile session")
+			}
+			if sess.Get(srv.SessionEmailVerifiedKey) != tc.verified {
+				t.Fatalf("profile verification = %v, want %t", sess.Get(srv.SessionEmailVerifiedKey), tc.verified)
+			}
+			w := httptest.NewRecorder()
+			srv.WrapAdmin(testStatusHandler{http.StatusOK}).ServeHTTP(w, r)
+			if w.Code != tc.want {
+				t.Fatalf("profile admin email: status=%d, want %d", w.Code, tc.want)
 			}
 		})
 	}
@@ -101,11 +141,7 @@ func TestUserInfoClaimProvenance(t *testing.T) {
 
 func TestAdminEmailPolicyConcurrentUpdates(t *testing.T) {
 	// Exercise real concurrent updates and reads without forcing an interleaving.
-	jw, err := jaws.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jw.Close()
+	jw := newTestJaws(t)
 	srv, err := New(jw, nil, nil)
 	if err != nil {
 		t.Fatal(err)

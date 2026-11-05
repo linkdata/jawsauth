@@ -4,57 +4,107 @@
 
 # jawsauth
 
-OIDC-verified authentication for [JaWS](https://github.com/linkdata/jaws) sessions.
+OIDC and OAuth2 profile authentication for [JaWS](https://github.com/linkdata/jaws)
+sessions. Both modes use authorization-code state and PKCE (S256). `Wrap` and
+`Handler` require a login; `WrapAdmin` and `HandlerAdmin` also apply the
+`SetAdmins` allowlist.
 
-- Requires an OIDC-compliant provider.
-- Uses OIDC discovery from the configured issuer.
-- Verifies `id_token` and stores identity claims in session data.
-- Adds PKCE (S256) and OIDC nonce verification to the authorization-code flow.
-- Automatically refreshes the `id_token` in the background before it expires.
-- Supports admin-only handlers: `Wrap`/`Handler` for any authenticated user, `WrapAdmin`/`HandlerAdmin` gated by `SetAdmins`.
+## Setup
 
-Protected routes create JaWS sessions for unauthenticated visitors. Set
-`Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound session counts. When a
-session cannot be created, login returns 503 with `Retry-After: 60`.
-Post-login return targets longer than 8192 bytes fall back to `/`.
+`Config` requires `RedirectURL`, `Issuer` and `ClientID`. The issuer, effective
+provider endpoints and JWKS URI must use HTTPS;
+`AllowInsecureIssuer` permits HTTP for tests and development. OIDC mode
+discovers provider endpoints, verifies the ID token and nonce, and attempts
+refresh before expiry when the provider issues a refresh token. Request offline
+access with the `offline_access` scope for OIDC providers that support it, or
+`oauth2.AccessTypeOffline` in `Server.Options` for Google. Check both the error
+from `New` and `Server.Valid()` before serving protected routes; an invalid server
+can return handlers without authentication.
 
-Admin allowlists match parsed addresses with ASCII case ignored; non-ASCII
-characters are matched exactly. Session email values use the same case rules.
-Email verification is not required by default. This supports providers such as
-Microsoft Entra ID that omit `email_verified`, but relies on the provider's policy
-for who may claim an address. Microsoft [advises against using its email claim for
-authorization](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference).
-To require verified email for a non-empty admin allowlist, set
-`Server.RequireVerifiedAdminEmail = true` before serving requests. This affects
-`WrapAdmin`, `HandlerAdmin`, and `JawsAuth.IsAdmin`; ordinary login stays available.
-Providers that omit the verification claim cannot grant admin access in this mode.
-`Server.IsAdmin(email)` only checks address membership. `mail` and `public_email`
-are always considered unverified; they can match the allowlist only when strict
-mode is disabled.
-An empty admin list allows every authenticated user through the HTTP admin gates.
-UserInfo fallback requires a matching non-empty `sub`; its verification flag is
-used only when that response supplies the email or confirms the exact same email
-claim, including case and whitespace.
+Profile mode requires `AuthURL`, `TokenURL` and `UserInfoURL`, plus a
+`ProfileSubject` function that extracts a stable subject from the authenticated
+profile. Profile mode sets the `iss` claim to `Issuer` and `sub` to the
+`ProfileSubject` result. The `iss`+`sub` pair identifies an account, so use a
+distinct `Issuer` for each provider. Email and names are not identity proof.
+Profile JSON numbers arrive as `json.Number` to preserve large IDs. Profile
+authentication expires after 24 hours or the access token's earlier expiry.
+An explicit `expires_in: 0` in the token response is rejected.
 
-Successful login rotates the JaWS session and discards pre-login application data.
-UserInfo is fetched before rotation so its latency does not consume the new
-session's idle lifetime.
-Rotation requires a free slot under both session limits until the new cookie is
-published. In particular, `MaxSessionsPerIP = 1` prevents login; allow room for
-rotation when setting limits. If no slot is available, the default response is 503
-and the existing session's authentication and refresh timer are preserved.
-Restart login after capacity becomes available.
+Set `Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound sessions created by
+unauthenticated requests; both limits are unlimited by default. A login start,
+including an unauthenticated protected GET, can retain its session for about ten
+minutes even if the client never reaches the provider. Login rotates the session
+and discards its application data; rotation needs a free slot under both limits.
+`MaxSessionsPerIP = 1` prevents login. If a slot is unavailable,
+login returns 503 with `Retry-After: 60` and preserves the existing session.
 
-Logout and auth expiry clear authentication and reload the session's JaWS pages.
-Connected pages receive the reload command before their sockets close; pending
-pages reload when they connect. Protected renders also recheck authorization when
-the HTTP handler returns, retiring requests attached during a concurrent revocation.
-Events and callbacks run normally until disconnection. Protected operations must
-check current claims and expiry, plus `JawsAuth.IsAdmin` for administrator actions.
-Changing `SetAdmins` also reloads every page of sessions that lose admin access;
-their ordinary login remains valid.
-Use an HTTP endpoint for logout redirects: calling `Request.Redirect` after
-`Server.Logout` in a JaWS event cannot send the redirect because Reload closes the
-connection and discards later messages. Closed or expired JaWS sessions have their
-tokens and timers discarded at the next scheduled refresh, which calls
-`LogoutEvent` with a nil HTTP request.
+## Multiple providers
+
+- Providers sharing JaWS must have distinct `Namespace` values and callback
+  directories; a shared namespace can clear another provider's login. Add each
+  provider's registered paths to the other servers' `HandledPaths` so return
+  targets cannot enter another provider's auth endpoints.
+- `New` replaces `Jaws.MakeAuth` when it configures authentication. When servers
+  share JaWS, capture `jw.MakeAuth` immediately after each configured `New`, then
+  install a composite function so templates use the intended provider's
+  authentication and admin policy. Each
+  server's `Wrap`, `Handler` and `CurrentClaims` check that provider's
+  authentication.
+- Register `HandleLink` as a POST handler to enable linking; `New` does not
+  register it. Authorize the session before calling it. In `LinkEvent`, recheck
+  the original provider's `CurrentClaims` before writing the link. Linking keeps
+  the session; an ordinary login rotates it and signs out other providers.
+  A re-login replacing existing auth calls its `LogoutEvent` before storing
+  the new sign-in. Calling `Logout` on that event session cancels it. Other
+  providers' `LogoutEvent` may run later with a nil request. Before using one to
+  log out another provider, check its `CurrentClaims`; the session may have rotated.
+  Starting a link replaces this server's pending flow, including a running
+  login callback.
+- `New` shares one process-wide `SessionRotationLock` by default. To coordinate
+  with other authentication methods or isolate independent JaWS instances, set
+  a custom lock before serving; servers sharing a JaWS must use the same lock.
+  jawsauth holds it during flow start, rotation, authentication clearing and
+  `LinkEvent`.
+  Do not take the lock around jawsauth handlers or `Server.Logout`, or within
+  `LinkEvent`; do not call `Server.Logout` from `LinkEvent`. Bound `LinkEvent` I/O
+  with a timeout; other sessions sharing the lock wait. One provider's logout
+  does not cancel another provider's pending link.
+
+## Admin access
+
+Profile mode requires a verified email for a non-empty admin list by default;
+OIDC mode does not. Set `RequireVerifiedAdminEmail = true` in OIDC mode unless
+the provider guarantees verified addresses. In profile mode, `ProfileSubject`
+may map a provider verification signal to `email_verified`; disable the check
+only with the same guarantee. Providers without a verification signal cannot
+grant admin access while the check is enabled.
+[Microsoft warns against using its email claim for authorization](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference);
+use application policy based on a stable identifier for Entra ID.
+OIDC UserInfo fallback requires its `sub` to match the ID token's nonempty `sub`. Its
+`email_verified` applies only to an email it supplies or one matching the ID
+token email exactly. `mail` and `public_email` never count as verified.
+
+`SetAdmins` parses valid addresses and retains other nonempty entries. It trims
+whitespace and ignores ASCII case. An empty list allows every authenticated user
+through the admin handlers.
+`Server.IsAdmin(email)` checks only list membership; `JawsAuth.IsAdmin` and the
+admin handlers enforce email verification when required. Neither `IsAdmin`
+method proves a live login; check `CurrentClaims` before protected actions.
+
+## Session lifetime
+
+Pending OAuth flows expire after ten minutes. jawsauth extends the original
+JaWS session's grace for the pending flow. Unauthenticated
+protected GETs reuse a pending login's state, return target and grace deadline
+while more than two minutes remain; near expiry, they start a new flow and
+extend grace. While a login callback runs before session rotation, protected GETs
+with that session cookie return 409 unless `LoginFailed` handles them. After
+rotation, the old cookie starts a new flow and cannot cancel that sign-in. Logout
+and auth expiry clear this server's credentials and reload every JaWS page in the
+session. Auth expiry preserves a pending login but cancels a pending link. Explicit
+logout on the live session cancels either flow. A new login on the same server,
+including one started by `Wrap` or `Handler`, cancels a pending link.
+
+Use an HTTP endpoint for a post-logout redirect. When `Server.Logout` clears
+authentication, it reloads pages and closes their sockets, so a later JaWS
+`Request.Redirect` cannot deliver the redirect.
