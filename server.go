@@ -93,7 +93,7 @@ type Server struct {
 	Jaws *jaws.Jaws
 	// New appends Config.Namespace to these four session keys when configured.
 	SessionKey              string              // default is "oidc_claims", value will be of type map[string]any
-	SessionTokenKey         string              // default is "oauth2_tokensource"; an oauth2.TokenSource in OIDC mode, empty in profile mode
+	SessionTokenKey         string              // default is "oauth2_tokensource"; an oauth2.TokenSource in OIDC mode, unset in profile mode
 	SessionEmailKey         string              // default is "email", value is a parsed string address with ASCII letters lowercased
 	SessionEmailVerifiedKey string              // default is "email_verified", value will be of type bool
 	HandledPaths            map[string]struct{} // URI paths excluded from OAuth return targets
@@ -102,7 +102,7 @@ type Server struct {
 	LoginFailed             FailedFunc          // callback failures and protected requests during a running login callback
 	LinkEvent               LinkFunc            // required by HandleLink; register its POST route separately
 	// SessionRotationLock is held during flow start, rotation, auth clearing, and LinkEvent.
-	// New supplies a private lock; share one for cross-provider links.
+	// New supplies a private lock; share one when servers use the same JaWS instance.
 	SessionRotationLock sync.Locker
 	Options             []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
 
@@ -260,7 +260,8 @@ func (srv *Server) sessionIsAdminLocked(sess *jaws.Session, admins map[string]st
 
 // SetAdmins sets the emails of administrators.
 //
-// Addresses are parsed with [mail.ParseAddress] and ASCII letters are lowercased.
+// Valid addresses are parsed with [mail.ParseAddress]; other nonempty entries
+// are retained. ASCII letters are lowercased.
 // Non-ASCII characters are matched exactly. If empty, everyone is considered an
 // administrator. Session checks also apply [Server.RequireVerifiedAdminEmail].
 //

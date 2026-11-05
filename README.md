@@ -53,13 +53,13 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
   Their `LogoutEvent` may run later with a nil request.
   Starting a link replaces this server's pending flow, including a running
   login callback.
-- `New` gives each server a private `SessionRotationLock`. For cross-provider
-  linking, assign one shared lock before serving. jawsauth holds it during
-  flow start, rotation, authentication clearing and `LinkEvent`. Do not take it
-  around jawsauth handlers or `Server.Logout`, or within `LinkEvent`; do not call
-  `Server.Logout` from `LinkEvent`. Keep `LinkEvent` brief because other sessions
-  sharing the lock wait. One provider's logout does not cancel another provider's
-  pending link.
+- `New` gives each server a private `SessionRotationLock`. When several servers
+  share one JaWS instance, assign them one shared lock before serving. jawsauth
+  holds it during flow start, rotation, authentication clearing and `LinkEvent`.
+  Do not take the lock around jawsauth handlers or `Server.Logout`, or within
+  `LinkEvent`; do not call `Server.Logout` from `LinkEvent`. Keep `LinkEvent` brief
+  because other sessions sharing the lock wait. One provider's logout does not
+  cancel another provider's pending link.
 
 ## Admin access
 
@@ -72,8 +72,9 @@ grant admin access while the check is enabled.
 [Microsoft warns against using its email claim for authorization](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference);
 use application policy based on a stable identifier for Entra ID.
 
-`SetAdmins` parses valid addresses and compares them ignoring ASCII case. An
-empty list allows every authenticated user through the admin handlers.
+`SetAdmins` parses valid addresses and retains other nonempty entries. It trims
+whitespace and ignores ASCII case. An empty list allows every authenticated user
+through the admin handlers.
 `Server.IsAdmin(email)` checks only list membership; `JawsAuth.IsAdmin` and the
 admin handlers enforce email verification when required. Neither `IsAdmin`
 method proves a live login; check `CurrentClaims` before protected actions.
@@ -85,7 +86,8 @@ JaWS session's grace while the user visits the provider. Unauthenticated
 protected GET requests during a pending login redirect to the same provider
 flow without replacing its state, return target or grace deadline. During a
 running callback they return 409 unless `LoginFailed` handles them. Logout and
-authentication expiry clear that server's credentials and reload its JaWS pages.
+authentication expiry clear that server's credentials and reload every JaWS page
+in the session.
 Auth expiry preserves a pending login but cancels a pending link. Explicit
 logout cancels either flow. A new login on the same server, including one
 started by `Wrap` or `Handler`, cancels a pending link.

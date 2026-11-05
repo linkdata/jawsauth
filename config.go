@@ -31,25 +31,19 @@ type Config struct {
 	UserInfoURL string
 	// AllowInsecureIssuer permits HTTP issuer and provider endpoints and is only for tests/dev.
 	AllowInsecureIssuer bool
-	// HTTPClient is used for OIDC discovery and JWKS, and by default for token
-	// exchange/refresh and UserInfo. All provider requests cap its timeout at 15
-	// seconds. Discovery/JWKS follow only HTTPS redirects unless AllowInsecureIssuer
-	// is set; token and UserInfo requests follow none. A request context may supply
-	// a different oauth2.HTTPClient for code exchange and UserInfo requests;
-	// background refresh uses this configured client.
+	// HTTPClient handles discovery, JWKS, token exchange/refresh and UserInfo.
+	// Requests cap its timeout at 15 seconds. Discovery/JWKS follow only HTTPS
+	// redirects unless AllowInsecureIssuer is set; token and UserInfo follow none.
+	// A request's oauth2.HTTPClient can override code exchange and UserInfo;
+	// background refresh uses HTTPClient.
 	HTTPClient   *http.Client
 	Scopes       []string // optional; OIDC adds "openid" and "email"; profile mode adds none
 	ClientID     string
 	ClientSecret string
-	// ProfileSubject enables OAuth2 profile authentication without an OIDC ID token.
-	// It must return a stable, non-empty provider subject from the authenticated
-	// profile response.
-	// Profile mode sets claims["iss"] to Issuer and claims["sub"] to this subject;
-	// use a distinct Issuer per provider.
-	// JSON numbers arrive as json.Number to preserve large numeric IDs.
-	// ProfileSubject may adjust claims, for example by mapping the provider's
-	// verification signal to claims["email_verified"]. Profile mode requires
-	// verified email for a non-empty admin list by default.
+	// ProfileSubject enables OAuth2 profile mode and returns a stable, non-empty
+	// subject from the authenticated profile. It may map provider verification
+	// data to claims["email_verified"] for admin checks. Profile JSON numbers
+	// arrive as json.Number.
 	ProfileSubject func(map[string]any) (string, error)
 }
 
@@ -200,10 +194,10 @@ func (cfg *Config) buildContext(ctx context.Context, overrideUrl string) (oauth2
 					name, value string
 					optional    bool
 				}{
-					{"AuthURL", authURL, false},
-					{"TokenURL", tokenURL, false},
-					{"UserInfoURL", userInfoURL, true},
-					{"JWKSURI", metadata.JWKSURI, false},
+					{"authorization_endpoint", authURL, false},
+					{"token_endpoint", tokenURL, false},
+					{"userinfo_endpoint", userInfoURL, true},
+					{"jwks_uri", metadata.JWKSURI, false},
 				} {
 					if err = validateEndpoint(field.name, field.value, field.optional, cfg.AllowInsecureIssuer); wrapOIDC(ErrOIDCProviderMetadata, &err) != nil {
 						return

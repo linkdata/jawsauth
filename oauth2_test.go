@@ -134,6 +134,21 @@ func Test_beginSanitizesReferrer(t *testing.T) {
 	}
 }
 
+func TestProtectedRequestReturnsToRequestedPage(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newWrapperTestServer(jw, "https://issuer.example")
+	hr := httptest.NewRequest(http.MethodGet, "http://example.com/protected?tab=one", nil)
+	hr.Header.Set("Referer", "http://example.com/home")
+	hw := httptest.NewRecorder()
+	srv.Wrap(testStatusHandler{statusCode: http.StatusOK}).ServeHTTP(hw, hr)
+	if hw.Code != http.StatusFound {
+		t.Fatalf("protected request status = %d", hw.Code)
+	}
+	if got := testOAuthFlow(jw.GetSession(hr), srv).referrer; got != "/protected?tab=one" {
+		t.Fatalf("OAuth return target = %q", got)
+	}
+}
+
 func Test_beginReferrerHandling(t *testing.T) {
 	srv := &Server{HandledPaths: map[string]struct{}{"/oauth2/login": {}}}
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
@@ -799,6 +814,32 @@ func TestServer_fetchUserInfoRespectsRequestCancellation(t *testing.T) {
 	cancel()
 	if err := waitFor(t, result, "UserInfo request ignored cancellation"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled UserInfo request: %v", err)
+	}
+}
+
+func TestServer_fetchUserInfoUsesClientTimeoutAsRequestDeadline(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+	var requestDeadline time.Time
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requestDeadline, _ = r.Context().Deadline()
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		}),
+	}
+	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, client)
+	started := time.Now()
+	_, err := (&Server{}).fetchUserInfo(ctx, "https://provider.example/userinfo",
+		oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "access"}))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("UserInfo timeout: %v", err)
+	}
+	if requestDeadline.Before(started) || requestDeadline.After(started.Add(time.Second)) {
+		t.Fatalf("UserInfo request deadline %s, want a short bounded deadline", requestDeadline)
+	}
+	if client.Timeout != timeout {
+		t.Fatalf("configured client timeout changed to %s", client.Timeout)
 	}
 }
 

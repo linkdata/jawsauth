@@ -61,13 +61,18 @@ func TestOAuthProfileAuthLifetimeCapsLongProviderToken(t *testing.T) {
 	})})
 	for _, duration := range []time.Duration{30 * time.Minute, 72 * time.Hour} {
 		token := &oauth2.Token{AccessToken: "secret", TokenType: "Bearer", Expiry: time.Now().Add(duration)}
+		before := time.Now()
 		_, _, expiry, status, err := srv.verifyOAuthIdentity(ctx, token, "")
+		after := time.Now()
 		if err != nil || status != 0 {
 			t.Fatalf("duration %s: status=%d error=%v", duration, status, err)
 		}
-		want := min(duration, 24*time.Hour)
-		if diff := time.Until(expiry) - want; diff < -time.Second || diff > time.Second {
-			t.Fatalf("duration %s: expiry offset %s", duration, diff)
+		if duration < 24*time.Hour {
+			if !expiry.Equal(token.Expiry) {
+				t.Fatalf("duration %s: expiry=%s token expiry=%s", duration, expiry, token.Expiry)
+			}
+		} else if expiry.Before(before.Add(24*time.Hour)) || expiry.After(after.Add(24*time.Hour)) {
+			t.Fatalf("duration %s: cap expiry=%s, callback bounds=%s..%s", duration, expiry, before, after)
 		}
 	}
 }
@@ -775,6 +780,7 @@ func TestOAuthProfileSignInAndDualProofLink(t *testing.T) {
 		if wrong.Code != http.StatusBadRequest || calls != 0 {
 			t.Fatalf("wrong state consumed login: status=%d calls=%d", wrong.Code, calls)
 		}
+		// Let the one-minute initial JaWS grace period pass before callback.
 		time.Sleep(time.Minute + time.Second)
 		first := profileCallback(srv, oldCookie, state, "first")
 		if first.Code != http.StatusFound || logins != 1 || calls != 2 {
@@ -800,6 +806,7 @@ func TestOAuthProfileSignInAndDualProofLink(t *testing.T) {
 			return 0, nil
 		}
 		_, linkState := profileStart(t, srv, http.MethodPost, "/auth/link/github", cookie)
+		// Check that a pending link also survives the initial grace period.
 		time.Sleep(time.Minute + time.Second)
 		linked := profileCallback(srv, cookie, linkState, "second")
 		if linked.Code != http.StatusFound || links != 1 || logins != 1 || calls != 4 || len(linked.Result().Cookies()) != 0 {
@@ -1012,13 +1019,14 @@ func TestOAuthProfileAcceptsShortUnexpiredToken(t *testing.T) {
 	})
 }
 
-func TestOAuthProfileExplicitZeroExpiryRejectedButOmittedExpiryCapped(t *testing.T) {
+func TestOAuthProfileExplicitZeroExpiryRejectedButMissingExpiryCapped(t *testing.T) {
 	for _, tc := range []struct {
 		name, expiryField string
 		form              bool
 		wantStatus        int
 	}{
 		{"omitted", "", false, http.StatusFound},
+		{"null", `,"expires_in":null`, false, http.StatusFound},
 		{"zero", `,"expires_in":0`, false, http.StatusUnauthorized},
 		{"zero string", `,"expires_in":"0"`, false, http.StatusUnauthorized},
 		{"form omitted", "", true, http.StatusFound},
@@ -1056,7 +1064,7 @@ func TestOAuthProfileExplicitZeroExpiryRejectedButOmittedExpiryCapped(t *testing
 			r.AddCookie(cookies[0])
 			sess := jw.GetSession(r)
 			if sess == nil || sess.Get(srv.SessionKey) == nil {
-				t.Fatal("omitted expiry did not authenticate")
+				t.Fatal("missing expiry did not authenticate")
 			}
 			expiry, _ := sess.Get(srv.sessionKey(oauth2AuthExpiryKey)).(time.Time)
 			if remaining := time.Until(expiry); remaining < 23*time.Hour || remaining > 24*time.Hour {

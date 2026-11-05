@@ -260,16 +260,16 @@ func TestConfigValidateRejectsInsecureOIDCOverrides(t *testing.T) {
 
 func TestConfigBuildContextRejectsInsecureOIDCMetadata(t *testing.T) {
 	for _, tc := range []struct {
-		key, field, value string
-		allowInsecure     bool
+		key, value    string
+		allowInsecure bool
 	}{
-		{"authorization_endpoint", "AuthURL", "http://provider.example/auth", false},
-		{"token_endpoint", "TokenURL", "http://provider.example/token", false},
-		{"userinfo_endpoint", "UserInfoURL", "http://provider.example/userinfo", false},
-		{"jwks_uri", "JWKSURI", "http://provider.example/jwks", false},
-		{"jwks_uri", "JWKSURI", "", false},
-		{"jwks_uri", "JWKSURI", "", true},
-		{"jwks_uri", "JWKSURI", "ftp://provider.example/jwks", true},
+		{"authorization_endpoint", "http://provider.example/auth", false},
+		{"token_endpoint", "http://provider.example/token", false},
+		{"userinfo_endpoint", "http://provider.example/userinfo", false},
+		{"jwks_uri", "http://provider.example/jwks", false},
+		{"jwks_uri", "", false},
+		{"jwks_uri", "", true},
+		{"jwks_uri", "ftp://provider.example/jwks", true},
 	} {
 		name := tc.key + "/" + tc.value
 		if tc.allowInsecure {
@@ -291,7 +291,7 @@ func TestConfigBuildContextRejectsInsecureOIDCMetadata(t *testing.T) {
 				AllowInsecureIssuer: tc.allowInsecure}
 			_, _, _, err := cfg.buildContext(t.Context(), "")
 			var configErr errConfig
-			if !errors.Is(err, ErrOIDCProviderMetadata) || !errors.As(err, &configErr) || configErr.field != tc.field {
+			if !errors.Is(err, ErrOIDCProviderMetadata) || !errors.As(err, &configErr) || configErr.field != tc.key {
 				t.Fatalf("%s metadata validation: %v", tc.key, err)
 			}
 			if tc.value != "" && !errors.Is(err, ErrConfigEndpointMustBeHTTPS) {

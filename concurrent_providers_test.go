@@ -16,7 +16,7 @@ func newConcurrentProfileProvider(t *testing.T, jw *jaws.Jaws, client *http.Clie
 	t.Helper()
 	srv, err := New(jw, &Config{
 		Namespace: namespace, RedirectURL: "https://app.example/auth/" + namespace + "/callback",
-		Issuer: "https://provider.example", AuthURL: "https://provider.example/authorize",
+		Issuer: "https://" + namespace + ".provider.example", AuthURL: "https://provider.example/authorize",
 		TokenURL: "https://provider.example/token", UserInfoURL: "https://provider.example/user",
 		ClientID: "app", HTTPClient: client,
 		ProfileSubject: func(profile map[string]any) (string, error) { return string(profile["id"].(json.Number)), nil },

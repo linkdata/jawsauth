@@ -131,13 +131,18 @@ func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location s
 	if location = strings.TrimSpace(hr.Referer()); location == "" {
 		location = hr.RequestURI
 	}
+	location = srv.returnTarget(hr, location)
+	return
+}
+
+func (srv *Server) returnTarget(hr *http.Request, location string) string {
 	location = sanitizeRedirectTarget(hr.Host, location)
 	if target, err := url.Parse(location); err == nil {
 		if _, handled := srv.HandledPaths[callbackPathFromURL(target)]; handled {
 			location = "/"
 		}
 	}
-	return
+	return location
 }
 
 // HandleLogin begins the configured OIDC or OAuth2 profile login flow.
@@ -182,6 +187,9 @@ var linkOriginCheck = http.NewCrossOriginProtection()
 func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, preservePendingLogin bool) {
 	oauth2cfg, location := srv.begin(hr)
 	if oauth2cfg != nil {
+		if preservePendingLogin {
+			location = srv.returnTarget(hr, hr.RequestURI)
+		}
 		if link && strings.TrimSpace(hr.Referer()) == "" {
 			location = "/"
 		}
@@ -220,6 +228,10 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 }
 
 func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, link, preservePendingLogin bool, location string) (flow pendingOAuthFlow, sess *jaws.Session, status int) {
+	failStatus := http.StatusServiceUnavailable
+	if link {
+		failStatus = http.StatusForbidden
+	}
 	rotationLock := srv.SessionRotationLock
 	if rotationLock != nil {
 		rotationLock.Lock()
@@ -230,10 +242,7 @@ func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, li
 		sess = srv.Jaws.NewSession(hw, hr)
 	}
 	if sess == nil {
-		if link {
-			return flow, nil, http.StatusForbidden
-		}
-		return flow, nil, http.StatusServiceUnavailable
+		return flow, nil, failStatus
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
@@ -253,11 +262,7 @@ func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, li
 		flow.nonce = rand.Text()
 	}
 	if !sess.ExtendGrace(oauth2FlowGrace) {
-		if link {
-			status = http.StatusForbidden
-		} else {
-			status = http.StatusServiceUnavailable
-		}
+		status = failStatus
 		return
 	}
 	srv.clearSessionOAuthFlowLocked(sess)
@@ -420,8 +425,16 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 	if userinfoURL != "" && tokenSource != nil {
 		client := oauth2.NewClient(ctx, tokenSource)
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		timeout := client.Timeout
+		if timeout <= 0 || timeout > oauth2ProviderTimeout {
+			timeout = oauth2ProviderTimeout
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		// oauth2.Transport logs from its deprecated CancelRequest; use the request context.
+		client.Timeout = 0
 		var request *http.Request
-		if request, err = http.NewRequestWithContext(ctx, http.MethodGet, userinfoURL, nil); err != nil {
+		if request, err = http.NewRequestWithContext(requestCtx, http.MethodGet, userinfoURL, nil); err != nil {
 			return nil, err
 		}
 		var resp *http.Response

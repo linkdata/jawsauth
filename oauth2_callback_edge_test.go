@@ -223,7 +223,7 @@ func TestLoginEventCanLogoutItsSession(t *testing.T) {
 	}
 }
 
-func TestConcurrentLogoutWaitsForLoginEvent(t *testing.T) {
+func TestLogoutDuringLoginEventDefersLogoutEvent(t *testing.T) {
 	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	entered := make(chan *jaws.Session, 1)
@@ -246,14 +246,11 @@ func TestConcurrentLogoutWaitsForLoginEvent(t *testing.T) {
 	go func() { result <- profileCallback(srv, cookie, state, "first") }()
 	rotated := waitFor(t, entered, "LoginEvent did not start")
 	loggedOut := make(chan bool, 1)
-	logoutContext, cancelLogout := context.WithCancel(t.Context())
-	defer cancelLogout()
-	logoutRequest := httptest.NewRequest(http.MethodGet, "https://app.example/logout", nil).WithContext(logoutContext)
+	logoutRequest := httptest.NewRequest(http.MethodGet, "https://app.example/logout", nil)
 	go func() { loggedOut <- srv.Logout(rotated, logoutRequest) }()
 	if !waitFor(t, loggedOut, "concurrent logout blocked") || len(events) != 1 {
 		t.Fatalf("logout before LoginEvent returned: events=%d", len(events))
 	}
-	cancelLogout()
 	releaseOnce()
 	response := waitFor(t, result, "callback did not finish")
 	first := waitFor(t, events, "missing LoginEvent")

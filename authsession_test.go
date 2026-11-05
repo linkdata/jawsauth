@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -181,6 +182,8 @@ func TestErrorDebugAttrsIncludeOIDCAndOAuth2Details(t *testing.T) {
 	body := strings.Repeat("x", debugErrorBodyLimit+1)
 	err := errors.Join(
 		errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCStaleIDToken},
+		errOIDCMissingSubject,
+		errOIDCSubjectMismatch,
 		&OAuth2CallbackError{
 			Code:        "access_denied",
 			Description: "user cancelled",
@@ -206,6 +209,8 @@ func TestErrorDebugAttrsIncludeOIDCAndOAuth2Details(t *testing.T) {
 	for _, want := range []string{
 		"oidc_invalid_id_token",
 		"oidc_stale_id_token",
+		"oidc_missing_subject",
+		"oidc_subject_mismatch",
 		"oauth2_callback",
 	} {
 		if !testStringSliceContains(classes, want) {
@@ -267,7 +272,7 @@ func TestStoreSessionAuthClaimsSchedulesTimer(t *testing.T) {
 	if gotVerified, _ := sess.Get(srv.SessionEmailVerifiedKey).(bool); !gotVerified {
 		t.Fatal(gotVerified)
 	}
-	if gotExpiry, _ := sess.Get(oauth2AuthExpiryKey).(time.Time); !gotExpiry.Equal(expiry) {
+	if gotExpiry, _ := sess.Get(srv.sessionKey(oauth2AuthExpiryKey)).(time.Time); !gotExpiry.Equal(expiry) {
 		t.Fatal(gotExpiry)
 	}
 	if factory.len() != 1 {
@@ -421,6 +426,10 @@ func TestOIDCRefreshRejectsChangedSubject(t *testing.T) {
 }
 
 func TestAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
+	synctest.Test(t, testAuthTimerRefreshesCachedTokenByForcingRefresh)
+}
+
+func testAuthTimerRefreshesCachedTokenByForcingRefresh(t *testing.T) {
 	jw := newTestJaws(t)
 	logger := &testAuthDebugLogger{}
 	jw.Debug = true
@@ -674,6 +683,10 @@ func TestRefreshSessionAuthLogsForcedRefreshTokenSourceFailure(t *testing.T) {
 }
 
 func TestAuthTimerRefreshFailureKeepsCurrentAuthUntilExpiry(t *testing.T) {
+	synctest.Test(t, testAuthTimerRefreshFailureKeepsCurrentAuthUntilExpiry)
+}
+
+func testAuthTimerRefreshFailureKeepsCurrentAuthUntilExpiry(t *testing.T) {
 	jw := newTestJaws(t)
 
 	logger := &testAuthDebugLogger{}
@@ -834,6 +847,10 @@ func TestAuthTimerRefreshFailureClearsExpiredAuth(t *testing.T) {
 }
 
 func TestAuthTimerDebugLogsRefreshFailure(t *testing.T) {
+	synctest.Test(t, testAuthTimerDebugLogsRefreshFailure)
+}
+
+func testAuthTimerDebugLogsRefreshFailure(t *testing.T) {
 	jw := newTestJaws(t)
 
 	logger := &testAuthDebugLogger{}

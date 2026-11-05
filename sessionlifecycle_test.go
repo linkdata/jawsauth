@@ -47,6 +47,10 @@ func TestLogoutDuringClaimPreparation(t *testing.T) {
 }
 
 func TestAuthTimerDiscardsClosedSession(t *testing.T) {
+	synctest.Test(t, testAuthTimerDiscardsClosedSession)
+}
+
+func testAuthTimerDiscardsClosedSession(t *testing.T) {
 	for _, duringRefresh := range []bool{false, true} {
 		jw, err := jaws.New()
 		if err != nil {
