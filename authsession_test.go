@@ -254,7 +254,7 @@ func TestStoreSessionAuthClaimsSchedulesTimer(t *testing.T) {
 	srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/protected", nil)
 	sess := jw.NewSession(httptest.NewRecorder(), req)
-	expiry := time.Now().Add(time.Hour).Truncate(time.Second)
+	expiry := time.Now().Add(90 * time.Second)
 	tokenSource := oauth2.StaticTokenSource(makeOAuth2Token("access", "", ""))
 
 	err := srv.storeSessionAuthClaims(sess, map[string]any{
@@ -279,15 +279,16 @@ func TestStoreSessionAuthClaimsSchedulesTimer(t *testing.T) {
 		t.Fatal(factory.len())
 	}
 	timer := factory.timer(0)
-	if timer.delay <= 0 || timer.delay > time.Hour-authRefreshSkew {
+	if timer.delay < 40*time.Second || timer.delay > 50*time.Second {
 		t.Fatal(timer.delay)
 	}
 	if !srv.sessionAuthTimerCurrent(sess, srv.authTimers[sess.ID()]) {
 		t.Fatal("timer was not current")
 	}
 
+	shortExpiry := time.Now().Add(time.Second)
 	srv.mu.Lock()
-	srv.scheduleSessionAuthTimerLocked(sess, time.Now().Add(time.Second))
+	srv.scheduleSessionAuthTimerLocked(sess, shortExpiry)
 	srv.mu.Unlock()
 	if factory.len() != 2 {
 		t.Fatal(factory.len())
@@ -295,7 +296,7 @@ func TestStoreSessionAuthClaimsSchedulesTimer(t *testing.T) {
 	if !timer.isStopped() {
 		t.Fatal("old timer was not stopped")
 	}
-	if delay := factory.timer(1).delay; delay != 0 {
+	if delay := factory.timer(1).delay; delay < time.Second/4 || delay > 3*time.Second/4 {
 		t.Fatal(delay)
 	}
 }

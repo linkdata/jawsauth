@@ -77,6 +77,9 @@ only with the same guarantee. Providers without a verification signal cannot
 grant admin access while the check is enabled.
 [Microsoft warns against using its email claim for authorization](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference);
 use application policy based on a stable identifier for Entra ID.
+OIDC UserInfo fallback requires its `sub` to match the ID token's nonempty `sub`. Its
+`email_verified` applies only to an email it supplies or one matching the ID
+token email exactly. `mail` and `public_email` never count as verified.
 
 `SetAdmins` parses valid addresses and retains other nonempty entries. It trims
 whitespace and ignores ASCII case. An empty list allows every authenticated user

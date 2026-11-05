@@ -62,7 +62,6 @@ func TestOAuthTokenRequestsDoNotFollowRedirect(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				if grant == "exchange" {
-					// The request context's client takes precedence over Server.httpClient.
 					srv.httpClient = nil
 					ctx = context.WithValue(ctx, oauth2.HTTPClient, client)
 				}

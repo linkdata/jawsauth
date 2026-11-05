@@ -11,7 +11,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const authRefreshSkew = 10 * time.Second
+const authRefreshSkew = time.Minute
 const authSessionCheckInterval = time.Minute
 
 var errOIDCStaleIDToken = errors.New("oidc stale id_token")
@@ -231,7 +231,7 @@ func (srv *Server) emitLoginEvent(sess *jaws.Session, hr *http.Request) {
 	}
 	srv.mu.Lock()
 	pending := srv.loginEvents[sess]
-	if pending == nil || pending.cleared {
+	if pending == nil {
 		delete(srv.loginEvents, sess)
 		srv.mu.Unlock()
 		return
@@ -330,7 +330,13 @@ func (srv *Server) refreshSessionAuth(ctx context.Context, sess *jaws.Session, m
 
 // Caller holds srv.mu across the auth writes and timer replacement.
 func (srv *Server) scheduleSessionAuthTimerLocked(sess *jaws.Session, expiry time.Time) (delay time.Duration, replaced bool) {
-	delay = min(max(time.Until(srv.authTimerDue(expiry)), 0), authSessionCheckInterval)
+	remaining := time.Until(expiry)
+	delay = remaining
+	if srv.profileSubject == nil {
+		// Short-lived tokens wait half their remaining lifetime to avoid refresh loops.
+		delay = max(remaining-authRefreshSkew, remaining/2)
+	}
+	delay = min(max(delay, 0), authSessionCheckInterval)
 	entry := &authTimerState{expiry: expiry}
 	if srv.authTimers == nil {
 		srv.authTimers = make(map[uint64]*authTimerState)

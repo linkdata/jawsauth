@@ -799,6 +799,7 @@ func TestTokenExchangeFailureStatus(t *testing.T) {
 		{"network failure", 0, errors.New("provider unavailable"), http.StatusBadGateway},
 		{"timeout", 0, context.DeadlineExceeded, http.StatusBadGateway},
 		{"provider bad request", http.StatusBadRequest, nil, http.StatusBadRequest},
+		{"invalid client", http.StatusUnauthorized, nil, http.StatusBadGateway},
 		{"provider unavailable", http.StatusServiceUnavailable, nil, http.StatusBadGateway},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -815,7 +816,11 @@ func TestTokenExchangeFailureStatus(t *testing.T) {
 				w := httptest.NewRecorder()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.providerStatus)
-				_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+				errorCode := "invalid_grant"
+				if tc.providerStatus == http.StatusUnauthorized {
+					errorCode = "invalid_client"
+				}
+				_, _ = fmt.Fprintf(w, "{\"error\":%q}", errorCode)
 				return w.Result(), nil
 			})}
 			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)

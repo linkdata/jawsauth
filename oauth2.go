@@ -557,13 +557,6 @@ func (srv *Server) rotateOAuthSession(hw http.ResponseWriter, hr *http.Request, 
 }
 
 func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map[string]any, expiry time.Time, flow pendingOAuthFlow) (status int, err error) {
-	var linkErr error
-	// Log after releasing SessionRotationLock.
-	defer func() {
-		if linkErr != nil {
-			_ = srv.Jaws.Log(linkErr)
-		}
-	}()
 	rotationLock := srv.SessionRotationLock
 	if rotationLock != nil {
 		rotationLock.Lock()
@@ -575,8 +568,8 @@ func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map
 	if err = srv.identityExpiryError(expiry); err != nil {
 		return http.StatusUnauthorized, err
 	}
-	status, linkErr = srv.LinkEvent(sess, hr, claims)
-	if linkErr != nil || status != 0 {
+	status, err = srv.LinkEvent(sess, hr, claims)
+	if srv.Jaws.Log(err) != nil || status != 0 {
 		if status < 400 || status > 599 {
 			status = http.StatusForbidden
 		}
@@ -630,7 +623,7 @@ func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWr
 		status := http.StatusBadGateway
 		var retrieveErr *oauth2.RetrieveError
 		if errors.As(err, &retrieveErr) && retrieveErr.Response != nil &&
-			retrieveErr.Response.StatusCode >= 400 && retrieveErr.Response.StatusCode < 500 {
+			retrieveErr.Response.StatusCode == http.StatusBadRequest {
 			status = http.StatusBadRequest
 		}
 		return sess, status, err
@@ -690,7 +683,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 			}
 		}
 	}
-	if sess != nil && err == nil && !flow.link {
+	if err == nil && !flow.link {
 		srv.emitLoginEvent(sess, hr)
 		current, _ := srv.sessionAuthStatus(sess, time.Now)
 		if flow.revoked() || !current || !sessionAlive(sess) {
