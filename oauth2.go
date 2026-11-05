@@ -187,9 +187,9 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, fr
 	oauth2cfg := srv.oauth2cfg
 	var location string
 	switch {
-	case oauth2cfg != nil && fromWrapper:
+	case fromWrapper:
 		location = srv.returnTarget(hr, hr.RequestURI)
-	case oauth2cfg != nil && link && strings.TrimSpace(hr.Referer()) == "":
+	case link && strings.TrimSpace(hr.Referer()) == "":
 		location = "/"
 	default:
 		location = srv.begin(hr)

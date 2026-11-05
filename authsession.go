@@ -465,9 +465,9 @@ func (srv *Server) clearSessionOAuthFlowLocked(sess *jaws.Session) {
 //
 // It stops the auth timer, clears stored claims, token source, email, expiry
 // and any in-flight OAuth flow keys, then marks the session dirty. If auth was
-// present, it reloads its pages. [Server.LogoutEvent] follows [EventFunc]'s
-// ordering rules. It returns false for a nil receiver or session, and true
-// otherwise. The hr argument may be nil.
+// present, it reloads its pages and may call [Server.LogoutEvent] under
+// [EventFunc]'s ordering rules. It returns false for a nil receiver or session,
+// and true otherwise. The hr argument may be nil.
 //
 // It performs no HTTP redirect. An HTTP handler can build its own post-logout
 // response. A JaWS event handler cannot use [jaws.Request.Redirect] after Logout

@@ -1200,19 +1200,14 @@ func TestStaleWrapperDoesNotRepeatRotationLogoutEvent(t *testing.T) {
 	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
 	srv.authTimerAfterFunc = (&testAuthTimerFactory{}).after
-	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-	first := profileCallback(srv, cookie, state, "first")
-	if first.Code != http.StatusFound || len(first.Result().Cookies()) != 1 {
-		t.Fatalf("initial login: status=%d cookies=%v", first.Code, first.Result().Cookies())
-	}
-	cookie = first.Result().Cookies()[0]
+	cookie := profileLogin(t, srv)
 	req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
 	req.AddCookie(cookie)
 	old := jw.GetSession(req)
 	if old == nil {
 		t.Fatal("authenticated session missing")
 	}
-	_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
+	_, state := profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
 	old.Set(srv.sessionKey(oauth2AuthExpiryKey), time.Now().Add(-time.Second))
 	lock := &holdFirstRotationLock{first: make(chan struct{}), releaseFirst: make(chan struct{})}
 	srv.SessionRotationLock = lock

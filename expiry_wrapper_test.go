@@ -11,12 +11,7 @@ import (
 func TestProtectedRequestPreservesPendingLoginOnAuthExpiry(t *testing.T) {
 	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
-	cookie, initialState := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-	first := profileCallback(srv, cookie, initialState, "first")
-	if first.Code != http.StatusFound {
-		t.Fatalf("initial sign-in %d", first.Code)
-	}
-	cookie = first.Result().Cookies()[0]
+	cookie := profileLogin(t, srv)
 	start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
 	start.AddCookie(cookie)
 	w := httptest.NewRecorder()

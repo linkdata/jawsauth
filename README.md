@@ -19,7 +19,7 @@ refresh before expiry when the provider issues a refresh token. Request offline
 access with the `offline_access` scope for OIDC providers that support it, or
 `oauth2.AccessTypeOffline` in `Server.Options` for Google. Check both the error
 from `New` and `Server.Valid()` before serving protected routes; an invalid server
-leaves `Wrap` and `WrapAdmin` handlers unprotected.
+can return handlers without authentication.
 
 Profile mode requires `AuthURL`, `TokenURL` and `UserInfoURL`, plus a
 `ProfileSubject` function that extracts a stable subject from the authenticated
@@ -52,12 +52,16 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
   register it. Authorize the session before calling it. In `LinkEvent`, recheck
   the original provider's `CurrentClaims` before writing the link. Linking keeps
   the session; an ordinary login rotates it and signs out other providers.
-  Their `LogoutEvent` may run later with a nil request.
+  A re-login calls its `LogoutEvent` before storing the new sign-in; calling
+  `Logout` on that event session cancels the new sign-in. Other providers'
+  `LogoutEvent` may run later with a nil request.
   Starting a link replaces this server's pending flow, including a running
   login callback.
-- `New` gives each server a private `SessionRotationLock`. When several servers
-  share one JaWS instance, assign them one shared lock before serving. jawsauth
-  holds it during flow start, rotation, authentication clearing and `LinkEvent`.
+- `New` shares one process-wide `SessionRotationLock` by default. To coordinate
+  with other authentication methods or isolate independent JaWS instances, set
+  a custom lock before serving; servers sharing a JaWS must use the same lock.
+  jawsauth holds it during flow start, rotation, authentication clearing and
+  `LinkEvent`.
   Do not take the lock around jawsauth handlers or `Server.Logout`, or within
   `LinkEvent`; do not call `Server.Logout` from `LinkEvent`. Keep `LinkEvent` brief
   because other sessions sharing the lock wait. One provider's logout does not

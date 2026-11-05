@@ -89,14 +89,9 @@ func TestProfileAdminRequiresVerifiedEmailByDefault(t *testing.T) {
 				srv.RequireVerifiedAdminEmail = false
 			}
 			srv.SetAdmins([]string{"first@example.com"})
-			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-			login := profileCallback(srv, cookie, state, "first")
-			cookies := login.Result().Cookies()
-			if login.Code != http.StatusFound || len(cookies) != 1 {
-				t.Fatalf("profile login: status=%d cookies=%v", login.Code, cookies)
-			}
+			cookie := profileLogin(t, srv)
 			r := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
-			r.AddCookie(cookies[0])
+			r.AddCookie(cookie)
 			sess := jw.GetSession(r)
 			if sess == nil {
 				t.Fatal("missing profile session")

@@ -66,6 +66,8 @@ type HandleFunc func(uri string, handler http.Handler)
 // events; clearing auth during it defers LogoutEvent until it returns.
 // LogoutEvent receives a nil request for timer cleanup, deferred delivery, or
 // a call to [Server.Logout] with a nil request.
+// During re-login, LogoutEvent runs on the old session before the new sign-in
+// is stored; calling Logout on that session cancels the new sign-in.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
 // FailedFunc is called on callback failures and when a protected request meets
@@ -103,7 +105,8 @@ type Server struct {
 	LoginFailed             FailedFunc          // callback failures and protected requests during a running login callback
 	LinkEvent               LinkFunc            // required by HandleLink; register its POST route separately
 	// SessionRotationLock is held during flow start, rotation, auth clearing, and LinkEvent.
-	// New supplies a private lock; share one when servers use the same JaWS instance.
+	// New supplies a shared package lock; set the same custom lock on servers using
+	// one JaWS instance when coordinating with other authentication methods.
 	SessionRotationLock sync.Locker
 	Options             []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
 
@@ -132,6 +135,8 @@ type Server struct {
 	namespace          string
 }
 
+var defaultSessionRotationLock sync.Mutex
+
 // NewDebug behaves like New but can override the scheme and host of cfg.RedirectURL.
 //
 // overrideUrl supplies the replacement scheme and host (an empty overrideUrl disables
@@ -154,7 +159,7 @@ func NewDebug(jw *jaws.Jaws, cfg *Config, handleFn HandleFunc, overrideUrl strin
 		SessionEmailKey:         "email",
 		SessionEmailVerifiedKey: "email_verified",
 		HandledPaths:            make(map[string]struct{}),
-		SessionRotationLock:     &sync.Mutex{},
+		SessionRotationLock:     &defaultSessionRotationLock,
 		admins:                  make(map[string]struct{}),
 		handle403:               default403handler{},
 		authTimers:              make(map[uint64]*authTimerState),

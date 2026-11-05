@@ -27,68 +27,41 @@ func newConcurrentProfileProvider(t *testing.T, jw *jaws.Jaws, client *http.Clie
 	return srv
 }
 
-type gateRotationLock struct {
-	mu       sync.Mutex
-	entrants atomic.Int32
-	both     chan struct{}
-	release  chan struct{}
-}
-
-func (l *gateRotationLock) Lock() {
-	if l.entrants.Add(1) == 2 {
-		close(l.both)
-	}
-	<-l.release
-	l.mu.Lock()
-}
-func (l *gateRotationLock) Unlock() { l.mu.Unlock() }
-
-func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
+func TestDefaultRotationLockSerializesProvidersSharingJaws(t *testing.T) {
 	jw := newTestJaws(t)
+	providerReached := make(chan struct{}, 2)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/token" {
 			return jsonResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
 		}
+		providerReached <- struct{}{}
 		return jsonResponse(`{"id":42}`), nil
 	})}
-	gate := &gateRotationLock{both: make(chan struct{}), release: make(chan struct{})}
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(gate.release) }) }
-	defer release()
 	a := newConcurrentProfileProvider(t, jw, client, "a")
 	b := newConcurrentProfileProvider(t, jw, client, "b")
+	if a.SessionRotationLock == nil || a.SessionRotationLock != b.SessionRotationLock {
+		t.Fatal("providers sharing JaWS do not share the default rotation lock")
+	}
 	cookie, stateA := profileStart(t, a, http.MethodGet, "/auth/a/login", nil)
-	startB := httptest.NewRequest(http.MethodGet, "https://app.example/auth/b/login", nil)
-	startB.AddCookie(cookie)
-	wB := httptest.NewRecorder()
-	b.HandleLogin(wB, startB)
-	if wB.Code != http.StatusFound {
-		t.Fatalf("second start %d", wB.Code)
-	}
-	locB, err := url.Parse(wB.Header().Get("Location"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateB := locB.Query().Get("state")
-	a.SessionRotationLock, b.SessionRotationLock = gate, gate
-	callback := func(srv *Server, ns, state string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, "https://app.example/auth/"+ns+"/callback?state="+url.QueryEscape(state)+"&code=proof", nil)
-		req.AddCookie(cookie)
-		w := httptest.NewRecorder()
-		srv.HandleAuthResponse(w, req)
-		return w
-	}
-	out := make(chan *httptest.ResponseRecorder, 2)
-	go func() { out <- callback(a, "a", stateA) }()
-	go func() { out <- callback(b, "b", stateB) }()
-	waitFor(t, gate.both, "provider callbacks did not reach rotation")
-	release()
-	responses := make([]*httptest.ResponseRecorder, 0, 2)
-	for range 2 {
-		responses = append(responses, waitFor(t, out, "provider callback did not finish"))
-	}
+	_, stateB := profileStart(t, b, http.MethodGet, "/auth/b/login", cookie)
+	var logins atomic.Int32
+	a.LoginEvent = func(*jaws.Session, *http.Request) { logins.Add(1) }
+	b.LoginEvent = func(*jaws.Session, *http.Request) { logins.Add(1) }
+
+	lock := a.SessionRotationLock
+	lock.Lock()
+	unlock := sync.OnceFunc(lock.Unlock)
+	defer unlock()
+	results := make(chan *httptest.ResponseRecorder, 2)
+	go func() { results <- profileCallback(a, cookie, stateA, "proof") }()
+	go func() { results <- profileCallback(b, cookie, stateB, "proof") }()
+	waitFor(t, providerReached, "first callback did not finish UserInfo")
+	waitFor(t, providerReached, "second callback did not finish UserInfo")
+	unlock()
+
 	success, rejected := 0, 0
-	for _, response := range responses {
+	for range 2 {
+		response := waitFor(t, results, "provider callback did not finish")
 		switch response.Code {
 		case http.StatusFound:
 			success++
@@ -104,8 +77,8 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 			t.Fatalf("callback status=%d", response.Code)
 		}
 	}
-	if success != 1 || rejected != 1 || jw.SessionCount() != 1 {
-		t.Fatalf("callbacks: success=%d rejected=%d sessions=%d", success, rejected, jw.SessionCount())
+	if success != 1 || rejected != 1 || logins.Load() != 1 || jw.SessionCount() != 1 {
+		t.Fatalf("callbacks: success=%d rejected=%d logins=%d sessions=%d", success, rejected, logins.Load(), jw.SessionCount())
 	}
 }
 

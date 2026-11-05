@@ -322,19 +322,14 @@ func TestOAuthProfileCallbackCanceledBeforeFinalStore(t *testing.T) {
 	srv := newProfileTestServer(t, jw, nil)
 	factory := &testAuthTimerFactory{}
 	srv.authTimerAfterFunc = factory.after
-	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-	first := profileCallback(srv, cookie, state, "first")
-	if first.Code != http.StatusFound {
-		t.Fatalf("first login: %d", first.Code)
-	}
-	cookie = first.Result().Cookies()[0]
+	cookie := profileLogin(t, srv)
 	request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
 	request.AddCookie(cookie)
 	old := jw.GetSession(request)
 	if old == nil {
 		t.Fatal("missing original session")
 	}
-	_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
+	_, state := profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
 	canceled := false
 	logins := 0
 	srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
@@ -377,12 +372,7 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 		}
 		return jsonResponse(`{"id":42,"email":"first@example.com"}`), nil
 	})}
-	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-	login := profileCallback(srv, cookie, state, "first")
-	if login.Code != http.StatusFound || len(login.Result().Cookies()) != 1 {
-		t.Fatalf("initial login: status=%d cookies=%v", login.Code, login.Result().Cookies())
-	}
-	cookie = login.Result().Cookies()[0]
+	cookie := profileLogin(t, srv)
 	request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
 	request.AddCookie(cookie)
 	sess := jw.GetSession(request)
@@ -411,12 +401,7 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 func TestOAuthProfileLinkRejectsReplacedSession(t *testing.T) {
 	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)
-	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-	login := profileCallback(srv, cookie, state, "first")
-	if login.Code != http.StatusFound || len(login.Result().Cookies()) != 1 {
-		t.Fatalf("initial login: status=%d cookies=%v", login.Code, login.Result().Cookies())
-	}
-	cookie = login.Result().Cookies()[0]
+	cookie := profileLogin(t, srv)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	releaseProvider := sync.OnceFunc(func() { close(release) })
@@ -476,12 +461,7 @@ func TestOAuthProfileLinkSerializesManagedRevocation(t *testing.T) {
 				srv := newProfileTestServer(t, jw, nil)
 				factory := &testAuthTimerFactory{}
 				srv.authTimerAfterFunc = factory.after
-				cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-				first := profileCallback(srv, cookie, state, "first")
-				if first.Code != http.StatusFound {
-					t.Fatalf("initial login: %d", first.Code)
-				}
-				cookie = first.Result().Cookies()[0]
+				cookie := profileLogin(t, srv)
 				req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
 				req.AddCookie(cookie)
 				sess := jw.GetSession(req)
@@ -559,12 +539,7 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 			srv := newProfileTestServer(t, jw, nil)
 			factory := &testAuthTimerFactory{}
 			srv.authTimerAfterFunc = factory.after
-			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-			first := profileCallback(srv, cookie, state, "first")
-			if first.Code != http.StatusFound {
-				t.Fatalf("initial login: %d", first.Code)
-			}
-			cookie = first.Result().Cookies()[0]
+			cookie := profileLogin(t, srv)
 			start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
 			start.AddCookie(cookie)
 			sess := jw.GetSession(start)
@@ -580,7 +555,7 @@ func TestOAuthProfileAuthExpiryPreservesOrdinaryLogin(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			state = location.Query().Get("state")
+			state := location.Query().Get("state")
 			if state == "" {
 				t.Fatal("missing new login state")
 			}
@@ -768,6 +743,17 @@ func profileCallback(srv *Server, cookie *http.Cookie, state, code string) *http
 	return w
 }
 
+func profileLogin(t *testing.T, srv *Server) *http.Cookie {
+	t.Helper()
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	response := profileCallback(srv, cookie, state, "first")
+	cookies := response.Result().Cookies()
+	if response.Code != http.StatusFound || len(cookies) != 1 {
+		t.Fatalf("profile login: status=%d cookies=%v", response.Code, cookies)
+	}
+	return cookies[0]
+}
+
 func TestOAuthProfileSignInAndDualProofLink(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		jw := newTestJaws(t)
@@ -826,9 +812,7 @@ func TestOAuthProfileExpiredLinkStateNeverCallsProvider(t *testing.T) {
 	jw := newTestJaws(t)
 	calls := 0
 	srv := newProfileTestServer(t, jw, &calls)
-	oldCookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-	first := profileCallback(srv, oldCookie, state, "first")
-	cookie := first.Result().Cookies()[0]
+	cookie := profileLogin(t, srv)
 	srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) {
 		t.Fatal("expired link reached link event")
 		return 0, nil
@@ -860,12 +844,7 @@ func TestOAuthLinkRequiresSessionAndSameOriginRequestAndRejectsDeclinedLink(t *t
 	if w.Code != http.StatusForbidden || calls != 0 {
 		t.Fatalf("anonymous link: status=%d calls=%d", w.Code, calls)
 	}
-	oldCookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-	first := profileCallback(srv, oldCookie, state, "first")
-	if first.Code != http.StatusFound {
-		t.Fatalf("first sign-in: %d", first.Code)
-	}
-	cookie := first.Result().Cookies()[0]
+	cookie := profileLogin(t, srv)
 	cross := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link/github", nil)
 	cross.Header.Set("Origin", "https://evil.example")
 	cross.AddCookie(cookie)
