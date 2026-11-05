@@ -20,7 +20,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func profileTestResponse(body string) *http.Response {
+func jsonResponse(body string) *http.Response {
 	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}
 }
 
@@ -57,7 +57,7 @@ func TestOAuthProfileAuthLifetimeCapsLongProviderToken(t *testing.T) {
 	srv := &Server{issuer: "https://provider.example", userinfoUrl: "https://provider.example/user",
 		profileSubject: func(map[string]any) (string, error) { return "42", nil }}
 	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return profileTestResponse(`{"id":42}`), nil
+		return jsonResponse(`{"id":42}`), nil
 	})})
 	for _, duration := range []time.Duration{30 * time.Minute, 72 * time.Hour} {
 		token := &oauth2.Token{AccessToken: "secret", TokenType: "Bearer", Expiry: time.Now().Add(duration)}
@@ -83,9 +83,9 @@ func TestOAuthProfileCallbackStateIsSingleUseConcurrently(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		calls.Add(1)
 		if r.URL.Path == "/token" {
-			return profileTestResponse(`{"access_token":"secret","token_type":"Bearer"}`), nil
+			return jsonResponse(`{"access_token":"secret","token_type":"Bearer"}`), nil
 		}
-		return profileTestResponse(`{"id":42}`), nil
+		return jsonResponse(`{"id":42}`), nil
 	})}
 	srv, err := New(jw, &Config{Namespace: "one", RedirectURL: "https://app.example/auth/callback",
 		Issuer: "https://provider.example", AuthURL: "https://provider.example/authorize",
@@ -143,9 +143,9 @@ func TestOAuthProfileRotationLockDoesNotBlockProvider(t *testing.T) {
 	srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/token" {
 			close(providerReached)
-			return profileTestResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
+			return jsonResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
 		}
-		return profileTestResponse(`{"id":42}`), nil
+		return jsonResponse(`{"id":42}`), nil
 	})}
 	lock := &rotationNoticeLock{entered: make(chan struct{})}
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
@@ -195,9 +195,9 @@ func TestOAuthFailedCallbackDoesNotEraseNewCallback(t *testing.T) {
 			}
 			close(secondEntered)
 			<-secondRelease
-			return profileTestResponse(`{"access_token":"secret","token_type":"Bearer"}`), nil
+			return jsonResponse(`{"access_token":"secret","token_type":"Bearer"}`), nil
 		}
-		return profileTestResponse(`{"id":42}`), nil
+		return jsonResponse(`{"id":42}`), nil
 	})}
 	srv, err := New(jw, &Config{Namespace: "one", RedirectURL: "https://app.example/auth/callback",
 		Issuer: "https://provider.example", AuthURL: "https://provider.example/authorize",
@@ -228,7 +228,7 @@ func TestOAuthFailedCallbackDoesNotEraseNewCallback(t *testing.T) {
 	go func() { secondResult <- profileCallback(srv, cookie, secondState, "second") }()
 	waitFor(t, secondEntered, "second callback did not reach provider")
 	releaseCallback()
-	if code := waitFor(t, firstResult, "failed callback did not finish"); code != http.StatusBadRequest {
+	if code := waitFor(t, firstResult, "failed callback did not finish"); code != http.StatusBadGateway {
 		t.Fatalf("failed callback status = %d", code)
 	}
 	sess := jw.GetSession(r)
@@ -264,9 +264,9 @@ func TestOAuthProfileCallbackCanceledBeforeRotation(t *testing.T) {
 				if r.URL.Path == "/token" {
 					close(entered)
 					<-release
-					return profileTestResponse(`{"access_token":"first-token","token_type":"Bearer"}`), nil
+					return jsonResponse(`{"access_token":"first-token","token_type":"Bearer"}`), nil
 				}
-				return profileTestResponse(`{"id":42,"email":"first@example.com"}`), nil
+				return jsonResponse(`{"id":42,"email":"first@example.com"}`), nil
 			})}
 			logins := 0
 			srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
@@ -373,9 +373,9 @@ func TestOAuthProfileLinkCanceledByLogout(t *testing.T) {
 				close(entered)
 				<-release
 			}
-			return profileTestResponse(`{"access_token":"first-token","token_type":"Bearer"}`), nil
+			return jsonResponse(`{"access_token":"first-token","token_type":"Bearer"}`), nil
 		}
-		return profileTestResponse(`{"id":42,"email":"first@example.com"}`), nil
+		return jsonResponse(`{"id":42,"email":"first@example.com"}`), nil
 	})}
 	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 	login := profileCallback(srv, cookie, state, "first")
@@ -425,9 +425,9 @@ func TestOAuthProfileLinkRejectsReplacedSession(t *testing.T) {
 		if r.URL.Path == "/token" {
 			close(entered)
 			<-release
-			return profileTestResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
+			return jsonResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
 		}
-		return profileTestResponse(`{"id":42}`), nil
+		return jsonResponse(`{"id":42}`), nil
 	})}
 	links := 0
 	srv.LinkEvent = func(*jaws.Session, *http.Request, map[string]any) (int, error) { links++; return 0, nil }
@@ -684,15 +684,15 @@ func newProfileTestServer(t *testing.T, jw *jaws.Jaws, calls *int) *Server {
 				return nil, errors.New("missing PKCE verifier")
 			}
 			if r.PostForm.Get("code") == "second" {
-				return profileTestResponse(`{"access_token":"second-token","token_type":"Bearer"}`), nil
+				return jsonResponse(`{"access_token":"second-token","token_type":"Bearer"}`), nil
 			}
-			return profileTestResponse(`{"access_token":"first-token","token_type":"Bearer"}`), nil
+			return jsonResponse(`{"access_token":"first-token","token_type":"Bearer"}`), nil
 		case "/user":
 			switch r.Header.Get("Authorization") {
 			case "Bearer first-token":
-				return profileTestResponse(`{"id":9007199254740993,"login":"first","email":"first@example.com"}`), nil
+				return jsonResponse(`{"id":9007199254740993,"login":"first","email":"first@example.com"}`), nil
 			case "Bearer second-token":
-				return profileTestResponse(`{"id":99,"login":"second"}`), nil
+				return jsonResponse(`{"id":99,"login":"second"}`), nil
 			}
 		}
 		return nil, errors.New("unexpected provider request")
@@ -919,7 +919,7 @@ func TestOAuthProfileRejectsInvalidSubjectAndOversizedResponse(t *testing.T) {
 	}
 	oversized := &Server{profileSubject: srv.profileSubject}
 	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return profileTestResponse(`{"id":42}` + strings.Repeat(" ", maxUserInfoBytes+1)), nil
+		return jsonResponse(`{"id":42}` + strings.Repeat(" ", maxUserInfoBytes+1)), nil
 	})})
 	_, err := oversized.fetchUserInfo(ctx, "https://provider.example/user", oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "secret"}))
 	if !errors.Is(err, ErrUserInfoTooLarge) {
@@ -936,7 +936,7 @@ func TestOAuthProfileRejectsTokenExpiredDuringUserInfo(t *testing.T) {
 	}
 	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		token.Expiry = time.Now().Add(-time.Second)
-		return profileTestResponse(`{"id":42}`), nil
+		return jsonResponse(`{"id":42}`), nil
 	})})
 	claims, source, expiry, status, err := srv.verifyOAuthIdentity(ctx, token, "")
 	if !errors.Is(err, ErrOAuth2InvalidProfile) || claims != nil || source != nil || !expiry.IsZero() || status != http.StatusUnauthorized || called {
@@ -952,7 +952,7 @@ func TestOAuthProfileRejectsEmptyAccessTokenBeforeUserInfo(t *testing.T) {
 	}
 	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		calls++
-		return profileTestResponse(`{"id":42}`), nil
+		return jsonResponse(`{"id":42}`), nil
 	})})
 	claims, source, expiry, status, err := srv.verifyOAuthIdentity(ctx, &oauth2.Token{TokenType: "Bearer"}, "")
 	if !errors.Is(err, ErrOAuth2InvalidProfile) || claims != nil || source != nil || !expiry.IsZero() || status != http.StatusUnauthorized || calls != 0 {
@@ -967,7 +967,7 @@ func TestOAuthProfileUserInfoCallbackDeadline(t *testing.T) {
 		var userinfoErr error
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			if r.URL.Path == "/token" {
-				return profileTestResponse(`{"access_token":"access","token_type":"Bearer"}`), nil
+				return jsonResponse(`{"access_token":"access","token_type":"Bearer"}`), nil
 			}
 			select {
 			case <-r.Context().Done():
@@ -1005,7 +1005,7 @@ func TestOAuthProfileAcceptsShortUnexpiredToken(t *testing.T) {
 			if got := r.Header.Get("Authorization"); got != "Bearer access" {
 				t.Fatalf("userinfo authorization = %q", got)
 			}
-			return profileTestResponse(`{"id":42}`), nil
+			return jsonResponse(`{"id":42}`), nil
 		})})
 		token := &oauth2.Token{AccessToken: "access", TokenType: "Bearer", Expiry: time.Now().Add(5 * time.Second)}
 		if token.Valid() {
@@ -1041,9 +1041,9 @@ func TestOAuthProfileExplicitZeroExpiryRejectedButMissingExpiryCapped(t *testing
 						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/x-www-form-urlencoded"}},
 							Body: io.NopCloser(strings.NewReader("access_token=access&token_type=Bearer" + tc.expiryField))}, nil
 					}
-					return profileTestResponse(`{"access_token":"access","token_type":"Bearer"` + tc.expiryField + `}`), nil
+					return jsonResponse(`{"access_token":"access","token_type":"Bearer"` + tc.expiryField + `}`), nil
 				}
-				return profileTestResponse(`{"id":42}`), nil
+				return jsonResponse(`{"id":42}`), nil
 			})}
 			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 			response := profileCallback(srv, cookie, state, "code")

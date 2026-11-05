@@ -11,15 +11,15 @@ sessions. Both modes use authorization-code state and PKCE (S256). `Wrap` and
 
 ## Setup
 
-`Config` requires `RedirectURL`, `Issuer` and `ClientID`. The issuer, endpoint
-overrides, discovered endpoints and JWKS URI must use HTTPS;
+`Config` requires `RedirectURL`, `Issuer` and `ClientID`. The issuer, effective
+provider endpoints and JWKS URI must use HTTPS;
 `AllowInsecureIssuer` permits HTTP for tests and development. OIDC mode
 discovers provider endpoints, verifies the ID token and nonce, and attempts
 refresh before expiry when the provider issues a refresh token. Request offline
 access with the `offline_access` scope for OIDC providers that support it, or
 `oauth2.AccessTypeOffline` in `Server.Options` for Google. Check both the error
-from `New` and `Server.Valid()` before serving protected routes; invalid servers
-pass wrapped handlers through without authentication.
+from `New` and `Server.Valid()` before serving protected routes; an invalid server
+leaves `Wrap` and `WrapAdmin` handlers unprotected.
 
 Profile mode requires `AuthURL`, `TokenURL` and `UserInfoURL`, plus a
 `ProfileSubject` function that extracts a stable subject from the authenticated
@@ -43,9 +43,11 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
 - Give each `Config` a distinct `Namespace` and callback directory. Add each
   provider's registered paths to the other servers' `HandledPaths` so return
   targets cannot enter another provider's auth endpoints.
-- `New` sets `Jaws.MakeAuth`. Install a composite `MakeAuth` if JaWS pages need
-  data from several providers. Each server's `Wrap`, `Handler` and
-  `CurrentClaims` check that provider's authentication.
+- `New` replaces `Jaws.MakeAuth` when it configures authentication. When servers
+  share one JaWS, install a composite `MakeAuth` after constructing them so
+  templates use the intended provider's authentication and admin policy. Each
+  server's `Wrap`, `Handler` and `CurrentClaims` check that provider's
+  authentication.
 - Register `HandleLink` as a POST handler to enable linking; `New` does not
   register it. Authorize the session before calling it. In `LinkEvent`, recheck
   the original provider's `CurrentClaims` before writing the link. Linking keeps
@@ -83,11 +85,11 @@ method proves a live login; check `CurrentClaims` before protected actions.
 
 Pending OAuth flows expire after ten minutes. jawsauth extends the original
 JaWS session's grace while the user visits the provider. Unauthenticated
-protected GET requests during a pending login redirect to the same provider
-flow without replacing its state, return target or grace deadline. During a
-running callback they return 409 unless `LoginFailed` handles them. Logout and
-authentication expiry clear that server's credentials and reload every JaWS page
-in the session.
+protected GETs reuse a pending login's state, return target and grace deadline
+while more than two minutes remain; near expiry, they start a new flow and
+extend grace. During a running callback they return 409 unless `LoginFailed`
+handles them. Logout and auth expiry clear this server's credentials and reload
+every JaWS page in the session.
 Auth expiry preserves a pending login but cancels a pending link. Explicit
 logout cancels either flow. A new login on the same server, including one
 started by `Wrap` or `Handler`, cancels a pending link.

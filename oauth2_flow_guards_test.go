@@ -144,9 +144,9 @@ func TestProfileTokenExpiresBetweenRotationAndStore(t *testing.T) {
 		_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.URL.Path == "/token" {
-				return profileTestResponse(`{"access_token":"short","token_type":"Bearer","expires_in":30}`), nil
+				return jsonResponse(`{"access_token":"short","token_type":"Bearer","expires_in":30}`), nil
 			}
-			return profileTestResponse(`{"id":42}`), nil
+			return jsonResponse(`{"id":42}`), nil
 		})}
 		logins := 0
 		srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
@@ -286,7 +286,7 @@ func TestUserInfoRequiresOneJSONObject(t *testing.T) {
 						srv.profileSubject = func(map[string]any) (string, error) { return "42", nil }
 					}
 					ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-						return profileTestResponse(tc.body), nil
+						return jsonResponse(tc.body), nil
 					})})
 					claims, err := srv.fetchUserInfo(ctx, "https://provider.example/user", oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "proof"}))
 					if !errors.Is(err, ErrUserInfoInvalidResponse) || claims != nil {
@@ -325,7 +325,7 @@ func TestProfileUserInfoNullDoesNotCallSubject(t *testing.T) {
 		},
 	}
 	ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return profileTestResponse(`null`), nil
+		return jsonResponse(`null`), nil
 	})})
 	claims, source, expiry, status, err := srv.verifyOAuthIdentity(ctx, &oauth2.Token{AccessToken: "proof", TokenType: "Bearer"}, "")
 	if !errors.Is(err, ErrUserInfoInvalidResponse) || claims != nil || source != nil || !expiry.IsZero() || status != http.StatusBadGateway || called {

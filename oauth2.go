@@ -126,8 +126,7 @@ func sanitizeRedirectTarget(requestHost, location string) (sanitized string) {
 	return
 }
 
-func (srv *Server) begin(hr *http.Request) (oauth2cfg *oauth2.Config, location string) {
-	oauth2cfg = srv.oauth2cfg
+func (srv *Server) begin(hr *http.Request) (location string) {
 	if location = strings.TrimSpace(hr.Referer()); location == "" {
 		location = hr.RequestURI
 	}
@@ -184,16 +183,19 @@ func (srv *Server) HandleLink(hw http.ResponseWriter, hr *http.Request) {
 
 var linkOriginCheck = http.NewCrossOriginProtection()
 
-func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, preservePendingLogin bool) {
-	oauth2cfg, location := srv.begin(hr)
+func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, fromWrapper bool) {
+	oauth2cfg := srv.oauth2cfg
+	var location string
+	switch {
+	case oauth2cfg != nil && fromWrapper:
+		location = srv.returnTarget(hr, hr.RequestURI)
+	case oauth2cfg != nil && link && strings.TrimSpace(hr.Referer()) == "":
+		location = "/"
+	default:
+		location = srv.begin(hr)
+	}
 	if oauth2cfg != nil {
-		if preservePendingLogin {
-			location = srv.returnTarget(hr, hr.RequestURI)
-		}
-		if link && strings.TrimSpace(hr.Referer()) == "" {
-			location = "/"
-		}
-		flow, sess, status := srv.prepareOAuthFlow(hw, hr, link, preservePendingLogin, location)
+		flow, sess, status := srv.prepareOAuthFlow(hw, hr, link, fromWrapper, location)
 		if status != 0 {
 			failure := ErrOAuth2MissingSession
 			switch status {
@@ -227,7 +229,7 @@ func (srv *Server) startOAuth(hw http.ResponseWriter, hr *http.Request, link, pr
 	hw.WriteHeader(statusCode)
 }
 
-func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, link, preservePendingLogin bool, location string) (flow pendingOAuthFlow, sess *jaws.Session, status int) {
+func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, link, fromWrapper bool, location string) (flow pendingOAuthFlow, sess *jaws.Session, status int) {
 	failStatus := http.StatusServiceUnavailable
 	if link {
 		failStatus = http.StatusForbidden
@@ -246,7 +248,7 @@ func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, li
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	if preservePendingLogin && srv.pendingOrdinaryLoginLocked(sess) {
+	if fromWrapper && srv.pendingOrdinaryLoginLocked(sess, 2*time.Minute) {
 		// Reissue one pending transaction without replacing the first tab's state.
 		flow, _ = sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
 		if flow.state == "" {
@@ -278,7 +280,7 @@ func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, li
 func (srv *Server) HandleLogout(hw http.ResponseWriter, hr *http.Request) {
 	statusCode := http.StatusMethodNotAllowed
 	if hr.Method == http.MethodGet {
-		_, location := srv.begin(hr)
+		location := srv.begin(hr)
 		if sess := srv.Jaws.GetSession(hr); sess != nil {
 			srv.clearSessionAuth(sess, hr, nil, false)
 		}
@@ -425,10 +427,7 @@ func (srv *Server) fetchUserInfo(ctx context.Context, userinfoURL string, tokenS
 	if userinfoURL != "" && tokenSource != nil {
 		client := oauth2.NewClient(ctx, tokenSource)
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-		timeout := client.Timeout
-		if timeout <= 0 || timeout > oauth2ProviderTimeout {
-			timeout = oauth2ProviderTimeout
-		}
+		timeout := boundedProviderClient(client).Timeout
 		requestCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		// oauth2.Transport logs from its deprecated CancelRequest; use the request context.
@@ -628,7 +627,13 @@ func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWr
 	}
 	token, err := srv.oauth2cfg.Exchange(ctx, hr.FormValue("code") /* #nosec G120 */, oauth2.VerifierOption(flow.verifier))
 	if srv.Jaws.Log(err) != nil {
-		return sess, http.StatusBadRequest, err
+		status := http.StatusBadGateway
+		var retrieveErr *oauth2.RetrieveError
+		if errors.As(err, &retrieveErr) && retrieveErr.Response != nil &&
+			retrieveErr.Response.StatusCode >= 400 && retrieveErr.Response.StatusCode < 500 {
+			status = http.StatusBadRequest
+		}
+		return sess, status, err
 	}
 	claims, tokenSource, expiry, status, err := srv.verifyOAuthIdentity(ctx, token, flow.nonce)
 	if err != nil {

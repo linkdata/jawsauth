@@ -128,7 +128,7 @@ func Test_beginSanitizesReferrer(t *testing.T) {
 	srv := &Server{HandledPaths: make(map[string]struct{})}
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	hr.Header.Set("Referer", "https://evil.com/wrong")
-	_, location := srv.begin(hr)
+	location := srv.begin(hr)
 	if location != "/" {
 		t.Fatal(location)
 	}
@@ -153,27 +153,27 @@ func Test_beginReferrerHandling(t *testing.T) {
 	srv := &Server{HandledPaths: map[string]struct{}{"/oauth2/login": {}}}
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	hr.Header.Set("Referer", "https://example.com/oauth2/login")
-	_, location := srv.begin(hr)
+	location := srv.begin(hr)
 	if location != "/" {
 		t.Fatal(location)
 	}
 	hr.Header.Set("Referer", "https://example.com/app/home")
-	_, location = srv.begin(hr)
+	location = srv.begin(hr)
 	if location != "/app/home" {
 		t.Fatal(location)
 	}
 	hr = httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login?next=x", nil)
-	_, location = srv.begin(hr)
+	location = srv.begin(hr)
 	if location != "/" {
 		t.Fatalf("query-bearing login loops to %q", location)
 	}
 	hr.Header.Set("Referer", "https://example.com/oauth2/login?next=x")
-	_, location = srv.begin(hr)
+	location = srv.begin(hr)
 	if location != "/" {
 		t.Fatalf("query-bearing referrer loops to %q", location)
 	}
 	hr.Header.Set("Referer", "https://example.com/app/home?next=x")
-	_, location = srv.begin(hr)
+	location = srv.begin(hr)
 	if location != "/app/home?next=x" {
 		t.Fatalf("unhandled target changed to %q", location)
 	}
@@ -181,7 +181,7 @@ func Test_beginReferrerHandling(t *testing.T) {
 		"https://example.com/oauth2//login", "https://example.com/oauth2/./login",
 	} {
 		hr.Header.Set("Referer", referer)
-		_, location = srv.begin(hr)
+		location = srv.begin(hr)
 		if location != "/" {
 			t.Fatalf("handled path %q returned to %q", referer, location)
 		}
@@ -197,7 +197,7 @@ func TestBeginExcludesTrailingSlashCallback(t *testing.T) {
 		"https://example.com/oauth2/./callback/",
 	} {
 		hr.Header.Set("Referer", referer)
-		_, location := srv.begin(hr)
+		location := srv.begin(hr)
 		if location != "/" {
 			t.Fatalf("callback return target %q kept as %q", referer, location)
 		}
@@ -212,7 +212,7 @@ func Test_beginPathBoundary(t *testing.T) {
 	hr := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	hr.Header.Set("Referer", "https://example.com/admin/login")
 	for range 50 {
-		_, location := srv.begin(hr)
+		location := srv.begin(hr)
 		if location != "/" {
 			t.Fatal(location)
 		}
@@ -220,7 +220,7 @@ func Test_beginPathBoundary(t *testing.T) {
 
 	srv = &Server{HandledPaths: map[string]struct{}{"/login": {}}}
 	hr.Header.Set("Referer", "https://example.com/admin/login")
-	_, location := srv.begin(hr)
+	location := srv.begin(hr)
 	if location != "/admin/login" {
 		t.Fatal(location)
 	}
@@ -789,6 +789,44 @@ func TestServer_fetchUserInfoStatusError(t *testing.T) {
 	}
 }
 
+func TestTokenExchangeFailureStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		providerStatus int
+		transportError error
+		want           int
+	}{
+		{"network failure", 0, errors.New("provider unavailable"), http.StatusBadGateway},
+		{"timeout", 0, context.DeadlineExceeded, http.StatusBadGateway},
+		{"provider bad request", http.StatusBadRequest, nil, http.StatusBadRequest},
+		{"provider unavailable", http.StatusServiceUnavailable, nil, http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jw := newTestJaws(t)
+			srv := newProfileTestServer(t, jw, nil)
+			srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path != "/token" {
+					t.Errorf("unexpected provider request %s", r.URL.Path)
+					return nil, errors.New("unexpected provider request")
+				}
+				if tc.transportError != nil {
+					return nil, tc.transportError
+				}
+				w := httptest.NewRecorder()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.providerStatus)
+				_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+				return w.Result(), nil
+			})}
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			response := profileCallback(srv, cookie, state, "code")
+			if response.Code != tc.want {
+				t.Fatalf("token exchange status = %d, want %d", response.Code, tc.want)
+			}
+		})
+	}
+}
+
 func TestServer_fetchUserInfoRespectsRequestCancellation(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -893,7 +931,7 @@ func TestOAuthOfflineOptionUsesAuthorizationOnly(t *testing.T) {
 		tokenAccessType = r.PostForm.Get("access_type")
 		tokenVerifier = r.PostForm.Get("code_verifier")
 		tokenCode = r.PostForm.Get("code")
-		return profileTestResponse(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`), nil
+		return jsonResponse(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`), nil
 	})}
 	start := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/login", nil)
 	startResult := httptest.NewRecorder()
@@ -931,10 +969,10 @@ func TestVerifyOIDCUserInfoDoesNotRefreshDuringCallback(t *testing.T) {
 		switch req.URL.Path {
 		case "/userinfo":
 			userinfoCalls++
-			return profileTestResponse(`{"sub":"one","email":"user@example.com"}`), nil
+			return jsonResponse(`{"sub":"one","email":"user@example.com"}`), nil
 		case "/token":
 			refreshCalls++
-			return profileTestResponse(`{"access_token":"refreshed","token_type":"Bearer"}`), nil
+			return jsonResponse(`{"access_token":"refreshed","token_type":"Bearer"}`), nil
 		default:
 			t.Fatalf("unexpected provider request %s", req.URL)
 			return nil, nil

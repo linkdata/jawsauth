@@ -61,7 +61,7 @@ func TestPendingLoginProtectedRequestDoesNotRestartOrRenewGrace(t *testing.T) {
 		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
 		protected := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
 		protected.AddCookie(cookie)
-		time.Sleep(9 * time.Minute)
+		time.Sleep(7 * time.Minute)
 		response := httptest.NewRecorder()
 		srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("pending login reached protected handler")
@@ -73,9 +73,37 @@ func TestPendingLoginProtectedRequestDoesNotRestartOrRenewGrace(t *testing.T) {
 		if stored.state != state {
 			t.Fatalf("pending login replaced state: want %q got %q", state, stored.state)
 		}
-		time.Sleep(time.Minute + oauth2ProviderTimeout + 2*time.Second)
+		time.Sleep(3*time.Minute + oauth2ProviderTimeout + 2*time.Second)
 		if jw.GetSession(protected) != nil {
-			t.Fatal("rejected start renewed pending session grace")
+			t.Fatal("protected request renewed pending session grace")
+		}
+	})
+}
+
+func TestPendingLoginProtectedRequestRenewsNearExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		jw := newTestJaws(t)
+		srv := newProfileTestServer(t, jw, nil)
+		cookie, oldState := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+		protected := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
+		protected.AddCookie(cookie)
+		time.Sleep(oauth2FlowLifetime - time.Second)
+		response := httptest.NewRecorder()
+		srv.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("pending login reached protected handler")
+		})).ServeHTTP(response, protected)
+		location, err := url.Parse(response.Header().Get("Location"))
+		if err != nil || response.Code != http.StatusFound {
+			t.Fatalf("new login: status=%d location=%q err=%v", response.Code, response.Header().Get("Location"), err)
+		}
+		newState := location.Query().Get("state")
+		if newState == "" || newState == oldState || testOAuthFlow(jw.GetSession(protected), srv).state != newState {
+			t.Fatalf("near-expiry flow was reused: old=%q new=%q", oldState, newState)
+		}
+		// Complete the renewed flow after the original session's grace deadline.
+		time.Sleep(oauth2ProviderTimeout + 3*time.Second)
+		if result := profileCallback(srv, cookie, newState, "first"); result.Code != http.StatusFound {
+			t.Fatalf("renewed login callback: status=%d body=%q", result.Code, result.Body.String())
 		}
 	})
 }
@@ -211,9 +239,9 @@ func TestOAuthLinkCallbackNearDeadlineCanFinishProviderExchange(t *testing.T) {
 			httpClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/token" {
 					time.Sleep(10 * time.Second)
-					return profileTestResponse(`{"access_token":"access","token_type":"Bearer"}`), nil
+					return jsonResponse(`{"access_token":"access","token_type":"Bearer"}`), nil
 				}
-				return profileTestResponse(`{"id":42}`), nil
+				return jsonResponse(`{"id":42}`), nil
 			})},
 		}
 		start := httptest.NewRequest(http.MethodPost, "https://app.example/auth/link", nil)

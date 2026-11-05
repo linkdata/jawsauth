@@ -58,6 +58,7 @@ func (a *JawsAuth) Email() (s string) {
 // EmailVerified reports whether the session address came from a verified email claim.
 //
 // Addresses taken from mail or public_email claims are unverified.
+// It does not check expiry; use [Server.CurrentClaims] for access decisions.
 // It is safe to call on a nil or zero-value JawsAuth.
 func (a *JawsAuth) EmailVerified() (yes bool) {
 	if a != nil && a.server != nil && a.sess != nil {

@@ -63,8 +63,9 @@ type HandleFunc func(uri string, handler http.Handler)
 //
 // jawsauth calls [Server.LogoutEvent] after releasing SessionRotationLock.
 // When LoginEvent is set, clearing auth before it begins suppresses both
-// events; clearing auth during it defers LogoutEvent until it returns. A
-// deferred LogoutEvent receives a nil request.
+// events; clearing auth during it defers LogoutEvent until it returns.
+// LogoutEvent receives a nil request for timer cleanup, deferred delivery, or
+// a call to [Server.Logout] with a nil request.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
 // FailedFunc is called on callback failures and when a protected request meets
@@ -374,7 +375,7 @@ func (srv *Server) Wrap(h http.Handler) (rh http.Handler) {
 // Unauthenticated GET begins login; other unauthenticated methods receive 403.
 // Authenticated non-admins receive 403. [Server.RequireVerifiedAdminEmail]
 // applies. A GET request during a running login callback may return 409.
-// An invalid Server returns the unprotected template handler.
+// An invalid, non-nil Server returns the unprotected template handler.
 func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
 	return srv.wrap(ui.Handler(srv.Jaws, name, dot), true)
 }
@@ -384,7 +385,7 @@ func (srv *Server) HandlerAdmin(name string, dot any) http.Handler {
 //
 // Unauthenticated GET begins login; other unauthenticated methods receive 403.
 // A GET request during a running login callback may return 409.
-// An invalid Server returns the unprotected template handler.
+// An invalid, non-nil Server returns the unprotected template handler.
 func (srv *Server) Handler(name string, dot any) http.Handler {
 	return srv.wrap(ui.Handler(srv.Jaws, name, dot), false)
 }

@@ -445,12 +445,12 @@ func (srv *Server) authTimerDue(expiry time.Time) time.Time {
 }
 
 // pendingOrdinaryLoginLocked requires srv.mu.
-func (srv *Server) pendingOrdinaryLoginLocked(sess *jaws.Session) bool {
+func (srv *Server) pendingOrdinaryLoginLocked(sess *jaws.Session, minimumRemaining time.Duration) bool {
 	if flow := srv.oauthCallbacks[sess]; flow.canceled != nil {
 		return !flow.link
 	}
 	flow, _ := sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
-	return flow.state != "" && !flow.link && time.Now().Before(flow.expiry)
+	return flow.state != "" && !flow.link && time.Until(flow.expiry) > minimumRemaining
 }
 
 func (srv *Server) clearSessionOAuthFlowLocked(sess *jaws.Session) {
@@ -496,7 +496,7 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 	if cleared {
 		// Auth expiry must not cancel an ordinary login already in progress.
 		// Explicit logout and link flows still revoke their pending callbacks.
-		if !preservePendingLogin || !srv.pendingOrdinaryLoginLocked(sess) {
+		if !preservePendingLogin || !srv.pendingOrdinaryLoginLocked(sess, 0) {
 			srv.clearSessionOAuthFlowLocked(sess)
 		}
 		sess.Set(srv.SessionKey, nil)

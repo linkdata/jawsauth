@@ -47,9 +47,9 @@ func TestConcurrentProviderCallbacksRotateOriginalSessionOnce(t *testing.T) {
 	jw := newTestJaws(t)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/token" {
-			return profileTestResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
+			return jsonResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
 		}
-		return profileTestResponse(`{"id":42}`), nil
+		return jsonResponse(`{"id":42}`), nil
 	})}
 	gate := &gateRotationLock{both: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
@@ -133,9 +133,9 @@ func TestLinkedProviderLogoutBeforeLinkWrite(t *testing.T) {
 			jw := newTestJaws(t)
 			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/token" {
-					return profileTestResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
+					return jsonResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
 				}
-				return profileTestResponse(`{"id":42}`), nil
+				return jsonResponse(`{"id":42}`), nil
 			})}
 			a := newConcurrentProfileProvider(t, jw, client, "a")
 			b := newConcurrentProfileProvider(t, jw, client, "b")

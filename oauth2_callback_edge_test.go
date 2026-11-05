@@ -29,7 +29,7 @@ func TestOIDCCallbackRejectsEmptySubject(t *testing.T) {
 				"exp": time.Now().Add(time.Hour).Unix(),
 			})
 			srv.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				return profileTestResponse(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`), nil
+				return jsonResponse(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`), nil
 			})}
 			logins, links := 0, 0
 			srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
@@ -83,9 +83,9 @@ func TestOIDCExpiryDuringUserInfoRejected(t *testing.T) {
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			if r.URL.Path == "/userinfo" {
 				time.Sleep(6 * time.Second)
-				return profileTestResponse(`{"sub":"person","email":"user@example.com"}`), nil
+				return jsonResponse(`{"sub":"person","email":"user@example.com"}`), nil
 			}
-			return profileTestResponse(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`), nil
+			return jsonResponse(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`), nil
 		})}
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/oauth2/callback?state=state&code=code", nil)
 		w := httptest.NewRecorder()
@@ -124,7 +124,7 @@ func TestProfileExpiryDuringSubjectRejected(t *testing.T) {
 				return "person", nil
 			}}
 		ctx := context.WithValue(t.Context(), oauth2.HTTPClient, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-			return profileTestResponse(`{"id":42}`), nil
+			return jsonResponse(`{"id":42}`), nil
 		})})
 		token := &oauth2.Token{AccessToken: "access", TokenType: "Bearer", Expiry: time.Now().Add(11 * time.Second)}
 		claims, _, _, status, err := srv.verifyOAuthIdentity(ctx, token, "")

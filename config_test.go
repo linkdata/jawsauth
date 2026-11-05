@@ -471,7 +471,7 @@ func TestConfigBuildContextJWKSTimeout(t *testing.T) {
 			client := &http.Client{Timeout: configuredTimeout, Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				switch req.URL.Path {
 				case "/.well-known/openid-configuration":
-					return profileTestResponse(`{"issuer":"https://issuer.example","authorization_endpoint":"https://issuer.example/auth","token_endpoint":"https://issuer.example/token","jwks_uri":"https://issuer.example/jwks"}`), nil
+					return jsonResponse(`{"issuer":"https://issuer.example","authorization_endpoint":"https://issuer.example/auth","token_endpoint":"https://issuer.example/token","jwks_uri":"https://issuer.example/jwks"}`), nil
 				case "/jwks":
 					jwksHits.Add(1)
 					deadline, ok := req.Context().Deadline()
