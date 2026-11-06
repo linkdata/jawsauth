@@ -36,8 +36,8 @@ including an unauthenticated protected GET, can retain its session for about ten
 minutes even if the client never reaches the provider. By default, login keeps
 the same session and its application data, so a one-session limit permits login.
 Set `Server.RotateSessionOnLogin` before serving requests when an attacker can
-plant or know a pre-login cookie and use the same client IP JaWS sees for its
-owner.
+make a victim use an attacker-known pre-login cookie, reach JaWS from the same
+client IP JaWS sees for the victim, and cannot learn the later cookie.
 Rotation discards pre-login application data and needs a free slot under both
 limits; `MaxSessionsPerIP = 1` then prevents login. If a slot is unavailable,
 login returns 503 with `Retry-After: 60` and preserves the existing session.

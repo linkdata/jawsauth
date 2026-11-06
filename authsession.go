@@ -117,10 +117,13 @@ func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (
 	return
 }
 
-func (srv *Server) sessionAccessStatus(sess *jaws.Session) (current, present, pending bool) {
+func (srv *Server) sessionAccessStatus(sess *jaws.Session) (current, present, pending bool, entry *authTimerState) {
 	srv.mu.Lock()
 	current, present = srv.sessionAuthStatus(sess, time.Now)
 	pending = !srv.RotateSessionOnLogin && srv.loginEvents[sess] != nil
+	if sess != nil {
+		entry = srv.authTimers[sess.ID()]
+	}
 	srv.mu.Unlock()
 	return
 }
@@ -172,28 +175,40 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 	}
 	email, verified := srv.extractEmail(claims) // Logger callbacks must run outside srv.mu.
 	claims["email_verified"] = verified
+	delay, replaced, err := srv.storePreparedSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, entry, loginCanceled, email, verified)
+	if err == nil {
+		srv.notifyStoredSessionAuthClaims(sess, expiry, delay, replaced)
+	}
+	return err
+}
+
+func (srv *Server) storePreparedSessionAuthClaimsIfActive(sess *jaws.Session, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time, entry *authTimerState, loginCanceled <-chan struct{}, email any, verified bool) (delay time.Duration, replaced bool, err error) {
 	srv.mu.Lock()
 	select {
 	case <-loginCanceled:
 		srv.mu.Unlock()
-		return ErrOAuth2MissingSession
+		err = ErrOAuth2MissingSession
+		return
 	default:
 	}
-	if err := srv.identityExpiryError(expiry); err != nil {
+	if err = srv.identityExpiryError(expiry); err != nil {
 		srv.mu.Unlock()
-		return err
+		return
 	}
 	if entry != nil && srv.authTimers[sess.ID()] != entry {
 		srv.mu.Unlock()
-		return errAuthTimerStale
+		err = errAuthTimerStale
+		return
 	}
 	if !sessionAlive(sess) {
 		srv.mu.Unlock()
 		if entry == nil {
-			return ErrOAuth2MissingSession
+			err = ErrOAuth2MissingSession
+			return
 		}
 		srv.clearSessionAuth(sess, nil, entry, true)
-		return errAuthTimerStale
+		err = errAuthTimerStale
+		return
 	}
 	if entry != nil {
 		previous, _ := sess.Get(srv.SessionKey).(map[string]any)
@@ -201,7 +216,8 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 		newSubject, _ := claims["sub"].(string)
 		if oldSubject == "" || oldSubject != newSubject {
 			srv.mu.Unlock()
-			return errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCSubjectMismatch}
+			err = errOIDC{kind: ErrOIDCInvalidIDToken, cause: errOIDCSubjectMismatch}
+			return
 		}
 	}
 	sess.Set(srv.SessionKey, claims)
@@ -209,7 +225,7 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 	sess.Set(srv.sessionKey(oauth2AuthExpiryKey), expiry)
 	sess.Set(srv.SessionEmailKey, email)
 	sess.Set(srv.SessionEmailVerifiedKey, verified)
-	delay, replaced := srv.scheduleSessionAuthTimerLocked(sess, expiry)
+	delay, replaced = srv.scheduleSessionAuthTimerLocked(sess, expiry)
 	if loginCanceled != nil {
 		// Keep a new flow from replacing this login before its callback finishes.
 		if srv.loginEvents == nil {
@@ -218,6 +234,10 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 		srv.loginEvents[sess] = &pendingLoginEvent{}
 	}
 	srv.mu.Unlock()
+	return
+}
+
+func (srv *Server) notifyStoredSessionAuthClaims(sess *jaws.Session, expiry time.Time, delay time.Duration, replaced bool) {
 	srv.Jaws.Dirty(sess)
 	mode := "oidc"
 	if srv.profileSubject != nil {
@@ -230,7 +250,6 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 		"delay", delay,
 		"replaced_existing", replaced,
 	)
-	return nil
 }
 
 func (srv *Server) emitLoginEvent(sess *jaws.Session, hr *http.Request) {

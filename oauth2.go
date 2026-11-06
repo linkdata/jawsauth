@@ -619,27 +619,39 @@ func (srv *Server) completeLogin(hw http.ResponseWriter, hr *http.Request, old *
 }
 
 func (srv *Server) completeLoginInPlace(hr *http.Request, sess *jaws.Session, flow pendingOAuthFlow, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time) (status int, err error) {
+	if flow.revoked() {
+		return http.StatusForbidden, ErrOAuth2MissingSession
+	}
+	// A logger can call Logout, which takes SessionRotationLock.
+	email, verified := srv.extractEmail(claims)
+	claims["email_verified"] = verified
 	rotationLock := srv.SessionRotationLock
 	if rotationLock != nil {
 		rotationLock.Lock()
-		defer rotationLock.Unlock()
 	}
-	if flow.revoked() || srv.Jaws.GetSession(hr) != sess || !sess.ExtendGrace(time.Minute) {
-		return http.StatusForbidden, ErrOAuth2MissingSession
-	}
-	err = srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, nil, flow.canceled)
-	if err != nil {
-		if errors.Is(err, ErrOAuth2MissingSession) {
-			return http.StatusForbidden, err
+	status, err = http.StatusForbidden, ErrOAuth2MissingSession
+	var delay time.Duration
+	var replaced bool
+	if !flow.revoked() && srv.Jaws.GetSession(hr) == sess && sess.ExtendGrace(time.Minute) {
+		delay, replaced, err = srv.storePreparedSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, nil, flow.canceled, email, verified)
+		if err == nil {
+			srv.mu.Lock()
+			if srv.oauthCallbacks[sess].canceled == flow.canceled {
+				delete(srv.oauthCallbacks, sess)
+			}
+			srv.mu.Unlock()
+			status = http.StatusFound
+		} else if !errors.Is(err, ErrOAuth2MissingSession) {
+			status = http.StatusUnauthorized
 		}
-		return http.StatusUnauthorized, err
 	}
-	srv.mu.Lock()
-	if srv.oauthCallbacks[sess].canceled == flow.canceled {
-		delete(srv.oauthCallbacks, sess)
+	if rotationLock != nil {
+		rotationLock.Unlock()
 	}
-	srv.mu.Unlock()
-	return http.StatusFound, nil
+	if err == nil {
+		srv.notifyStoredSessionAuthClaims(sess, expiry, delay, replaced)
+	}
+	return
 }
 
 func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWriter, hr *http.Request, sess *jaws.Session, flow pendingOAuthFlow) (*jaws.Session, int, error) {

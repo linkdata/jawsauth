@@ -10,7 +10,7 @@ type wrapper struct {
 
 func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 	sess := w.server.Jaws.GetSession(hr)
-	current, present, pending := w.server.sessionAccessStatus(sess)
+	current, present, pending, entry := w.server.sessionAccessStatus(sess)
 	if pending {
 		if hr.Method == http.MethodGet {
 			if w.server.LoginFailed != nil {
@@ -42,9 +42,9 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 		return
 	}
 	w.handler.ServeHTTP(hw, hr)
-	// A revocation may have taken its request snapshot before rendering attached
-	// a new JaWS request. Retire that request before this response completes.
-	if current, _, pending := w.server.sessionAccessStatus(sess); !current || pending || (w.admin && !w.server.sessionIsAdmin(sess)) {
+	// Revocation or in-place re-login may take a request snapshot before rendering
+	// attaches a new JaWS request. Retire it before this response completes.
+	if current, _, pending, latestEntry := w.server.sessionAccessStatus(sess); !current || pending || latestEntry != entry || (w.admin && !w.server.sessionIsAdmin(sess)) {
 		reloadAuthRequests(sess.Requests())
 	}
 }

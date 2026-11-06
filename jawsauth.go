@@ -10,8 +10,9 @@ import (
 //
 // It returns nil until [Server.LoginEvent] completes for in-place login.
 // It is useful when several providers share JaWS.
-// Treat the returned session map as read-only, and recheck before protected writes
-// because the session may close after this call.
+// Treat the returned map as read-only. The session may close, and an in-place
+// login may change its identity or permissions after this call. Recheck the
+// session and claims before protected writes.
 func (srv *Server) CurrentClaims(sess *jaws.Session) map[string]any {
 	if srv == nil || srv.Jaws == nil || srv.SessionKey == "" || sess == nil || sess.Jaws() != srv.Jaws {
 		return nil
