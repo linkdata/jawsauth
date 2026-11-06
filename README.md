@@ -40,7 +40,8 @@ make a victim use an attacker-known pre-login cookie, reach JaWS from the same
 client IP JaWS sees for the victim, and cannot learn the later cookie.
 Rotation discards pre-login application data and needs a free slot under both
 limits; `MaxSessionsPerIP = 1` then prevents login. If a slot is unavailable,
-login returns 503 with `Retry-After: 60` and preserves the existing session.
+the default response is 503 with `Retry-After: 60`, and the existing session
+remains available.
 
 ## Multiple providers
 
@@ -63,8 +64,8 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
   Calling `Logout` on that event session cancels it. Other providers'
   `LogoutEvent` may run later with a nil request. Before using one to log out
   another provider, check its `CurrentClaims`.
-  Starting a link replaces this server's pending flow, including a running
-  login callback.
+  Starting a link replaces this server's pending flow in the same session,
+  including a running login callback.
 - `New` shares one process-wide `SessionRotationLock` by default. To coordinate
   with other authentication methods or isolate independent JaWS instances, set
   a custom lock before serving; servers sharing a JaWS must use the same lock.
@@ -99,19 +100,17 @@ method proves a live login; check `CurrentClaims` before protected actions.
 ## Session lifetime
 
 Pending OAuth flows expire after ten minutes. jawsauth extends the original
-JaWS session's grace for the pending flow. Unauthenticated
-protected GETs reuse a pending login's state, return target and grace deadline
-while more than two minutes remain; near expiry, they start a new flow and
-extend grace. Once in-place login stores claims, protected GETs with that
-session cookie return 409 until login notification completes, unless
-`LoginFailed` handles them. `CurrentClaims` remains nil during that interval.
-With `RotateSessionOnLogin`, the old cookie starts a new flow after
-rotation and cannot cancel that sign-in. Without rotation, successful login
+JaWS session's grace for the pending flow. Unauthenticated protected GETs reuse
+a pending login's state, return target and grace deadline while more than two
+minutes remain; near expiry, they start a new flow and extend grace. Once
+in-place login stores claims, protected GETs with that session cookie return
+409 until login notification completes, unless `LoginFailed` handles them.
+`CurrentClaims` remains nil during that interval. Successful in-place login
 reloads active JaWS pages after `LoginEvent`. Logout and auth expiry clear this
 server's credentials and reload every JaWS page in the session. Auth expiry
 preserves a pending login but cancels a pending link. Explicit logout on the
-live session cancels either flow. A new login on the same server, including
-one started by `Wrap` or `Handler`, cancels a pending link.
+live session cancels either flow. A new login on the same server and session,
+including one started by `Wrap` or `Handler`, cancels a pending link.
 
 Use an HTTP endpoint for a post-logout redirect. When `Server.Logout` clears
 authentication, it reloads pages and closes their sockets, so a later JaWS

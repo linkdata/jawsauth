@@ -64,9 +64,8 @@ type HandleFunc func(uri string, handler http.Handler)
 // jawsauth calls [Server.LogoutEvent] after releasing SessionRotationLock.
 // When LoginEvent is set, clearing auth before it begins suppresses both
 // events; clearing auth during it defers LogoutEvent until it returns.
-// LoginEvent can read claims from sess with [Server.SessionKey]. For in-place
-// login, new claims become available through [Server.CurrentClaims] after the
-// event returns.
+// LoginEvent can read claims from sess with [Server.SessionKey]. During in-place
+// login, [Server.CurrentClaims] returns nil until the event ends.
 // LogoutEvent receives a nil request for timer cleanup, deferred delivery, or
 // a call to [Server.Logout] with a nil request.
 // With [Server.RotateSessionOnLogin], re-login calls LogoutEvent on the old
@@ -75,10 +74,11 @@ type HandleFunc func(uri string, handler http.Handler)
 // calling Logout; that call can revoke a running sign-in.
 type EventFunc func(sess *jaws.Session, hr *http.Request)
 
-// FailedFunc handles login and callback failures.
+// FailedFunc handles OAuth callback failures and flow conflicts.
 //
-// It also handles protected requests during a login callback and login or link
-// start conflicts. Other flow-start failures write their own response.
+// It receives login and link start conflicts, and protected GETs while an
+// in-place login notification is pending. Other flow-start failures write their
+// own response.
 //
 // It returns true if it wrote the HTTP response itself, in which case jawsauth writes
 // nothing further. Errors can contain untrusted browser-supplied text. Quote errors
@@ -109,7 +109,7 @@ type Server struct {
 	HandledPaths            map[string]struct{} // URI paths excluded from OAuth return targets
 	LoginEvent              EventFunc           // called after claims are stored; revocation may suppress or follow it
 	LogoutEvent             EventFunc           // auth-clear callback; see EventFunc for ordering and nil requests
-	LoginFailed             FailedFunc          // callback failures and protected requests during a login callback
+	LoginFailed             FailedFunc          // callback failures and flow conflicts; see FailedFunc
 	LinkEvent               LinkFunc            // required by HandleLink; register its POST route separately
 	// SessionRotationLock is held during flow start, rotation, in-place login
 	// claim storage, auth clearing, and LinkEvent.
@@ -117,7 +117,7 @@ type Server struct {
 	// one JaWS instance when coordinating with other authentication methods.
 	SessionRotationLock sync.Locker
 	Options             []oauth2.AuthCodeOption // authorization URL options, e.g. oauth2.AccessTypeOffline; never sent to token exchange
-	// RotateSessionOnLogin replaces the JaWS Session after a successful login.
+	// RotateSessionOnLogin replaces the JaWS Session during login.
 	//
 	// It defaults to false. When enabled, login publishes a new cookie, closes
 	// the old Session, and requires a free slot under JaWS session limits.

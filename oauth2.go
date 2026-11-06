@@ -149,10 +149,10 @@ func (srv *Server) returnTarget(hr *http.Request, location string) string {
 //
 // For GET requests it stores the state, PKCE verifier and, for OIDC, nonce in the
 // session, then responds with a 302 redirect to the provider's authorization URL.
-// It replaces any pending flow on this server, canceling a running callback or link.
+// It replaces any pending flow for this server and session, canceling a running
+// callback or link, unless an in-place login notification is pending; then the
+// default response is 409.
 // If no usable session is available, it returns 503 with Retry-After instead.
-// Without [Server.RotateSessionOnLogin], it returns 409 while a completed
-// callback delivers its login event.
 // Non-GET requests receive 405 with Allow: GET.
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method != http.MethodGet {
@@ -168,9 +168,9 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 // recheck that identity in LinkEvent when the provider returns. On success it
 // responds with a 303 redirect to the provider. It returns 405 with Allow: POST
 // for other methods, 403 for a cross-origin or missing session, and 500 when
-// linking is not configured. Without [Server.RotateSessionOnLogin], it returns
-// 409 while a completed login callback delivers its event. Starting a link
-// replaces any pending flow on this server, including a running login callback.
+// linking is not configured. The default response is 409 while an in-place login
+// notification is pending. Otherwise, starting a link replaces any pending
+// flow for this server and session, including a running login callback.
 func (srv *Server) HandleLink(hw http.ResponseWriter, hr *http.Request) {
 	switch {
 	case hr.Method != http.MethodPost:

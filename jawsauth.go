@@ -8,8 +8,7 @@ import (
 
 // CurrentClaims returns this provider's live authentication claims.
 //
-// During in-place login, it returns nil from claim storage until
-// [Server.LoginEvent] completes.
+// While an in-place login notification is pending, it returns nil.
 // It is useful when several providers share JaWS.
 // Treat the returned map as read-only. The session may close, and an in-place
 // login may change its identity or permissions after this call. Recheck the
