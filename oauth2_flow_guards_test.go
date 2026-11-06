@@ -70,6 +70,110 @@ func TestLoginStartDuringRotationKeepsFirstCallback(t *testing.T) {
 	}
 }
 
+func TestDefaultLoginStartDuringLoginEventConflicts(t *testing.T) {
+	jw := newTestJaws(t)
+	srv := newProfileTestServer(t, jw, nil)
+	srv.RotateSessionOnLogin = false
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	r.AddCookie(cookie)
+	sess := jw.GetSession(r)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
+	srv.LoginEvent = func(current *jaws.Session, _ *http.Request) {
+		if current != sess {
+			t.Error("LoginEvent received another session")
+		}
+		close(entered)
+		<-release
+	}
+	callbackDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { callbackDone <- profileCallback(srv, cookie, state, "first") }()
+	waitFor(t, entered, "LoginEvent did not start")
+	second := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
+	second.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	srv.HandleLogin(w, second)
+	if w.Code != http.StatusConflict || len(w.Result().Cookies()) != 0 || sess.Get(srv.sessionKey(oauth2FlowKey)) != nil {
+		t.Fatalf("overlapping login: status=%d cookies=%v flow=%v", w.Code, w.Result().Cookies(), sess.Get(srv.sessionKey(oauth2FlowKey)))
+	}
+	releaseOnce()
+	callback := waitFor(t, callbackDone, "first callback did not finish")
+	if callback.Code != http.StatusFound || len(callback.Result().Cookies()) != 0 || jw.GetSession(r) != sess || srv.CurrentClaims(sess) == nil {
+		t.Fatalf("first login: status=%d cookies=%v claims=%v", callback.Code, callback.Result().Cookies(), srv.CurrentClaims(sess))
+	}
+	profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
+}
+
+func TestDefaultPendingLoginIsNotAuthorized(t *testing.T) {
+	for _, revoke := range []bool{false, true} {
+		name := "committed"
+		if revoke {
+			name = "revoked"
+		}
+		t.Run(name, func(t *testing.T) {
+			jw := newTestJaws(t)
+			srv := newProfileTestServer(t, jw, nil)
+			srv.RotateSessionOnLogin = false
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			request := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
+			request.AddCookie(cookie)
+			sess := jw.GetSession(request)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			releaseOnce := sync.OnceFunc(func() { close(release) })
+			defer releaseOnce()
+			srv.LoginEvent = func(current *jaws.Session, _ *http.Request) {
+				if current != sess {
+					t.Error("LoginEvent received another session")
+				}
+				close(entered)
+				<-release
+				if revoke && !srv.Logout(current, nil) {
+					t.Error("LoginEvent could not revoke authentication")
+				}
+			}
+			callbackDone := make(chan *httptest.ResponseRecorder, 1)
+			go func() { callbackDone <- profileCallback(srv, cookie, state, "first") }()
+			waitFor(t, entered, "LoginEvent did not start")
+			if sess.Get(srv.SessionKey) == nil || srv.CurrentClaims(sess) != nil {
+				t.Fatal("pending login exposed claims")
+			}
+			handled := 0
+			protected := srv.Wrap(http.HandlerFunc(func(hw http.ResponseWriter, _ *http.Request) {
+				handled++
+				hw.WriteHeader(http.StatusOK)
+			}))
+			pending := httptest.NewRecorder()
+			protected.ServeHTTP(pending, request)
+			if pending.Code != http.StatusConflict || handled != 0 {
+				t.Fatalf("pending protected request: status=%d handled=%d", pending.Code, handled)
+			}
+			releaseOnce()
+			callback := waitFor(t, callbackDone, "callback did not finish")
+			if revoke {
+				post := httptest.NewRequest(http.MethodPost, "https://app.example/protected", nil)
+				post.AddCookie(cookie)
+				denied := httptest.NewRecorder()
+				protected.ServeHTTP(denied, post)
+				if callback.Code != http.StatusForbidden || denied.Code != http.StatusForbidden ||
+					handled != 0 || srv.CurrentClaims(sess) != nil {
+					t.Fatalf("revoked login: callback=%d protected=%d handled=%d", callback.Code, denied.Code, handled)
+				}
+				return
+			}
+			authorized := httptest.NewRecorder()
+			protected.ServeHTTP(authorized, request)
+			if callback.Code != http.StatusFound || authorized.Code != http.StatusOK ||
+				handled != 1 || srv.CurrentClaims(sess) == nil {
+				t.Fatalf("committed login: callback=%d protected=%d handled=%d", callback.Code, authorized.Code, handled)
+			}
+		})
+	}
+}
+
 func TestCallbackRevokedAfterStoreBalancesEvents(t *testing.T) {
 	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)

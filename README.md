@@ -33,9 +33,13 @@ An explicit `expires_in: 0` in the token response is rejected.
 Set `Jaws.MaxSessions` and `Jaws.MaxSessionsPerIP` to bound sessions created by
 unauthenticated requests; both limits are unlimited by default. A login start,
 including an unauthenticated protected GET, can retain its session for about ten
-minutes even if the client never reaches the provider. Login rotates the session
-and discards its application data; rotation needs a free slot under both limits.
-`MaxSessionsPerIP = 1` prevents login. If a slot is unavailable,
+minutes even if the client never reaches the provider. By default, login keeps
+the same session and its application data, so a one-session limit permits login.
+Set `Server.RotateSessionOnLogin` before serving requests when an attacker can
+plant or know a pre-login cookie and use the same client IP JaWS sees for its
+owner.
+Rotation discards pre-login application data and needs a free slot under both
+limits; `MaxSessionsPerIP = 1` then prevents login. If a slot is unavailable,
 login returns 503 with `Retry-After: 60` and preserves the existing session.
 
 ## Multiple providers
@@ -53,18 +57,19 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
 - Register `HandleLink` as a POST handler to enable linking; `New` does not
   register it. Authorize the session before calling it. In `LinkEvent`, recheck
   the original provider's `CurrentClaims` before writing the link. Linking keeps
-  the session; an ordinary login rotates it and signs out other providers.
-  A re-login replacing existing auth calls its `LogoutEvent` before storing
-  the new sign-in. Calling `Logout` on that event session cancels it. Other
-  providers' `LogoutEvent` may run later with a nil request. Before using one to
-  log out another provider, check its `CurrentClaims`; the session may have rotated.
+  the session; ordinary login keeps it and leaves other providers signed in.
+  With `RotateSessionOnLogin`, login signs out other providers, and re-login
+  calls its `LogoutEvent` on the old session before storing the new sign-in.
+  Calling `Logout` on that event session cancels it. Other providers'
+  `LogoutEvent` may run later with a nil request. Before using one to log out
+  another provider, check its `CurrentClaims`.
   Starting a link replaces this server's pending flow, including a running
   login callback.
 - `New` shares one process-wide `SessionRotationLock` by default. To coordinate
   with other authentication methods or isolate independent JaWS instances, set
   a custom lock before serving; servers sharing a JaWS must use the same lock.
-  jawsauth holds it during flow start, rotation, authentication clearing and
-  `LinkEvent`.
+  jawsauth holds it during flow start, login claim storage, authentication
+  clearing and `LinkEvent`.
   Do not take the lock around jawsauth handlers or `Server.Logout`, or within
   `LinkEvent`; do not call `Server.Logout` from `LinkEvent`. Bound `LinkEvent` I/O
   with a timeout; other sessions sharing the lock wait. One provider's logout
@@ -97,12 +102,15 @@ Pending OAuth flows expire after ten minutes. jawsauth extends the original
 JaWS session's grace for the pending flow. Unauthenticated
 protected GETs reuse a pending login's state, return target and grace deadline
 while more than two minutes remain; near expiry, they start a new flow and
-extend grace. While a login callback runs before session rotation, protected GETs
-with that session cookie return 409 unless `LoginFailed` handles them. After
-rotation, the old cookie starts a new flow and cannot cancel that sign-in. Logout
-and auth expiry clear this server's credentials and reload every JaWS page in the
-session. Auth expiry preserves a pending login but cancels a pending link. Explicit
-logout on the live session cancels either flow. A new login on the same server,
+extend grace. While a login callback runs, protected GETs with that session
+cookie return 409 unless `LoginFailed` handles them. During in-place login,
+`CurrentClaims` also remains nil until `LoginEvent` returns. With
+`RotateSessionOnLogin`, the old cookie starts a new flow after rotation and
+cannot cancel that sign-in. Without rotation, successful login reloads active
+JaWS pages after `LoginEvent`. Logout and auth expiry clear this server's
+credentials and reload every JaWS page in the session. Auth expiry preserves a
+pending login but cancels a pending link. Explicit logout on the live session
+cancels either flow. A new login on the same server,
 including one started by `Wrap` or `Handler`, cancels a pending link.
 
 Use an HTTP endpoint for a post-logout redirect. When `Server.Logout` clears

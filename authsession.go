@@ -118,6 +118,14 @@ func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (
 	return
 }
 
+func (srv *Server) sessionAccessStatus(sess *jaws.Session) (current, present, pending bool) {
+	srv.mu.Lock()
+	current, present = srv.sessionAuthStatus(sess, time.Now)
+	pending = !srv.RotateSessionOnLogin && srv.loginEvents[sess] != nil
+	srv.mu.Unlock()
+	return
+}
+
 func sessionAlive(sess *jaws.Session) bool {
 	cookie := sess.Cookie()
 	return cookie != nil && cookie.MaxAge >= 0
@@ -203,7 +211,8 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 	sess.Set(srv.SessionEmailKey, email)
 	sess.Set(srv.SessionEmailVerifiedKey, verified)
 	delay, replaced := srv.scheduleSessionAuthTimerLocked(sess, expiry)
-	if loginCanceled != nil && srv.LoginEvent != nil {
+	if loginCanceled != nil {
+		// Keep a new flow from replacing this login before its callback finishes.
 		if srv.loginEvents == nil {
 			srv.loginEvents = make(map[*jaws.Session]*pendingLoginEvent)
 		}
@@ -226,12 +235,14 @@ func (srv *Server) storeSessionAuthClaimsIfActive(sess *jaws.Session, claims map
 }
 
 func (srv *Server) emitLoginEvent(sess *jaws.Session, hr *http.Request) {
-	if srv.LoginEvent == nil {
-		return
-	}
 	srv.mu.Lock()
 	pending := srv.loginEvents[sess]
 	if pending == nil {
+		srv.mu.Unlock()
+		return
+	}
+	if pending.cleared {
+		delete(srv.loginEvents, sess)
 		srv.mu.Unlock()
 		return
 	}
@@ -242,11 +253,13 @@ func (srv *Server) emitLoginEvent(sess *jaws.Session, hr *http.Request) {
 		delete(srv.loginEvents, sess)
 		cleared := pending.cleared
 		srv.mu.Unlock()
-		if cleared && srv.LogoutEvent != nil {
+		if cleared && srv.LoginEvent != nil && srv.LogoutEvent != nil {
 			srv.LogoutEvent(sess, nil)
 		}
 	}()
-	srv.LoginEvent(sess, hr)
+	if srv.LoginEvent != nil {
+		srv.LoginEvent(sess, hr)
+	}
 }
 
 func (srv *Server) setSessionAuthFromToken(ctx context.Context, sess *jaws.Session, tokenSource oauth2.TokenSource, token *oauth2.Token, minExpiry time.Time, entry *authTimerState) error {
@@ -515,9 +528,6 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 			requests = sess.Requests()
 			if pending != nil {
 				pending.cleared = true
-				if !pending.started {
-					delete(srv.loginEvents, sess)
-				}
 			}
 		}
 	}
@@ -528,7 +538,7 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 	if cleared {
 		if hadAuth {
 			reloadAuthRequests(requests)
-			if pending == nil && srv.LogoutEvent != nil {
+			if (pending == nil || srv.LoginEvent == nil) && srv.LogoutEvent != nil {
 				srv.LogoutEvent(sess, hr)
 			}
 		}

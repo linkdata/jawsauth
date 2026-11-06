@@ -226,6 +226,7 @@ func TestLoginRotationExistingAuth(t *testing.T) {
 		jw.MaxSessions = limit
 		factory := &testAuthTimerFactory{}
 		srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+		srv.RotateSessionOnLogin = true
 		expiry := time.Now().Add(time.Hour)
 		raw := makeIDToken(t, map[string]any{"iss": "https://issuer.example", "aud": "client", "sub": "one", "exp": expiry.Unix(), "nonce": "nonce", "email": "user@example.com"})
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -379,6 +380,7 @@ func TestLoginUserInfoDeadlineKeepsOIDCFallbackOptional(t *testing.T) {
 		jw := newTestJaws(t)
 		go jw.ServeWithTimeout(2 * time.Minute)
 		srv := newWrapperTestServer(jw, "https://issuer.example")
+		srv.RotateSessionOnLogin = true
 		expiry := time.Now().Add(time.Hour)
 		hr := httptest.NewRequest(http.MethodGet, "/callback?state=state&code=code", nil)
 		sess := jw.NewSession(httptest.NewRecorder(), hr)

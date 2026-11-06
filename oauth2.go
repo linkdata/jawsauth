@@ -151,6 +151,8 @@ func (srv *Server) returnTarget(hr *http.Request, location string) string {
 // session, then responds with a 302 redirect to the provider's authorization URL.
 // It replaces any pending flow on this server, canceling a running callback or link.
 // If no usable session is available, it returns 503 with Retry-After instead.
+// Without [Server.RotateSessionOnLogin], it returns 409 while a completed
+// callback delivers its login event.
 // Non-GET requests receive 405 with Allow: GET.
 func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method != http.MethodGet {
@@ -166,8 +168,9 @@ func (srv *Server) HandleLogin(hw http.ResponseWriter, hr *http.Request) {
 // recheck that identity in LinkEvent when the provider returns. On success it
 // responds with a 303 redirect to the provider. It returns 405 with Allow: POST
 // for other methods, 403 for a cross-origin or missing session, and 500 when
-// linking is not configured. Starting a link replaces any pending flow on this
-// server, including a running login callback.
+// linking is not configured. Without [Server.RotateSessionOnLogin], it returns
+// 409 while a completed login callback delivers its event. Starting a link
+// replaces any pending flow on this server, including a running login callback.
 func (srv *Server) HandleLink(hw http.ResponseWriter, hr *http.Request) {
 	switch {
 	case hr.Method != http.MethodPost:
@@ -249,6 +252,9 @@ func (srv *Server) prepareOAuthFlow(hw http.ResponseWriter, hr *http.Request, li
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
+	if !srv.RotateSessionOnLogin && srv.loginEvents[sess] != nil {
+		return flow, sess, http.StatusConflict
+	}
 	if fromWrapper && srv.pendingOrdinaryLoginLocked(sess, 2*time.Minute) {
 		// Reissue one pending transaction without replacing the first tab's state.
 		flow, _ = sess.Get(srv.sessionKey(oauth2FlowKey)).(pendingOAuthFlow)
@@ -582,6 +588,10 @@ func (srv *Server) completeLink(sess *jaws.Session, hr *http.Request, claims map
 
 func (srv *Server) completeLogin(hw http.ResponseWriter, hr *http.Request, old *jaws.Session, flow pendingOAuthFlow, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time) (sess *jaws.Session, status int, err error) {
 	sess, status, err = old, http.StatusServiceUnavailable, ErrOAuth2MissingSession
+	if !srv.RotateSessionOnLogin {
+		status, err = srv.completeLoginInPlace(hr, old, flow, claims, tokenSource, expiry)
+		return
+	}
 	rotated, hadTimer, stale := srv.rotateOAuthSession(hw, hr, old, flow)
 	if rotated == nil {
 		if stale {
@@ -606,6 +616,30 @@ func (srv *Server) completeLogin(hw http.ResponseWriter, hr *http.Request, old *
 		return
 	}
 	return sess, http.StatusFound, nil
+}
+
+func (srv *Server) completeLoginInPlace(hr *http.Request, sess *jaws.Session, flow pendingOAuthFlow, claims map[string]any, tokenSource oauth2.TokenSource, expiry time.Time) (status int, err error) {
+	rotationLock := srv.SessionRotationLock
+	if rotationLock != nil {
+		rotationLock.Lock()
+		defer rotationLock.Unlock()
+	}
+	if flow.revoked() || srv.Jaws.GetSession(hr) != sess {
+		return http.StatusForbidden, ErrOAuth2MissingSession
+	}
+	err = srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, nil, flow.canceled)
+	if err != nil {
+		if errors.Is(err, ErrOAuth2MissingSession) {
+			return http.StatusForbidden, err
+		}
+		return http.StatusUnauthorized, err
+	}
+	srv.mu.Lock()
+	if srv.oauthCallbacks[sess].canceled == flow.canceled {
+		delete(srv.oauthCallbacks, sess)
+	}
+	srv.mu.Unlock()
+	return http.StatusFound, nil
 }
 
 func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWriter, hr *http.Request, sess *jaws.Session, flow pendingOAuthFlow) (*jaws.Session, int, error) {
@@ -642,13 +676,14 @@ func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWr
 //
 // For GET requests it validates the state, exchanges the authorization code using the
 // stored PKCE verifier, verifies the ID token or authenticated profile, and stores
-// claims in a new session. A link flow instead invokes [Server.LinkEvent]
-// and keeps the original session. It invokes [Server.LoginEvent] after a
-// new sign-in or [Server.LoginFailed] on login or link failure. Non-GET requests receive 405.
+// claims in the existing session. A link flow instead invokes [Server.LinkEvent].
+// It invokes [Server.LoginEvent] after a new sign-in or [Server.LoginFailed]
+// on login or link failure. Non-GET requests receive 405.
 //
-// Rotation discards pre-login application data and requires a free JaWS session slot.
-// If no slot is available, existing authentication is preserved and the default
-// response is 503. The user must restart login after capacity becomes available.
+// With [Server.RotateSessionOnLogin], login creates a new session and discards
+// pre-login application data. If no session slot is available, existing
+// authentication is preserved and the default response is 503. The user must
+// restart login after capacity becomes available.
 func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) {
 	if hr.Method != http.MethodGet {
 		hw.Header().Set("Allow", http.MethodGet)
@@ -682,10 +717,14 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 		srv.emitLoginEvent(sess, hr)
 		current, _ := srv.sessionAuthStatus(sess, time.Now)
 		if flow.revoked() || !current || !sessionAlive(sess) {
-			srv.clearSessionAuth(sess, hr, nil, false)
-			http.SetCookie(hw, sess.Close())
+			if srv.RotateSessionOnLogin {
+				srv.clearSessionAuth(sess, hr, nil, false)
+				http.SetCookie(hw, sess.Close())
+			}
 			err = ErrOAuth2MissingSession
 			statusCode = http.StatusForbidden
+		} else if !srv.RotateSessionOnLogin {
+			reloadAuthRequests(sess.Requests())
 		}
 	}
 	if err == nil {
