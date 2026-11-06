@@ -110,7 +110,8 @@ type Server struct {
 	LogoutEvent             EventFunc           // auth-clear callback; see EventFunc for ordering and nil requests
 	LoginFailed             FailedFunc          // callback failures and protected requests during a login callback
 	LinkEvent               LinkFunc            // required by HandleLink; register its POST route separately
-	// SessionRotationLock is held during flow start, login claim storage, auth clearing, and LinkEvent.
+	// SessionRotationLock is held during flow start, rotation, in-place login
+	// claim storage, auth clearing, and LinkEvent.
 	// New supplies a shared package lock; set the same custom lock on servers using
 	// one JaWS instance when coordinating with other authentication methods.
 	SessionRotationLock sync.Locker

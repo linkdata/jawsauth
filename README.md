@@ -68,8 +68,8 @@ login returns 503 with `Retry-After: 60` and preserves the existing session.
 - `New` shares one process-wide `SessionRotationLock` by default. To coordinate
   with other authentication methods or isolate independent JaWS instances, set
   a custom lock before serving; servers sharing a JaWS must use the same lock.
-  jawsauth holds it during flow start, login claim storage, authentication
-  clearing and `LinkEvent`.
+  jawsauth holds it during flow start, rotation, in-place login claim storage,
+  authentication clearing and `LinkEvent`.
   Do not take the lock around jawsauth handlers or `Server.Logout`, or within
   `LinkEvent`; do not call `Server.Logout` from `LinkEvent`. Bound `LinkEvent` I/O
   with a timeout; other sessions sharing the lock wait. One provider's logout
@@ -107,7 +107,8 @@ cookie return 409 unless `LoginFailed` handles them. During in-place login,
 `CurrentClaims` also remains nil until `LoginEvent` returns. With
 `RotateSessionOnLogin`, the old cookie starts a new flow after rotation and
 cannot cancel that sign-in. Without rotation, successful login reloads active
-JaWS pages after `LoginEvent`. Logout and auth expiry clear this server's
+JaWS pages after `LoginEvent` and gives the Session at least one minute of grace
+for the return redirect. Logout and auth expiry clear this server's
 credentials and reload every JaWS page in the session. Auth expiry preserves a
 pending login but cancels a pending link. Explicit logout on the live session
 cancels either flow. A new login on the same server,

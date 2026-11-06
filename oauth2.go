@@ -624,7 +624,7 @@ func (srv *Server) completeLoginInPlace(hr *http.Request, sess *jaws.Session, fl
 		rotationLock.Lock()
 		defer rotationLock.Unlock()
 	}
-	if flow.revoked() || srv.Jaws.GetSession(hr) != sess {
+	if flow.revoked() || srv.Jaws.GetSession(hr) != sess || !sess.ExtendGrace(time.Minute) {
 		return http.StatusForbidden, ErrOAuth2MissingSession
 	}
 	err = srv.storeSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, nil, flow.canceled)
@@ -675,8 +675,8 @@ func (srv *Server) completeOAuthCallback(ctx context.Context, hw http.ResponseWr
 // HandleAuthResponse handles the OIDC or OAuth2 profile callback endpoint.
 //
 // For GET requests it validates the state, exchanges the authorization code using the
-// stored PKCE verifier, verifies the ID token or authenticated profile, and stores
-// claims in the existing session. A link flow instead invokes [Server.LinkEvent].
+// stored PKCE verifier, verifies the ID token or authenticated profile, and by
+// default stores claims in the existing session. A link flow invokes [Server.LinkEvent].
 // It invokes [Server.LoginEvent] after a new sign-in or [Server.LoginFailed]
 // on login or link failure. Non-GET requests receive 405.
 //
@@ -716,7 +716,8 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 	if err == nil && !flow.link {
 		srv.emitLoginEvent(sess, hr)
 		current, _ := srv.sessionAuthStatus(sess, time.Now)
-		if flow.revoked() || !current || !sessionAlive(sess) {
+		// Leave a full redirect window after a possibly slow LoginEvent.
+		if flow.revoked() || !current || !sessionAlive(sess) || (!srv.RotateSessionOnLogin && !sess.ExtendGrace(time.Minute)) {
 			if srv.RotateSessionOnLogin {
 				srv.clearSessionAuth(sess, hr, nil, false)
 				http.SetCookie(hw, sess.Close())

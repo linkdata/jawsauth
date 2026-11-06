@@ -33,7 +33,6 @@ type authTimerState struct {
 
 // pendingLoginEvent orders callbacks when authentication is cleared before login notification finishes.
 type pendingLoginEvent struct {
-	started bool
 	cleared bool
 }
 
@@ -246,7 +245,6 @@ func (srv *Server) emitLoginEvent(sess *jaws.Session, hr *http.Request) {
 		srv.mu.Unlock()
 		return
 	}
-	pending.started = true
 	srv.mu.Unlock()
 	defer func() {
 		srv.mu.Lock()
