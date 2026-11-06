@@ -102,17 +102,16 @@ Pending OAuth flows expire after ten minutes. jawsauth extends the original
 JaWS session's grace for the pending flow. Unauthenticated
 protected GETs reuse a pending login's state, return target and grace deadline
 while more than two minutes remain; near expiry, they start a new flow and
-extend grace. After in-place login stores claims, protected GETs with that
-session cookie return 409 while `LoginEvent` runs unless `LoginFailed` handles
-them. `CurrentClaims` also remains nil until the event returns. With
-`RotateSessionOnLogin`, the old cookie starts a new flow after rotation and
-cannot cancel that sign-in. Without rotation, successful login reloads active
-JaWS pages after `LoginEvent` and gives the Session at least one minute of grace
-for the return redirect. Logout and auth expiry clear this server's
-credentials and reload every JaWS page in the session. Auth expiry preserves a
-pending login but cancels a pending link. Explicit logout on the live session
-cancels either flow. A new login on the same server,
-including one started by `Wrap` or `Handler`, cancels a pending link.
+extend grace. Once in-place login stores claims, protected GETs with that
+session cookie return 409 until login notification completes, unless
+`LoginFailed` handles them. `CurrentClaims` remains nil during that interval.
+With `RotateSessionOnLogin`, the old cookie starts a new flow after
+rotation and cannot cancel that sign-in. Without rotation, successful login
+reloads active JaWS pages after `LoginEvent`. Logout and auth expiry clear this
+server's credentials and reload every JaWS page in the session. Auth expiry
+preserves a pending login but cancels a pending link. Explicit logout on the
+live session cancels either flow. A new login on the same server, including
+one started by `Wrap` or `Handler`, cancels a pending link.
 
 Use an HTTP endpoint for a post-logout redirect. When `Server.Logout` clears
 authentication, it reloads pages and closes their sockets, so a later JaWS

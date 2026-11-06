@@ -117,13 +117,10 @@ func (srv *Server) sessionAuthStatus(sess *jaws.Session, now func() time.Time) (
 	return
 }
 
-func (srv *Server) sessionAccessStatus(sess *jaws.Session) (current, present, pending bool, entry *authTimerState) {
+func (srv *Server) sessionAccessStatus(sess *jaws.Session) (current, present, pending bool) {
 	srv.mu.Lock()
 	current, present = srv.sessionAuthStatus(sess, time.Now)
 	pending = !srv.RotateSessionOnLogin && srv.loginEvents[sess] != nil
-	if sess != nil {
-		entry = srv.authTimers[sess.ID()]
-	}
 	srv.mu.Unlock()
 	return
 }

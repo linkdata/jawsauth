@@ -632,7 +632,7 @@ func (srv *Server) completeLoginInPlace(hr *http.Request, sess *jaws.Session, fl
 	status, err = http.StatusForbidden, ErrOAuth2MissingSession
 	var delay time.Duration
 	var replaced bool
-	if !flow.revoked() && srv.Jaws.GetSession(hr) == sess && sess.ExtendGrace(time.Minute) {
+	if !flow.revoked() && srv.Jaws.GetSession(hr) == sess {
 		delay, replaced, err = srv.storePreparedSessionAuthClaimsIfActive(sess, claims, tokenSource, expiry, nil, flow.canceled, email, verified)
 		if err == nil {
 			srv.mu.Lock()
@@ -728,8 +728,7 @@ func (srv *Server) HandleAuthResponse(hw http.ResponseWriter, hr *http.Request) 
 	if err == nil && !flow.link {
 		srv.emitLoginEvent(sess, hr)
 		current, _ := srv.sessionAuthStatus(sess, time.Now)
-		// Leave a full redirect window after a possibly slow LoginEvent.
-		if flow.revoked() || !current || !sessionAlive(sess) || (!srv.RotateSessionOnLogin && !sess.ExtendGrace(time.Minute)) {
+		if flow.revoked() || !current || !sessionAlive(sess) {
 			if srv.RotateSessionOnLogin {
 				srv.clearSessionAuth(sess, hr, nil, false)
 				http.SetCookie(hw, sess.Close())

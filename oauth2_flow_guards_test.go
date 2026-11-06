@@ -174,67 +174,6 @@ func TestDefaultPendingLoginIsNotAuthorized(t *testing.T) {
 	}
 }
 
-func TestDefaultReloginRetiresLateProtectedRequest(t *testing.T) {
-	jw := newTestJaws(t)
-	go jw.Serve()
-	srv := newProfileTestServer(t, jw, nil)
-	srv.RotateSessionOnLogin = false
-	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-	if response := profileCallback(srv, cookie, state, "first"); response.Code != http.StatusFound {
-		t.Fatalf("first login: %d", response.Code)
-	}
-	request := httptest.NewRequest(http.MethodGet, "https://app.example/protected", nil)
-	request.AddCookie(cookie)
-	sess := jw.GetSession(request)
-	if sess == nil {
-		t.Fatal("authenticated session missing")
-	}
-
-	entered := make(chan string, 1)
-	resume := make(chan struct{})
-	release := sync.OnceFunc(func() { close(resume) })
-	defer release()
-	type latePage struct {
-		request  *jaws.Request
-		attached bool
-	}
-	page := make(chan latePage, 1)
-	done := make(chan struct{})
-	protected := srv.Wrap(http.HandlerFunc(func(hw http.ResponseWriter, hr *http.Request) {
-		claims := srv.CurrentClaims(sess)
-		if claims == nil {
-			entered <- ""
-			return
-		}
-		entered <- claims["sub"].(string)
-		<-resume
-		rq := newLiveAuthRequest(t, jw, hr)
-		page <- latePage{rq, rq.Session() == sess}
-		hw.WriteHeader(http.StatusOK)
-	}))
-	go func() {
-		protected.ServeHTTP(httptest.NewRecorder(), request)
-		close(done)
-	}()
-	if subject := waitFor(t, entered, "protected request did not start"); subject != "9007199254740993" {
-		t.Fatalf("initial subject: %q", subject)
-	}
-	_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
-	if response := profileCallback(srv, cookie, state, "second"); response.Code != http.StatusFound {
-		t.Fatalf("second login: %d", response.Code)
-	}
-	if claims := srv.CurrentClaims(sess); claims == nil || claims["sub"] != "99" {
-		t.Fatalf("second identity missing: %v", claims)
-	}
-	release()
-	late := waitFor(t, page, "late protected page was not created")
-	waitFor(t, done, "protected request did not finish")
-	if !late.attached {
-		t.Fatal("late page did not attach to the existing session")
-	}
-	waitAuthRequestCancelled(t, late.request.Context())
-}
-
 func TestCallbackRevokedAfterStoreBalancesEvents(t *testing.T) {
 	jw := newTestJaws(t)
 	srv := newProfileTestServer(t, jw, nil)

@@ -65,7 +65,8 @@ type HandleFunc func(uri string, handler http.Handler)
 // When LoginEvent is set, clearing auth before it begins suppresses both
 // events; clearing auth during it defers LogoutEvent until it returns.
 // LoginEvent can read claims from sess with [Server.SessionKey]. For in-place
-// login, [Server.CurrentClaims] becomes available after the event returns.
+// login, new claims become available through [Server.CurrentClaims] after the
+// event returns.
 // LogoutEvent receives a nil request for timer cleanup, deferred delivery, or
 // a call to [Server.Logout] with a nil request.
 // With [Server.RotateSessionOnLogin], re-login calls LogoutEvent on the old
@@ -76,8 +77,8 @@ type EventFunc func(sess *jaws.Session, hr *http.Request)
 
 // FailedFunc handles login and callback failures.
 //
-// It also handles protected requests during a login callback. Other flow-start
-// failures write their own response.
+// It also handles protected requests during a login callback and login or link
+// start conflicts. Other flow-start failures write their own response.
 //
 // It returns true if it wrote the HTTP response itself, in which case jawsauth writes
 // nothing further. Errors can contain untrusted browser-supplied text. Quote errors

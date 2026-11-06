@@ -54,57 +54,6 @@ func TestOAuthProviderVisitKeepsOnlyPendingSessionAlive(t *testing.T) {
 	})
 }
 
-func TestOAuthInPlaceLoginKeepsSessionForReturnRedirectNearGraceDeadline(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		jw := newTestJaws(t)
-		srv := newProfileTestServer(t, jw, nil)
-		srv.RotateSessionOnLogin = false
-		srv.LoginEvent = func(*jaws.Session, *http.Request) {
-			time.Sleep(45 * time.Second)
-		}
-		srv.httpClient.Timeout = oauth2ProviderTimeout
-		transport := srv.httpClient.Transport
-		srv.httpClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			if r.URL.Path == "/token" {
-				time.Sleep(oauth2ProviderTimeout - time.Second)
-			}
-			return transport.RoundTrip(r)
-		})
-
-		cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-		request := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
-		request.AddCookie(cookie)
-		sess := jw.GetSession(request)
-		if sess == nil {
-			t.Fatal("pending session missing")
-		}
-		time.Sleep(oauth2FlowLifetime - time.Second)
-		response := profileCallback(srv, cookie, state, "first")
-		if response.Code != http.StatusFound || len(response.Result().Cookies()) != 0 {
-			t.Fatalf("near-deadline callback: status=%d cookies=%v body=%q", response.Code, response.Result().Cookies(), response.Body.String())
-		}
-
-		// Provider exchange ends three seconds before pending grace; LoginEvent uses 45 seconds of the renewed grace.
-		time.Sleep(time.Minute - time.Second)
-		if got := jw.GetSession(request); got != sess {
-			t.Fatalf("session expired before return redirect: got %p, want %p", got, sess)
-		}
-		location := response.Header().Get("Location")
-		if location == "" {
-			t.Fatal("return redirect missing")
-		}
-		redirect := httptest.NewRequest(http.MethodGet, "https://app.example"+location, nil)
-		redirect.AddCookie(cookie)
-		if page := jw.NewRequest(httptest.NewRecorder(), redirect); page.Session() != sess {
-			t.Fatal("return redirect did not attach to authenticated session")
-		}
-		claims, ok := sess.Get(srv.SessionKey).(map[string]any)
-		if !ok || claims["sub"] != "9007199254740993" {
-			t.Fatalf("return redirect lost authentication: %v", claims)
-		}
-	})
-}
-
 func TestPendingLoginProtectedRequestDoesNotRestartOrRenewGrace(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		jw := newTestJaws(t)
