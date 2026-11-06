@@ -463,17 +463,13 @@ func Test_handleAuthResponseUsesPKCEVerifier(t *testing.T) {
 	sess := jw.NewSession(rec, req)
 	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: wantState, expiry: time.Now().Add(oauth2FlowLifetime), verifier: verifier, nonce: wantNonce, referrer: "/secure"})
 
-	oldSession := sess
-	srv.HandleAuthResponse(rec, req)
-	sess = jw.GetSession(req)
-	if sess == nil || sess == oldSession || oldSession.Cookie().MaxAge >= 0 {
-		t.Fatal("login did not rotate the session")
-	}
-	if oldSession.Get(srv.SessionKey) != nil {
-		t.Fatal("old session retained authentication")
+	callback := httptest.NewRecorder()
+	srv.HandleAuthResponse(callback, req)
+	if jw.GetSession(req) != sess || sess.Cookie().MaxAge < 0 || len(callback.Result().Cookies()) != 0 {
+		t.Fatal("login replaced the existing session or cookie")
 	}
 
-	resp := rec.Result()
+	resp := callback.Result()
 	if resp.StatusCode != http.StatusFound {
 		closeResponseBody(t, resp)
 		t.Fatal(resp.Status)
@@ -580,14 +576,9 @@ func Test_handleAuthResponseStoredTokenSourceSurvivesRequestCancel(t *testing.T)
 	sess := jw.NewSession(rec, req)
 	setTestOAuthFlow(sess, srv, pendingOAuthFlow{state: "state", expiry: time.Now().Add(oauth2FlowLifetime), verifier: oauth2.GenerateVerifier(), nonce: wantNonce})
 
-	oldSession := sess
 	srv.HandleAuthResponse(rec, req)
-	sess = jw.GetSession(req)
-	if sess == nil || sess == oldSession || oldSession.Cookie().MaxAge >= 0 {
-		t.Fatal("login did not rotate the session")
-	}
-	if oldSession.Get(srv.SessionKey) != nil {
-		t.Fatal("old session retained authentication")
+	if jw.GetSession(req) != sess || sess.Cookie().MaxAge < 0 {
+		t.Fatal("login replaced the existing session")
 	}
 
 	if status := rec.Result().StatusCode; status != http.StatusFound {

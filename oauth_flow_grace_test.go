@@ -192,6 +192,7 @@ func TestOIDCInitialCallbackAfterProviderVisit(t *testing.T) {
 					Body: io.NopCloser(strings.NewReader(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`))}, nil
 			})},
 		}
+		srv.RotateSessionOnLogin = true
 		start := httptest.NewRequest(http.MethodGet, "https://app.example/auth/login", nil)
 		response := httptest.NewRecorder()
 		srv.HandleLogin(response, start)

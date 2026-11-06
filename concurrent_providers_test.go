@@ -39,6 +39,8 @@ func TestDefaultRotationLockSerializesProvidersSharingJaws(t *testing.T) {
 	})}
 	a := newConcurrentProfileProvider(t, jw, client, "a")
 	b := newConcurrentProfileProvider(t, jw, client, "b")
+	a.RotateSessionOnLogin = true
+	b.RotateSessionOnLogin = true
 	if a.SessionRotationLock == nil || a.SessionRotationLock != b.SessionRotationLock {
 		t.Fatal("providers sharing JaWS do not share the default rotation lock")
 	}
@@ -82,6 +84,43 @@ func TestDefaultRotationLockSerializesProvidersSharingJaws(t *testing.T) {
 	}
 }
 
+func TestDefaultLoginKeepsOtherProvider(t *testing.T) {
+	jw := newTestJaws(t)
+	jw.MaxSessions = 1
+	jw.MaxSessionsPerIP = 1
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/token" {
+			return jsonResponse(`{"access_token":"proof","token_type":"Bearer"}`), nil
+		}
+		return jsonResponse(`{"id":42}`), nil
+	})}
+	a := newConcurrentProfileProvider(t, jw, client, "a")
+	b := newConcurrentProfileProvider(t, jw, client, "b")
+	cookie, stateA := profileStart(t, a, http.MethodGet, "/auth/a/login", nil)
+	_, stateB := profileStart(t, b, http.MethodGet, "/auth/b/login", cookie)
+	r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	r.AddCookie(cookie)
+	sess := jw.GetSession(r)
+	if sess == nil {
+		t.Fatal("pending session missing")
+	}
+	for _, tc := range []struct {
+		server *Server
+		state  string
+	}{
+		{a, stateA},
+		{b, stateB},
+	} {
+		response := profileCallback(tc.server, cookie, tc.state, "proof")
+		if response.Code != http.StatusFound || len(response.Result().Cookies()) != 0 || jw.GetSession(r) != sess {
+			t.Fatalf("provider login replaced session: status=%d cookies=%v", response.Code, response.Result().Cookies())
+		}
+	}
+	if a.CurrentClaims(sess) == nil || b.CurrentClaims(sess) == nil || jw.SessionCount() != 1 {
+		t.Fatal("provider login discarded another provider or created a session")
+	}
+}
+
 // holdFirstRotationLock lets a later caller acquire the lock before the first.
 type holdFirstRotationLock struct {
 	mu           sync.Mutex
@@ -112,6 +151,7 @@ func TestLinkedProviderLogoutBeforeLinkWrite(t *testing.T) {
 			})}
 			a := newConcurrentProfileProvider(t, jw, client, "a")
 			b := newConcurrentProfileProvider(t, jw, client, "b")
+			a.RotateSessionOnLogin = true
 			cookie, state := profileStart(t, a, http.MethodGet, "/auth/a/login", nil)
 			login := profileCallback(a, cookie, state, "proof")
 			if login.Code != http.StatusFound || len(login.Result().Cookies()) != 1 {

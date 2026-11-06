@@ -1,9 +1,6 @@
 package jawsauth
 
-import (
-	"net/http"
-	"time"
-)
+import "net/http"
 
 type wrapper struct {
 	server  *Server
@@ -13,7 +10,22 @@ type wrapper struct {
 
 func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 	sess := w.server.Jaws.GetSession(hr)
-	if current, present := w.server.sessionAuthStatus(sess, time.Now); !current {
+	current, present, pending := w.server.sessionAccessStatus(sess)
+	if pending {
+		if hr.Method == http.MethodGet {
+			if w.server.LoginFailed != nil {
+				email, _ := sess.Get(w.server.SessionEmailKey).(string)
+				if w.server.LoginFailed(hw, hr, http.StatusConflict, ErrOAuth2LoginInProgress, email) {
+					return
+				}
+			}
+			w.server.writeResult(hw, http.StatusConflict, ErrOAuth2LoginInProgress)
+		} else {
+			w.server.writeResult(hw, http.StatusForbidden, nil)
+		}
+		return
+	}
+	if !current {
 		if present {
 			w.server.clearSessionAuth(sess, hr, nil, true)
 		}
@@ -30,9 +42,9 @@ func (w wrapper) ServeHTTP(hw http.ResponseWriter, hr *http.Request) {
 		return
 	}
 	w.handler.ServeHTTP(hw, hr)
-	// A revocation may have taken its request snapshot before rendering attached
-	// a new JaWS request. Retire that request before this response completes.
-	if current, _ := w.server.sessionAuthStatus(sess, time.Now); !current || (w.admin && !w.server.sessionIsAdmin(sess)) {
+	// A revocation may take its request snapshot before rendering attaches a
+	// JaWS request. Retire that request before this response completes.
+	if current, _, pending := w.server.sessionAccessStatus(sess); !current || pending || (w.admin && !w.server.sessionIsAdmin(sess)) {
 		reloadAuthRequests(sess.Requests())
 	}
 }

@@ -739,6 +739,7 @@ func newProfileTestServer(t *testing.T, jw *jaws.Jaws, calls *int) *Server {
 	if err != nil || !srv.Valid() {
 		t.Fatalf("profile server: %v", err)
 	}
+	srv.RotateSessionOnLogin = true
 	return srv
 }
 
@@ -799,6 +800,42 @@ func profileLogin(t *testing.T, srv *Server) *http.Cookie {
 		t.Fatalf("profile login: status=%d cookies=%v", response.Code, cookies)
 	}
 	return cookies[0]
+}
+
+func TestOAuthProfileLoginKeepsSessionByDefault(t *testing.T) {
+	jw := newTestJaws(t)
+	jw.MaxSessions = 1
+	jw.MaxSessionsPerIP = 1
+	srv := newProfileTestServer(t, jw, nil)
+	srv.RotateSessionOnLogin = false
+	logins, logouts := 0, 0
+	srv.LoginEvent = func(*jaws.Session, *http.Request) { logins++ }
+	srv.LogoutEvent = func(*jaws.Session, *http.Request) { logouts++ }
+	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+	r := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+	r.AddCookie(cookie)
+	sess := jw.GetSession(r)
+	if sess == nil {
+		t.Fatal("pending session missing")
+	}
+	sess.Set("cart", "kept")
+	for _, tc := range []struct{ code, subject string }{
+		{"first", "9007199254740993"},
+		{"second", "99"},
+	} {
+		response := profileCallback(srv, cookie, state, tc.code)
+		if response.Code != http.StatusFound || len(response.Result().Cookies()) != 0 ||
+			jw.GetSession(r) != sess || sess.Get("cart") != "kept" ||
+			sess.Get(srv.SessionKey).(map[string]any)["sub"] != tc.subject {
+			t.Fatalf("login %q replaced session or lost data: status=%d cookies=%v", tc.code, response.Code, response.Result().Cookies())
+		}
+		if tc.code == "first" {
+			_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
+		}
+	}
+	if logins != 2 || logouts != 0 || jw.SessionCount() != 1 {
+		t.Fatalf("login events=%d logout events=%d sessions=%d", logins, logouts, jw.SessionCount())
+	}
 }
 
 func TestOAuthProfileSignInAndDualProofLink(t *testing.T) {

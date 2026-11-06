@@ -1254,6 +1254,7 @@ func TestAbandonedLoginClearDropsPendingEvent(t *testing.T) {
 	if !srv.Logout(sess, nil) {
 		t.Fatal("pending login was not cleared")
 	}
+	srv.emitLoginEvent(sess, req)
 	srv.mu.Lock()
 	pending := len(srv.loginEvents)
 	srv.mu.Unlock()
