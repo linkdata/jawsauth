@@ -102,9 +102,9 @@ Pending OAuth flows expire after ten minutes. jawsauth extends the original
 JaWS session's grace for the pending flow. Unauthenticated
 protected GETs reuse a pending login's state, return target and grace deadline
 while more than two minutes remain; near expiry, they start a new flow and
-extend grace. While a login callback runs, protected GETs with that session
-cookie return 409 unless `LoginFailed` handles them. During in-place login,
-`CurrentClaims` also remains nil until `LoginEvent` returns. With
+extend grace. After in-place login stores claims, protected GETs with that
+session cookie return 409 while `LoginEvent` runs unless `LoginFailed` handles
+them. `CurrentClaims` also remains nil until the event returns. With
 `RotateSessionOnLogin`, the old cookie starts a new flow after rotation and
 cannot cancel that sign-in. Without rotation, successful login reloads active
 JaWS pages after `LoginEvent` and gives the Session at least one minute of grace
