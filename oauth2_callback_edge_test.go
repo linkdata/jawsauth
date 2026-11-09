@@ -224,39 +224,48 @@ func TestLoginEventCanLogoutItsSession(t *testing.T) {
 }
 
 func TestLogoutDuringLoginEventDefersLogoutEvent(t *testing.T) {
-	jw := newTestJaws(t)
-	srv := newProfileTestServer(t, jw, nil)
-	entered := make(chan *jaws.Session, 1)
-	release := make(chan struct{})
-	releaseOnce := sync.OnceFunc(func() { close(release) })
-	defer releaseOnce()
-	events := make(chan string, 2)
-	logoutRequests := make(chan *http.Request, 1)
-	srv.LoginEvent = func(sess *jaws.Session, _ *http.Request) {
-		events <- "login"
-		entered <- sess
-		<-release
-	}
-	srv.LogoutEvent = func(_ *jaws.Session, request *http.Request) {
-		events <- "logout"
-		logoutRequests <- request
-	}
-	cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
-	result := make(chan *httptest.ResponseRecorder, 1)
-	go func() { result <- profileCallback(srv, cookie, state, "first") }()
-	rotated := waitFor(t, entered, "LoginEvent did not start")
-	loggedOut := make(chan bool, 1)
-	logoutRequest := httptest.NewRequest(http.MethodGet, "https://app.example/logout", nil)
-	go func() { loggedOut <- srv.Logout(rotated, logoutRequest) }()
-	if !waitFor(t, loggedOut, "concurrent logout blocked") || len(events) != 1 {
-		t.Fatalf("logout before LoginEvent returned: events=%d", len(events))
-	}
-	releaseOnce()
-	response := waitFor(t, result, "callback did not finish")
-	first := waitFor(t, events, "missing LoginEvent")
-	second := waitFor(t, events, "missing LogoutEvent")
-	deferredRequest := waitFor(t, logoutRequests, "missing LogoutEvent request")
-	if response.Code != http.StatusForbidden || first != "login" || second != "logout" || deferredRequest != nil || srv.CurrentClaims(rotated) != nil {
-		t.Fatalf("status=%d events=%s,%s request=%v claims=%v", response.Code, first, second, deferredRequest, srv.CurrentClaims(rotated))
+	for _, rotate := range []bool{false, true} {
+		name := "default"
+		if rotate {
+			name = "rotation"
+		}
+		t.Run(name, func(t *testing.T) {
+			jw := newTestJaws(t)
+			srv := newProfileTestServer(t, jw, nil)
+			srv.RotateSessionOnLogin = rotate
+			entered := make(chan *jaws.Session, 1)
+			release := make(chan struct{})
+			releaseOnce := sync.OnceFunc(func() { close(release) })
+			defer releaseOnce()
+			events := make(chan string, 2)
+			logoutRequests := make(chan *http.Request, 1)
+			srv.LoginEvent = func(sess *jaws.Session, _ *http.Request) {
+				events <- "login"
+				entered <- sess
+				<-release
+			}
+			srv.LogoutEvent = func(_ *jaws.Session, request *http.Request) {
+				events <- "logout"
+				logoutRequests <- request
+			}
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			result := make(chan *httptest.ResponseRecorder, 1)
+			go func() { result <- profileCallback(srv, cookie, state, "first") }()
+			sess := waitFor(t, entered, "LoginEvent did not start")
+			loggedOut := make(chan bool, 1)
+			logoutRequest := httptest.NewRequest(http.MethodGet, "https://app.example/logout", nil)
+			go func() { loggedOut <- srv.Logout(sess, logoutRequest) }()
+			if !waitFor(t, loggedOut, "concurrent logout blocked") || len(events) != 1 {
+				t.Fatalf("logout before LoginEvent returned: events=%d", len(events))
+			}
+			releaseOnce()
+			response := waitFor(t, result, "callback did not finish")
+			first := waitFor(t, events, "missing LoginEvent")
+			second := waitFor(t, events, "missing LogoutEvent")
+			deferredRequest := waitFor(t, logoutRequests, "missing LogoutEvent request")
+			if response.Code != http.StatusForbidden || first != "login" || second != "logout" || deferredRequest != nil || srv.CurrentClaims(sess) != nil {
+				t.Fatalf("status=%d events=%s,%s request=%v claims=%v", response.Code, first, second, deferredRequest, srv.CurrentClaims(sess))
+			}
+		})
 	}
 }

@@ -6,16 +6,22 @@ import (
 	"github.com/linkdata/jaws"
 )
 
-// CurrentClaims returns this provider's claims only while authentication and
-// the JaWS session are live. It is useful when several providers share JaWS.
-// Treat the returned session map as read-only, and recheck before protected writes
-// because the session may close after this call.
+// CurrentClaims returns this provider's live authentication claims.
+//
+// While an in-place login notification is pending, it returns nil.
+// It is useful when several providers share JaWS.
+// Treat the returned map as read-only. The session may close, and an in-place
+// login may change its identity or permissions after this call. Recheck the
+// session and claims before protected writes.
 func (srv *Server) CurrentClaims(sess *jaws.Session) map[string]any {
 	if srv == nil || srv.Jaws == nil || srv.SessionKey == "" || sess == nil || sess.Jaws() != srv.Jaws {
 		return nil
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
+	if !srv.RotateSessionOnLogin && srv.loginEvents[sess] != nil {
+		return nil
+	}
 	if current, _ := srv.sessionAuthStatus(sess, time.Now); !current {
 		return nil
 	}

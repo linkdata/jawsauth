@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -43,6 +44,54 @@ func TestLogoutDuringClaimPreparation(t *testing.T) {
 	assertWrapperAuthCleared(t, srv, sess)
 	if len(srv.authTimers) != 0 || factory.len() != 1 {
 		t.Fatal("logout left a refresh timer")
+	}
+}
+
+func TestInPlaceLoginLoggerCanLogout(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		name := "warning"
+		if debug {
+			name = "debug"
+		}
+		t.Run(name, func(t *testing.T) {
+			jw := newTestJaws(t)
+			srv := newProfileTestServer(t, jw, nil)
+			srv.RotateSessionOnLogin = false
+			srv.SessionRotationLock = &sync.Mutex{}
+			cookie, state := profileStart(t, srv, http.MethodGet, "/auth/login", nil)
+			if response := profileCallback(srv, cookie, state, "first"); response.Code != http.StatusFound {
+				t.Fatalf("first login: %d", response.Code)
+			}
+			req := httptest.NewRequest(http.MethodGet, "https://app.example/account", nil)
+			req.AddCookie(cookie)
+			sess := jw.GetSession(req)
+			if sess == nil || srv.CurrentClaims(sess) == nil {
+				t.Fatal("first login did not authenticate the session")
+			}
+			_, state = profileStart(t, srv, http.MethodGet, "/auth/login", cookie)
+
+			loggedOut := false
+			if debug {
+				jw.Debug = true
+				jw.Logger = infoHookLogger(func(msg string) {
+					if msg == "jawsauth: scheduled auth timer" {
+						loggedOut = srv.Logout(sess, nil)
+					}
+				})
+			} else {
+				jw.Logger = logoutOnWarnLogger{onWarn: func() { loggedOut = srv.Logout(sess, nil) }}
+			}
+			result := make(chan *httptest.ResponseRecorder, 1)
+			go func() { result <- profileCallback(srv, cookie, state, "second") }()
+			select {
+			case response := <-result:
+				if !loggedOut || response.Code != http.StatusForbidden || srv.CurrentClaims(sess) != nil || len(srv.authTimers) != 0 {
+					t.Fatalf("logout=%t status=%d claims=%v timers=%d", loggedOut, response.Code, srv.CurrentClaims(sess), len(srv.authTimers))
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("login blocked in reentrant logger")
+			}
+		})
 	}
 }
 
@@ -226,6 +275,7 @@ func TestLoginRotationExistingAuth(t *testing.T) {
 		jw.MaxSessions = limit
 		factory := &testAuthTimerFactory{}
 		srv := newTimerTestServer(t, jw, "https://issuer.example", factory)
+		srv.RotateSessionOnLogin = true
 		expiry := time.Now().Add(time.Hour)
 		raw := makeIDToken(t, map[string]any{"iss": "https://issuer.example", "aud": "client", "sub": "one", "exp": expiry.Unix(), "nonce": "nonce", "email": "user@example.com"})
 		srv.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -379,6 +429,7 @@ func TestLoginUserInfoDeadlineKeepsOIDCFallbackOptional(t *testing.T) {
 		jw := newTestJaws(t)
 		go jw.ServeWithTimeout(2 * time.Minute)
 		srv := newWrapperTestServer(jw, "https://issuer.example")
+		srv.RotateSessionOnLogin = true
 		expiry := time.Now().Add(time.Hour)
 		hr := httptest.NewRequest(http.MethodGet, "/callback?state=state&code=code", nil)
 		sess := jw.NewSession(httptest.NewRecorder(), hr)
