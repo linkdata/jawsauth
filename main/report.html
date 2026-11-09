@@ -148,9 +148,9 @@ func debugSessionPrefix(sess *jaws.Session) string {
         <span class="cov9" title="2246">value := sess.CookieValue()
 </span>        // Keep at least eight base-32 characters out of logs.
         <span class="cov9" title="2246">if len(value) &gt;= 12 </span>{
-                <span class="cov9" title="2244">return value[:4]
+                <span class="cov9" title="2239">return value[:4]
 </span>        }
-        <span class="cov1" title="2">return ""</span>
+        <span class="cov3" title="7">return ""</span>
 }
 
 func tokenDebugAttrs(token *oauth2.Token) []any {
@@ -588,11 +588,11 @@ func (srv *Server) pendingOrdinaryLoginLocked(sess *jaws.Session, minimumRemaini
 }
 
 func (srv *Server) clearSessionOAuthFlowLocked(sess *jaws.Session) {
-        <span class="cov7" title="337">if flow := srv.oauthCallbacks[sess]; flow.canceled != nil </span>{
-                <span class="cov4" title="14">close(flow.canceled)
+        <span class="cov7" title="336">if flow := srv.oauthCallbacks[sess]; flow.canceled != nil </span>{
+                <span class="cov3" title="12">close(flow.canceled)
                 delete(srv.oauthCallbacks, sess)
 </span>        }
-        <span class="cov7" title="337">sess.Set(srv.sessionKey(oauth2FlowKey), nil)</span>
+        <span class="cov7" title="336">sess.Set(srv.sessionKey(oauth2FlowKey), nil)</span>
 }
 
 // Logout clears this server's authentication state for sess.
@@ -631,7 +631,7 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
                 // Auth expiry must not cancel an ordinary login already in progress.
                 // Explicit logout and link flows still revoke their pending callbacks.
                 <span class="cov5" title="68">if !preservePendingLogin || !srv.pendingOrdinaryLoginLocked(sess, 0) </span>{
-                        <span class="cov5" title="65">srv.clearSessionOAuthFlowLocked(sess)
+                        <span class="cov5" title="64">srv.clearSessionOAuthFlowLocked(sess)
 </span>                }
                 <span class="cov5" title="68">sess.Set(srv.SessionKey, nil)
                 sess.Set(srv.SessionTokenKey, nil)
@@ -669,7 +669,7 @@ func (srv *Server) clearSessionAuth(sess *jaws.Session, hr *http.Request, entry 
 
 func reloadAuthRequests(requests []*jaws.Request) {
         <span class="cov6" title="116">for _, rq := range requests </span>{
-                <span class="cov4" title="14">rq.Reload()
+                <span class="cov4" title="15">rq.Reload()
 </span>        }
 }
 </pre>
@@ -1525,7 +1525,7 @@ func (srv *Server) takeOAuthFlow(sess *jaws.Session, gotState string) (flow pend
 func (srv *Server) finishOAuthFlow(sess *jaws.Session, flow pendingOAuthFlow) {
         <span class="cov6" title="121">srv.mu.Lock()
         if srv.oauthCallbacks[sess].canceled == flow.canceled </span>{
-                <span class="cov6" title="92">delete(srv.oauthCallbacks, sess)
+                <span class="cov6" title="94">delete(srv.oauthCallbacks, sess)
 </span>        }
         <span class="cov6" title="121">srv.mu.Unlock()</span>
 }
@@ -2225,10 +2225,10 @@ var ErrServerNilJaws = errors.New("jawsauth: nil *jaws.Jaws")
 
 func foldEmailCase(s string) string {
         <span class="cov7" title="5273">return strings.Map(func(r rune) rune </span>{
-                <span class="cov10" title="86117">if r &gt;= 'A' &amp;&amp; r &lt;= 'Z' </span>{
+                <span class="cov10" title="86174">if r &gt;= 'A' &amp;&amp; r &lt;= 'Z' </span>{
                         <span class="cov4" title="53">return r + ('a' - 'A')
 </span>                }
-                <span class="cov9" title="86064">return r</span>
+                <span class="cov9" title="86121">return r</span>
         }, s)
 }
 
@@ -2423,8 +2423,8 @@ func (srv *Server) makeAuth(rq *jaws.Request) jaws.Auth {
 </span>}
 
 func (srv *Server) sessionKey(key string) string {
-        <span class="cov7" title="5596">if srv.namespace != "" </span>{
-                <span class="cov6" title="1100">return key + "." + srv.namespace
+        <span class="cov7" title="5595">if srv.namespace != "" </span>{
+                <span class="cov6" title="1099">return key + "." + srv.namespace
 </span>        }
         <span class="cov7" title="4496">return key</span>
 }
