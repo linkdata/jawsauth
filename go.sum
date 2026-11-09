@@ -6,8 +6,8 @@ github.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz
 github.com/go-jose/go-jose/v4 v4.1.4/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=
 github.com/linkdata/deadlock v0.5.5 h1:d6O+rzEqasSfamGDA8u7bjtaq7hOX8Ha4Zn36Wxrkvo=
 github.com/linkdata/deadlock v0.5.5/go.mod h1:tXb28stzAD3trzEEK0UJWC+rZKuobCoPktPYzebb1u0=
-github.com/linkdata/jaws v0.902.0 h1:YU/WN3EpAeq/I1uoEh9w1fkoiWvkgJ30LR67Ks1QJOk=
-github.com/linkdata/jaws v0.902.0/go.mod h1:4l/hXl4qhhEzBMyej3tXT3tLlkEyz1iAAEwWS6Yxpqg=
+github.com/linkdata/jaws v0.902.1 h1:fGxP1SjE4lHWI5UQTHewoRG1czEFO7qMkTPlfxP6M48=
+github.com/linkdata/jaws v0.902.1/go.mod h1:4l/hXl4qhhEzBMyej3tXT3tLlkEyz1iAAEwWS6Yxpqg=
 github.com/linkdata/jq v0.6.0 h1:yxAeWsknIWmt7Wbr5CIEkj2i1WwC2DnJDZlOrPxJkr0=
 github.com/linkdata/jq v0.6.0/go.mod h1:b76MMuWybyXrVEKSHJkv+r5IEattnghPf1bNRJ5PNlE=
 github.com/linkdata/rate v1.17.1 h1:b3ld6CaQQzDxk/ChR7x1iDGMQIFyWIZAKQknZWAmiuc=
